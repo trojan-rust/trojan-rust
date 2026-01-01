@@ -177,8 +177,8 @@ impl TestServer {
             let _ = trojan_server::run(config_clone, auth).await;
         });
 
-        // Wait for server to start
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Wait for server to start (longer on Windows CI)
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
         Self {
             addr,

@@ -220,8 +220,8 @@ impl TestServer {
             let _ = trojan_server::run(config_clone, auth).await;
         });
 
-        // Wait for server to start
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Wait for server to start (longer on Windows CI)
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
         Self {
             addr,
@@ -463,7 +463,7 @@ async fn test_graceful_shutdown() {
         tokio::spawn(async move { run_with_shutdown(config, auth, shutdown).await });
 
     // Wait for server to start
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Establish a connection before shutdown
     let tcp_stream = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -615,7 +615,7 @@ async fn test_max_connections_limit() {
         tokio::spawn(async move { run_with_shutdown(config, auth, shutdown).await });
 
     // Wait for server to start
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Establish 2 connections (should succeed)
     let conn1 = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -1060,7 +1060,7 @@ async fn test_udp_idle_timeout() {
     tokio::spawn(async move {
         let _ = trojan_server::run(config, auth).await;
     });
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Create TLS connector
     let mut root_store = RootCertStore::empty();
@@ -1292,7 +1292,7 @@ async fn test_tcp_idle_timeout() {
     tokio::spawn(async move {
         let _ = trojan_server::run(config, auth).await;
     });
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Create TLS connector
     let mut root_store = RootCertStore::empty();
