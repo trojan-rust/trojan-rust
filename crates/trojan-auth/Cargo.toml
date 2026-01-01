@@ -17,3 +17,6 @@ thiserror = "1"
 sha2 = "0.10"
 hex = "0.4"
 parking_lot = "0.12"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
