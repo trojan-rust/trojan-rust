@@ -41,9 +41,11 @@ fn generate_test_certs() -> (String, String) {
     use rcgen::{CertifiedKey, generate_simple_self_signed};
 
     let subject_alt_names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
-    let CertifiedKey { cert, key_pair } = generate_simple_self_signed(subject_alt_names).unwrap();
+    let CertifiedKey {
+        cert, signing_key, ..
+    } = generate_simple_self_signed(subject_alt_names).unwrap();
 
-    (cert.pem(), key_pair.serialize_pem())
+    (cert.pem(), signing_key.serialize_pem())
 }
 
 // ============================================================================

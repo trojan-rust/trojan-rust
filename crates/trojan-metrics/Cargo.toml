@@ -13,5 +13,5 @@ categories = ["network-programming"]
 
 [dependencies]
 trojan-core = { version = "0.1.0", path = "../trojan-core" }
-metrics = "0.23"
-metrics-exporter-prometheus = "0.14"
+metrics = "0.24"
+metrics-exporter-prometheus = "0.18"

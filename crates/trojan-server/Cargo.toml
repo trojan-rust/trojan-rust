@@ -28,8 +28,8 @@ async-trait = "0.1"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
 hex = "0.4"
-metrics = "0.23"
-metrics-exporter-prometheus = "0.14"
+metrics = "0.24"
+metrics-exporter-prometheus = "0.18"
 rustls = "0.23"
 rustls-pemfile = "2"
 rustls-pki-types = "1"
@@ -37,7 +37,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
-thiserror = "1"
+thiserror = "2"
 tokio = { version = "1", features = [
     "rt-multi-thread",
     "macros",
@@ -49,8 +49,8 @@ tokio = { version = "1", features = [
 ] }
 tokio-rustls = "0.26"
 tokio-util = "0.7"
-socket2 = "0.5"
-toml = "0.8"
+socket2 = "0.6"
+toml = "0.9"
 parking_lot = "0.12"
 tracing = "0.1"
 tracing-appender = "0.2"
@@ -64,7 +64,7 @@ trojan-config = { version = "0.1.0", path = "../trojan-config" }
 trojan-metrics = { version = "0.1.0", path = "../trojan-metrics" }
 
 [dev-dependencies]
-rcgen = "0.13"
+rcgen = "0.14"
 tempfile = "3"
 serde_json = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
