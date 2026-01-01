@@ -19,7 +19,7 @@ use std::{
 // ============================================================================
 
 fn generate_test_certs() -> (String, String) {
-    use rcgen::{generate_simple_self_signed, CertifiedKey};
+    use rcgen::{CertifiedKey, generate_simple_self_signed};
 
     let subject_alt_names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
     let CertifiedKey { cert, key_pair } = generate_simple_self_signed(subject_alt_names).unwrap();
@@ -118,7 +118,8 @@ impl TestServer {
     async fn start(fallback_addr: SocketAddr) -> Self {
         use trojan_auth::MemoryAuth;
         use trojan_config::{
-            AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TlsConfig, WebSocketConfig,
+            AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TlsConfig,
+            WebSocketConfig,
         };
 
         let password = "test_password_123".to_string();
@@ -409,7 +410,8 @@ async fn test_with_trojan_go_client() {
     };
 
     // Connect through SOCKS5 proxy to echo server
-    let mut stream = client.connect_through_socks(echo_server.addr)
+    let mut stream = client
+        .connect_through_socks(echo_server.addr)
         .expect("SOCKS5 connect failed");
 
     // Send data and verify echo
@@ -417,7 +419,9 @@ async fn test_with_trojan_go_client() {
     stream.write_all(message).unwrap();
     stream.flush().unwrap();
 
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     let mut response = vec![0u8; 1024];
     let n = stream.read(&mut response).expect("Failed to read response");
 
@@ -477,7 +481,9 @@ fn check_available_clients() {
     if Command::new("trojan-go").arg("-version").output().is_ok() {
         println!("  trojan-go: FOUND");
     } else {
-        println!("  trojan-go: NOT FOUND (install with: go install github.com/p4gefau1t/trojan-go@latest)");
+        println!(
+            "  trojan-go: NOT FOUND (install with: go install github.com/p4gefau1t/trojan-go@latest)"
+        );
     }
 
     if Command::new("trojan").arg("--version").output().is_ok() {
@@ -486,5 +492,7 @@ fn check_available_clients() {
         println!("  trojan: NOT FOUND (install with: apt install trojan)");
     }
 
-    println!("\nTo run client tests: cargo test --package trojan-server --test trojan_client_test -- --ignored --nocapture");
+    println!(
+        "\nTo run client tests: cargo test --package trojan-server --test trojan_client_test -- --ignored --nocapture"
+    );
 }

@@ -1,8 +1,8 @@
 //! Utility functions for server operations.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use socket2::{Domain, Protocol, Socket, Type};

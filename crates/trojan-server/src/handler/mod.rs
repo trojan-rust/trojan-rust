@@ -19,7 +19,7 @@ use trojan_metrics::{
     record_auth_failure, record_auth_success, record_connect_request, record_fallback,
     record_udp_associate_request,
 };
-use trojan_proto::{parse_request, ParseError, ParseResult, CMD_CONNECT, CMD_UDP_ASSOCIATE};
+use trojan_proto::{CMD_CONNECT, CMD_UDP_ASSOCIATE, ParseError, ParseResult, parse_request};
 
 use crate::error::ServerError;
 use crate::state::ServerState;

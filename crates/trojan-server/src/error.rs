@@ -1,7 +1,9 @@
 //! Server error types.
 
 use trojan_auth::AuthError;
-use trojan_metrics::{ERROR_AUTH, ERROR_CONFIG, ERROR_IO, ERROR_PROTOCOL, ERROR_RESOLVE, ERROR_TLS_HANDSHAKE};
+use trojan_metrics::{
+    ERROR_AUTH, ERROR_CONFIG, ERROR_IO, ERROR_PROTOCOL, ERROR_RESOLVE, ERROR_TLS_HANDSHAKE,
+};
 use trojan_proto::{ParseError, WriteError};
 
 /// Server error type.

@@ -17,5 +17,5 @@ mod util;
 pub use error::ServerError;
 pub use pool::ConnectionPool;
 pub use rate_limit::RateLimiter;
-pub use server::{run, run_with_shutdown, DEFAULT_SHUTDOWN_TIMEOUT};
+pub use server::{DEFAULT_SHUTDOWN_TIMEOUT, run, run_with_shutdown};
 pub use tokio_util::sync::CancellationToken;

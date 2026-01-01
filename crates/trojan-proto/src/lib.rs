@@ -271,7 +271,13 @@ fn parse_address<'a>(atyp: u8, buf: &'a [u8]) -> ParseResult<(AddressRef<'a>, us
                 return ParseResult::Invalid(ParseError::InvalidUtf8);
             }
             let port = read_u16(&buf[1 + len..1 + len + 2]);
-            ParseResult::Complete((AddressRef { host: HostRef::Domain(domain), port }, need))
+            ParseResult::Complete((
+                AddressRef {
+                    host: HostRef::Domain(domain),
+                    port,
+                },
+                need,
+            ))
         }
         ATYP_IPV6 => {
             if buf.len() < 18 {
@@ -280,7 +286,13 @@ fn parse_address<'a>(atyp: u8, buf: &'a [u8]) -> ParseResult<(AddressRef<'a>, us
             let mut ip = [0u8; 16];
             ip.copy_from_slice(&buf[0..16]);
             let port = read_u16(&buf[16..18]);
-            ParseResult::Complete((AddressRef { host: HostRef::Ipv6(ip), port }, 18))
+            ParseResult::Complete((
+                AddressRef {
+                    host: HostRef::Ipv6(ip),
+                    port,
+                },
+                18,
+            ))
         }
         _ => ParseResult::Invalid(ParseError::InvalidAtyp),
     }
@@ -331,10 +343,14 @@ mod tests {
     fn test_is_valid_hash() {
         // Valid lowercase hex
         assert!(is_valid_hash(&[b'a'; HASH_LEN]));
-        assert!(is_valid_hash(b"0123456789abcdef0123456789abcdef0123456789abcdef01234567"));
+        assert!(is_valid_hash(
+            b"0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+        ));
 
         // Uppercase should be accepted
-        assert!(is_valid_hash(b"0123456789ABCDEF0123456789abcdef0123456789abcdef01234567"));
+        assert!(is_valid_hash(
+            b"0123456789ABCDEF0123456789abcdef0123456789abcdef01234567"
+        ));
 
         // Invalid: wrong length
         assert!(!is_valid_hash(&[b'a'; HASH_LEN - 1]));

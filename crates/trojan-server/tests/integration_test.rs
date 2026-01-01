@@ -18,14 +18,18 @@ use std::{
 
 use bytes::BytesMut;
 use rustls::{
-    pki_types::{CertificateDer, ServerName},
     ClientConfig, RootCertStore,
+    pki_types::{CertificateDer, ServerName},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_rustls::TlsConnector;
-use trojan_auth::{sha224_hex, MemoryAuth};
-use trojan_config::{AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TlsConfig, WebSocketConfig};
-use trojan_proto::{write_request_header, write_udp_packet, AddressRef, HostRef, CMD_CONNECT, CMD_UDP_ASSOCIATE};
+use trojan_auth::{MemoryAuth, sha224_hex};
+use trojan_config::{
+    AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TlsConfig, WebSocketConfig,
+};
+use trojan_proto::{
+    AddressRef, CMD_CONNECT, CMD_UDP_ASSOCIATE, HostRef, write_request_header, write_udp_packet,
+};
 
 // ============================================================================
 // Test Certificates (self-signed for testing)
@@ -34,7 +38,7 @@ use trojan_proto::{write_request_header, write_udp_packet, AddressRef, HostRef, 
 /// Generate a self-signed certificate for testing.
 /// Returns (cert_pem, key_pem).
 fn generate_test_certs() -> (String, String) {
-    use rcgen::{generate_simple_self_signed, CertifiedKey};
+    use rcgen::{CertifiedKey, generate_simple_self_signed};
 
     let subject_alt_names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
     let CertifiedKey { cert, key_pair } = generate_simple_self_signed(subject_alt_names).unwrap();
@@ -166,9 +170,7 @@ impl TestServer {
 
         // Build TLS connector for client
         let mut root_store = RootCertStore::empty();
-        root_store
-            .add(CertificateDer::from(cert_der))
-            .unwrap();
+        root_store.add(CertificateDer::from(cert_der)).unwrap();
         let client_config = ClientConfig::builder()
             .with_root_certificates(root_store)
             .with_no_client_auth();
@@ -180,18 +182,18 @@ impl TestServer {
         drop(listener);
 
         let config = Config {
-        server: ServerConfig {
-            listen: addr.to_string(),
-            fallback: fallback_addr.to_string(),
-            tcp_idle_timeout_secs: 30,
-            udp_timeout_secs: 30,
-            max_udp_payload: 8192,
-            max_udp_buffer_bytes: 65536,
-            max_header_bytes: 8192,
-            max_connections: None,
-            rate_limit: None,
-            fallback_pool: None,
-            resource_limits: None,
+            server: ServerConfig {
+                listen: addr.to_string(),
+                fallback: fallback_addr.to_string(),
+                tcp_idle_timeout_secs: 30,
+                udp_timeout_secs: 30,
+                max_udp_payload: 8192,
+                max_udp_buffer_bytes: 65536,
+                max_header_bytes: 8192,
+                max_connections: None,
+                rate_limit: None,
+                fallback_pool: None,
+                resource_limits: None,
             },
             tls: TlsConfig {
                 cert: cert_path.to_string_lossy().to_string(),
@@ -254,7 +256,11 @@ async fn test_connect_relay() {
     // Connect via TLS
     let tcp_stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
     let server_name = ServerName::try_from("localhost").unwrap();
-    let mut tls_stream = server.tls_connector.connect(server_name, tcp_stream).await.unwrap();
+    let mut tls_stream = server
+        .tls_connector
+        .connect(server_name, tcp_stream)
+        .await
+        .unwrap();
 
     // Build Trojan request header
     let hash = server.hash();
@@ -297,7 +303,11 @@ async fn test_fallback_on_invalid_password() {
     // Connect via TLS
     let tcp_stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
     let server_name = ServerName::try_from("localhost").unwrap();
-    let mut tls_stream = server.tls_connector.connect(server_name, tcp_stream).await.unwrap();
+    let mut tls_stream = server
+        .tls_connector
+        .connect(server_name, tcp_stream)
+        .await
+        .unwrap();
 
     // Build Trojan request with WRONG password
     let wrong_hash = sha224_hex("wrong_password");
@@ -307,7 +317,13 @@ async fn test_fallback_on_invalid_password() {
     };
 
     let mut header = BytesMut::new();
-    write_request_header(&mut header, wrong_hash.as_bytes(), CMD_CONNECT, &target_addr).unwrap();
+    write_request_header(
+        &mut header,
+        wrong_hash.as_bytes(),
+        CMD_CONNECT,
+        &target_addr,
+    )
+    .unwrap();
 
     // Send request
     tls_stream.write_all(&header).await.unwrap();
@@ -335,11 +351,16 @@ async fn test_fallback_on_non_trojan_traffic() {
     // Connect via TLS
     let tcp_stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
     let server_name = ServerName::try_from("localhost").unwrap();
-    let mut tls_stream = server.tls_connector.connect(server_name, tcp_stream).await.unwrap();
+    let mut tls_stream = server
+        .tls_connector
+        .connect(server_name, tcp_stream)
+        .await
+        .unwrap();
 
     // Send plain HTTP request (not Trojan protocol)
     // Must be at least 56 bytes for server to detect invalid hash format
-    let http_request = b"GET /this-is-a-long-path-to-make-the-request-longer HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    let http_request =
+        b"GET /this-is-a-long-path-to-make-the-request-longer HTTP/1.1\r\nHost: localhost\r\n\r\n";
     tls_stream.write_all(http_request).await.unwrap();
     tls_stream.flush().await.unwrap();
 
@@ -361,7 +382,7 @@ async fn test_graceful_shutdown() {
     use trojan_config::{
         AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TlsConfig,
     };
-    use trojan_server::{run_with_shutdown, CancellationToken};
+    use trojan_server::{CancellationToken, run_with_shutdown};
 
     let password = "test_password_123".to_string();
     let (cert_pem, key_pem) = generate_test_certs();
@@ -440,9 +461,8 @@ async fn test_graceful_shutdown() {
     let shutdown_trigger = shutdown.clone();
 
     // Spawn server with shutdown token
-    let server_handle = tokio::spawn(async move {
-        run_with_shutdown(config, auth, shutdown).await
-    });
+    let server_handle =
+        tokio::spawn(async move { run_with_shutdown(config, auth, shutdown).await });
 
     // Wait for server to start
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -450,7 +470,10 @@ async fn test_graceful_shutdown() {
     // Establish a connection before shutdown
     let tcp_stream = tokio::net::TcpStream::connect(addr).await.unwrap();
     let server_name = ServerName::try_from("localhost").unwrap();
-    let mut tls_stream = tls_connector.connect(server_name, tcp_stream).await.unwrap();
+    let mut tls_stream = tls_connector
+        .connect(server_name, tcp_stream)
+        .await
+        .unwrap();
 
     // Send a trojan request to establish relay
     let hash = sha224_hex(&password);
@@ -471,11 +494,8 @@ async fn test_graceful_shutdown() {
 
     // Try to connect after shutdown signal - should fail eventually
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let connect_result = tokio::time::timeout(
-        Duration::from_secs(1),
-        tokio::net::TcpStream::connect(addr),
-    )
-    .await;
+    let connect_result =
+        tokio::time::timeout(Duration::from_secs(1), tokio::net::TcpStream::connect(addr)).await;
     // Connection might succeed if quick enough, but server won't accept more after loop exits
     // The key test is that server eventually stops
 
@@ -489,7 +509,11 @@ async fn test_graceful_shutdown() {
         .await
         .expect("read timeout during shutdown drain")
         .unwrap();
-    assert_eq!(&response[..n], message, "existing connection should continue working");
+    assert_eq!(
+        &response[..n],
+        message,
+        "existing connection should continue working"
+    );
 
     // Close the connection
     drop(tls_stream);
@@ -510,7 +534,7 @@ async fn test_max_connections_limit() {
     use trojan_config::{
         AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TlsConfig,
     };
-    use trojan_server::{run_with_shutdown, CancellationToken};
+    use trojan_server::{CancellationToken, run_with_shutdown};
 
     let password = "test_password_123".to_string();
     let (cert_pem, key_pem) = generate_test_certs();
@@ -589,9 +613,8 @@ async fn test_max_connections_limit() {
     let shutdown_trigger = shutdown.clone();
 
     // Spawn server
-    let _server_handle = tokio::spawn(async move {
-        run_with_shutdown(config, auth, shutdown).await
-    });
+    let _server_handle =
+        tokio::spawn(async move { run_with_shutdown(config, auth, shutdown).await });
 
     // Wait for server to start
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -599,10 +622,16 @@ async fn test_max_connections_limit() {
     // Establish 2 connections (should succeed)
     let conn1 = tokio::net::TcpStream::connect(addr).await.unwrap();
     let server_name = ServerName::try_from("localhost").unwrap();
-    let tls1 = tls_connector.connect(server_name.clone(), conn1).await.unwrap();
+    let tls1 = tls_connector
+        .connect(server_name.clone(), conn1)
+        .await
+        .unwrap();
 
     let conn2 = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let tls2 = tls_connector.connect(server_name.clone(), conn2).await.unwrap();
+    let tls2 = tls_connector
+        .connect(server_name.clone(), conn2)
+        .await
+        .unwrap();
 
     // Give server time to register the connections
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -698,7 +727,7 @@ async fn test_rate_limiting() {
                 cleanup_interval_secs: 300,
             }),
             fallback_pool: None,
-                resource_limits: None,
+            resource_limits: None,
         },
         tls: TlsConfig {
             cert: cert_path.to_string_lossy().to_string(),
@@ -773,7 +802,9 @@ async fn test_rate_limiting() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_tls13_only() {
     use trojan_auth::MemoryAuth;
-    use trojan_config::{AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TlsConfig, WebSocketConfig};
+    use trojan_config::{
+        AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TlsConfig, WebSocketConfig,
+    };
     use trojan_server::CancellationToken;
 
     let password = "test_password_123".to_string();
@@ -819,7 +850,7 @@ async fn test_tls13_only() {
             max_connections: None,
             rate_limit: None,
             fallback_pool: None,
-                resource_limits: None,
+            resource_limits: None,
         },
         tls: TlsConfig {
             cert: cert_path.to_string_lossy().to_string(),
@@ -915,7 +946,11 @@ async fn test_udp_relay() {
     // Connect via TLS
     let tcp_stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
     let server_name = ServerName::try_from("localhost").unwrap();
-    let mut tls_stream = server.tls_connector.connect(server_name, tcp_stream).await.unwrap();
+    let mut tls_stream = server
+        .tls_connector
+        .connect(server_name, tcp_stream)
+        .await
+        .unwrap();
 
     // Build Trojan UDP ASSOCIATE request header
     let hash = server.hash();
@@ -931,7 +966,13 @@ async fn test_udp_relay() {
     };
 
     let mut header = BytesMut::new();
-    write_request_header(&mut header, hash.as_bytes(), CMD_UDP_ASSOCIATE, &target_addr).unwrap();
+    write_request_header(
+        &mut header,
+        hash.as_bytes(),
+        CMD_UDP_ASSOCIATE,
+        &target_addr,
+    )
+    .unwrap();
 
     // Send the UDP ASSOCIATE header
     tls_stream.write_all(&header).await.unwrap();
@@ -1046,7 +1087,10 @@ async fn test_udp_idle_timeout() {
     // Connect
     let tcp_stream = tokio::net::TcpStream::connect(addr).await.unwrap();
     let server_name = ServerName::try_from("localhost").unwrap();
-    let mut tls_stream = tls_connector.connect(server_name, tcp_stream).await.unwrap();
+    let mut tls_stream = tls_connector
+        .connect(server_name, tcp_stream)
+        .await
+        .unwrap();
 
     // Send UDP ASSOCIATE request
     let hash = sha224_hex(password);
@@ -1060,7 +1104,13 @@ async fn test_udp_idle_timeout() {
     };
 
     let mut header = BytesMut::new();
-    write_request_header(&mut header, hash.as_bytes(), CMD_UDP_ASSOCIATE, &target_addr).unwrap();
+    write_request_header(
+        &mut header,
+        hash.as_bytes(),
+        CMD_UDP_ASSOCIATE,
+        &target_addr,
+    )
+    .unwrap();
     tls_stream.write_all(&header).await.unwrap();
     tls_stream.flush().await.unwrap();
 
@@ -1088,7 +1138,8 @@ async fn test_udp_idle_timeout() {
     if write_result.is_ok() {
         tls_stream.flush().await.ok();
         let mut buf = vec![0u8; 1024];
-        let read_result = tokio::time::timeout(Duration::from_secs(2), tls_stream.read(&mut buf)).await;
+        let read_result =
+            tokio::time::timeout(Duration::from_secs(2), tls_stream.read(&mut buf)).await;
         match read_result {
             Ok(Ok(0)) => { /* Expected: connection closed */ }
             Ok(Ok(_)) => { /* Server might still have buffered response */ }
@@ -1114,7 +1165,11 @@ async fn test_udp_relay_multiple_packets() {
     // Connect via TLS
     let tcp_stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
     let server_name = ServerName::try_from("localhost").unwrap();
-    let mut tls_stream = server.tls_connector.connect(server_name, tcp_stream).await.unwrap();
+    let mut tls_stream = server
+        .tls_connector
+        .connect(server_name, tcp_stream)
+        .await
+        .unwrap();
 
     // Build Trojan UDP ASSOCIATE request
     let hash = server.hash();
@@ -1129,7 +1184,13 @@ async fn test_udp_relay_multiple_packets() {
     };
 
     let mut header = BytesMut::new();
-    write_request_header(&mut header, hash.as_bytes(), CMD_UDP_ASSOCIATE, &target_addr).unwrap();
+    write_request_header(
+        &mut header,
+        hash.as_bytes(),
+        CMD_UDP_ASSOCIATE,
+        &target_addr,
+    )
+    .unwrap();
     tls_stream.write_all(&header).await.unwrap();
     tls_stream.flush().await.unwrap();
 
@@ -1159,7 +1220,8 @@ async fn test_udp_relay_multiple_packets() {
         assert_eq!(
             std::str::from_utf8(payload).unwrap(),
             expected,
-            "UDP echo response mismatch for packet {}", i
+            "UDP echo response mismatch for packet {}",
+            i
         );
     }
 }
@@ -1259,7 +1321,10 @@ async fn test_tcp_idle_timeout() {
     // Connect
     let tcp_stream = tokio::net::TcpStream::connect(addr).await.unwrap();
     let server_name = ServerName::try_from("localhost").unwrap();
-    let mut tls_stream = tls_connector.connect(server_name, tcp_stream).await.unwrap();
+    let mut tls_stream = tls_connector
+        .connect(server_name, tcp_stream)
+        .await
+        .unwrap();
 
     // Send CONNECT request to the slow echo server
     let hash = sha224_hex(password);

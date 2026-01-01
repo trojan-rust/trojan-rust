@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use tokio_rustls::rustls::{self, server::WebPkiClientVerifier, RootCertStore};
+use tokio_rustls::rustls::{self, RootCertStore, server::WebPkiClientVerifier};
 use tracing::{info, warn};
 use trojan_config::TlsConfig;
 
@@ -15,14 +15,12 @@ pub fn load_tls_config(cfg: &TlsConfig) -> Result<rustls::ServerConfig, ServerEr
 
     // Build TLS versions based on config
     // Use static slices to avoid heap allocation
-    let versions: &[&'static rustls::SupportedProtocolVersion] = match (
-        cfg.min_version.as_str(),
-        cfg.max_version.as_str(),
-    ) {
-        ("tls13", "tls13") => &[&rustls::version::TLS13],
-        ("tls12", "tls12") => &[&rustls::version::TLS12],
-        _ => &[&rustls::version::TLS12, &rustls::version::TLS13],
-    };
+    let versions: &[&'static rustls::SupportedProtocolVersion] =
+        match (cfg.min_version.as_str(), cfg.max_version.as_str()) {
+            ("tls13", "tls13") => &[&rustls::version::TLS13],
+            ("tls12", "tls12") => &[&rustls::version::TLS12],
+            _ => &[&rustls::version::TLS12, &rustls::version::TLS13],
+        };
 
     // Get default crypto provider
     let default_provider = rustls::crypto::CryptoProvider::get_default()
@@ -127,10 +125,10 @@ fn load_private_key(path: &str) -> Result<rustls::pki_types::PrivateKeyDer<'stat
     loop {
         match rustls_pemfile::read_one(&mut reader)? {
             Some(rustls_pemfile::Item::Pkcs8Key(key)) => {
-                return Ok(rustls::pki_types::PrivateKeyDer::Pkcs8(key))
+                return Ok(rustls::pki_types::PrivateKeyDer::Pkcs8(key));
             }
             Some(rustls_pemfile::Item::Pkcs1Key(key)) => {
-                return Ok(rustls::pki_types::PrivateKeyDer::Pkcs1(key))
+                return Ok(rustls::pki_types::PrivateKeyDer::Pkcs1(key));
             }
             Some(_) => continue,
             None => break,

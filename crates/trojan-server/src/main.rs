@@ -5,9 +5,9 @@ use clap::Parser;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 use trojan_auth::{MemoryAuth, ReloadableAuth};
-use trojan_config::{apply_overrides, load_config, validate_config, CliOverrides};
+use trojan_config::{CliOverrides, apply_overrides, load_config, validate_config};
 use trojan_metrics::init_prometheus;
-use trojan_server::{run_with_shutdown, CancellationToken};
+use trojan_server::{CancellationToken, run_with_shutdown};
 
 #[derive(Parser, Debug)]
 #[command(name = "trojan-server", version, about = "Trojan server in Rust")]
@@ -110,12 +110,15 @@ async fn reload_signal_handler(
     overrides: CliOverrides,
     auth: Arc<ReloadableAuth>,
 ) {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
 
     let mut sighup = match signal(SignalKind::hangup()) {
         Ok(sig) => sig,
         Err(e) => {
-            warn!("failed to install SIGHUP handler: {}, config reload disabled", e);
+            warn!(
+                "failed to install SIGHUP handler: {}, config reload disabled",
+                e
+            );
             return;
         }
     };

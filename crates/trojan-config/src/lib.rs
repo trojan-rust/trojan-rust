@@ -322,11 +322,14 @@ pub fn apply_overrides(config: &mut Config, overrides: &CliOverrides) {
         if max == 0 {
             config.server.rate_limit = None;
         } else {
-            let rl = config.server.rate_limit.get_or_insert_with(|| RateLimitConfig {
-                max_connections_per_ip: default_rate_limit_max_connections(),
-                window_secs: default_rate_limit_window_secs(),
-                cleanup_interval_secs: default_rate_limit_cleanup_secs(),
-            });
+            let rl = config
+                .server
+                .rate_limit
+                .get_or_insert_with(|| RateLimitConfig {
+                    max_connections_per_ip: default_rate_limit_max_connections(),
+                    window_secs: default_rate_limit_window_secs(),
+                    cleanup_interval_secs: default_rate_limit_cleanup_secs(),
+                });
             rl.max_connections_per_ip = max;
         }
     }
@@ -455,8 +458,16 @@ pub fn validate_config(config: &Config) -> Result<(), ConfigError> {
         )));
     }
     // tls13 > tls12
-    let min_ord = if config.tls.min_version == "tls13" { 1 } else { 0 };
-    let max_ord = if config.tls.max_version == "tls13" { 1 } else { 0 };
+    let min_ord = if config.tls.min_version == "tls13" {
+        1
+    } else {
+        0
+    };
+    let max_ord = if config.tls.max_version == "tls13" {
+        1
+    } else {
+        0
+    };
     if min_ord > max_ord {
         return Err(ConfigError::Validation(
             "tls.min_version cannot be greater than tls.max_version".into(),
