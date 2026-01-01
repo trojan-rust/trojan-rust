@@ -62,23 +62,21 @@ impl MockEchoServer {
         let addr = listener.local_addr().unwrap();
 
         let handle = thread::spawn(move || {
-            for stream in listener.incoming() {
-                if let Ok(mut stream) = stream {
-                    thread::spawn(move || {
-                        let mut buf = [0u8; 4096];
-                        loop {
-                            match stream.read(&mut buf) {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    if stream.write_all(&buf[..n]).is_err() {
-                                        break;
-                                    }
+            for mut stream in listener.incoming().flatten() {
+                thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        match stream.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                if stream.write_all(&buf[..n]).is_err() {
+                                    break;
                                 }
-                                Err(_) => break,
                             }
+                            Err(_) => break,
                         }
-                    });
-                }
+                    }
+                });
             }
         });
 
@@ -101,19 +99,17 @@ impl MockHttpServer {
         let addr = listener.local_addr().unwrap();
 
         let handle = thread::spawn(move || {
-            for stream in listener.incoming() {
-                if let Ok(mut stream) = stream {
-                    let response = response.to_string();
-                    thread::spawn(move || {
-                        let mut buf = [0u8; 4096];
-                        // Read request (we don't care about it)
-                        let _ = stream.read(&mut buf);
-                        // Send response
-                        let _ = stream.write_all(response.as_bytes());
-                        // Shutdown write side to signal end of response
-                        let _ = stream.shutdown(std::net::Shutdown::Write);
-                    });
-                }
+            for mut stream in listener.incoming().flatten() {
+                let response = response.to_string();
+                thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    // Read request (we don't care about it)
+                    let _ = stream.read(&mut buf);
+                    // Send response
+                    let _ = stream.write_all(response.as_bytes());
+                    // Shutdown write side to signal end of response
+                    let _ = stream.shutdown(std::net::Shutdown::Write);
+                });
             }
         });
 
@@ -214,7 +210,7 @@ impl TestServer {
             },
         };
 
-        let auth = MemoryAuth::from_plain(&config.auth.passwords);
+        let auth = MemoryAuth::from_passwords(&config.auth.passwords);
 
         // Spawn server in background
         let config_clone = config.clone();
@@ -456,7 +452,7 @@ async fn test_graceful_shutdown() {
         },
     };
 
-    let auth = MemoryAuth::from_plain(&config.auth.passwords);
+    let auth = MemoryAuth::from_passwords(&config.auth.passwords);
     let shutdown = CancellationToken::new();
     let shutdown_trigger = shutdown.clone();
 
@@ -608,7 +604,7 @@ async fn test_max_connections_limit() {
         },
     };
 
-    let auth = MemoryAuth::from_plain(&config.auth.passwords);
+    let auth = MemoryAuth::from_passwords(&config.auth.passwords);
     let shutdown = CancellationToken::new();
     let shutdown_trigger = shutdown.clone();
 
@@ -748,7 +744,7 @@ async fn test_rate_limiting() {
         },
     };
 
-    let auth = MemoryAuth::from_plain(&config.auth.passwords);
+    let auth = MemoryAuth::from_passwords(&config.auth.passwords);
     let shutdown_trigger = CancellationToken::new();
     let shutdown = shutdown_trigger.clone();
     let server_config = config.clone();
@@ -871,7 +867,7 @@ async fn test_tls13_only() {
         },
     };
 
-    let auth = MemoryAuth::from_plain(&config.auth.passwords);
+    let auth = MemoryAuth::from_passwords(&config.auth.passwords);
     let shutdown_trigger = CancellationToken::new();
     let shutdown = shutdown_trigger.clone();
     let server_config = config.clone();
@@ -911,16 +907,11 @@ impl MockUdpEchoServer {
 
         let handle = thread::spawn(move || {
             let mut buf = [0u8; 4096];
-            loop {
-                match socket.recv_from(&mut buf) {
-                    Ok((n, src)) => {
-                        // Echo back with "ECHO:" prefix
-                        let mut response = Vec::from(b"ECHO:".as_slice());
-                        response.extend_from_slice(&buf[..n]);
-                        let _ = socket.send_to(&response, src);
-                    }
-                    Err(_) => break,
-                }
+            while let Ok((n, src)) = socket.recv_from(&mut buf) {
+                // Echo back with "ECHO:" prefix
+                let mut response = Vec::from(b"ECHO:".as_slice());
+                response.extend_from_slice(&buf[..n]);
+                let _ = socket.send_to(&response, src);
             }
         });
 
@@ -1063,7 +1054,7 @@ async fn test_udp_idle_timeout() {
         },
     };
 
-    let auth = MemoryAuth::from_plain(&config.auth.passwords);
+    let auth = MemoryAuth::from_passwords(&config.auth.passwords);
     tokio::spawn(async move {
         let _ = trojan_server::run(config, auth).await;
     });
@@ -1239,11 +1230,9 @@ async fn test_tcp_idle_timeout() {
 
     // Echo server that delays response indefinitely
     thread::spawn(move || {
-        for stream in listener.incoming() {
-            if let Ok(_stream) = stream {
-                // Just hold the connection, don't read or write
-                thread::sleep(Duration::from_secs(60));
-            }
+        for _stream in listener.incoming().flatten() {
+            // Just hold the connection, don't read or write
+            thread::sleep(Duration::from_secs(60));
         }
     });
 
@@ -1297,7 +1286,7 @@ async fn test_tcp_idle_timeout() {
         },
     };
 
-    let auth = MemoryAuth::from_plain(&config.auth.passwords);
+    let auth = MemoryAuth::from_passwords(&config.auth.passwords);
     tokio::spawn(async move {
         let _ = trojan_server::run(config, auth).await;
     });
