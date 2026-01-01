@@ -1,0 +1,40 @@
+[package]
+name = "trojan-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "A Rust implementation of the Trojan protocol"
+keywords = ["trojan", "proxy", "tls", "network"]
+categories = ["network-programming"]
+
+[workspace]
+resolver = "2"
+members = [
+  "crates/trojan-core",
+  "crates/trojan-proto",
+  "crates/trojan-auth",
+  "crates/trojan-config",
+  "crates/trojan-metrics",
+  "crates/trojan-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+authors = ["trojan-rust <164051043+trojan-rust@users.noreply.github.com>"]
+repository = "https://github.com/trojan-rs/trojan-rs"
+homepage = "https://github.com/trojan-rs/trojan-rs"
+documentation = "https://docs.rs/trojan-rs"
+
+[dependencies]
+trojan-core = { version = "0.1.0", path = "crates/trojan-core" }
+trojan-proto = { version = "0.1.0", path = "crates/trojan-proto" }
+trojan-auth = { version = "0.1.0", path = "crates/trojan-auth" }
+trojan-config = { version = "0.1.0", path = "crates/trojan-config" }
+trojan-metrics = { version = "0.1.0", path = "crates/trojan-metrics" }
+trojan-server = { version = "0.1.0", path = "crates/trojan-server" }

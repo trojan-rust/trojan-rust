@@ -1,0 +1,95 @@
+//! Default configuration values.
+//!
+//! Centralized default constants for use across all crates.
+
+// ============================================================================
+// Timeout Defaults
+// ============================================================================
+
+/// Default TCP idle timeout in seconds.
+pub const DEFAULT_TCP_TIMEOUT_SECS: u64 = 600;
+/// Default UDP timeout in seconds.
+pub const DEFAULT_UDP_TIMEOUT_SECS: u64 = 60;
+/// Default graceful shutdown timeout in seconds.
+pub const DEFAULT_SHUTDOWN_TIMEOUT_SECS: u64 = 30;
+
+// ============================================================================
+// Buffer/Size Defaults
+// ============================================================================
+
+/// Default maximum UDP payload size (8 KiB).
+pub const DEFAULT_MAX_UDP_PAYLOAD: usize = 8192;
+/// Default maximum UDP buffer bytes for TCP->UDP framing.
+pub const DEFAULT_MAX_UDP_BUFFER_BYTES: usize = 65536;
+/// Default maximum header bytes.
+pub const DEFAULT_MAX_HEADER_BYTES: usize = 8192;
+/// Default relay buffer size.
+pub const DEFAULT_RELAY_BUFFER_SIZE: usize = 8192;
+/// Default TCP socket send buffer size (0 = OS default).
+pub const DEFAULT_TCP_SEND_BUFFER: usize = 0;
+/// Default TCP socket receive buffer size (0 = OS default).
+pub const DEFAULT_TCP_RECV_BUFFER: usize = 0;
+
+// ============================================================================
+// Connection Defaults
+// ============================================================================
+
+/// Default TCP listener backlog.
+pub const DEFAULT_CONNECTION_BACKLOG: u32 = 1024;
+
+// ============================================================================
+// Rate Limit Defaults
+// ============================================================================
+
+/// Default max connections per IP for rate limiting.
+pub const DEFAULT_RATE_LIMIT_MAX_CONNECTIONS: u32 = 10;
+/// Default rate limit window in seconds.
+pub const DEFAULT_RATE_LIMIT_WINDOW_SECS: u64 = 60;
+/// Default rate limit cleanup interval in seconds.
+pub const DEFAULT_RATE_LIMIT_CLEANUP_SECS: u64 = 300;
+
+// ============================================================================
+// Connection Pool Defaults
+// ============================================================================
+
+/// Default max idle connections in pool.
+pub const DEFAULT_POOL_MAX_IDLE: usize = 10;
+/// Default max age of pooled connections in seconds.
+pub const DEFAULT_POOL_MAX_AGE_SECS: u64 = 300;
+/// Default warm-fill batch size per cycle.
+pub const DEFAULT_POOL_FILL_BATCH: usize = 2;
+/// Default delay (ms) between warm-fill connection attempts.
+pub const DEFAULT_POOL_FILL_DELAY_MS: u64 = 50;
+
+// ============================================================================
+// TLS Defaults
+// ============================================================================
+
+/// Default minimum TLS version.
+pub const DEFAULT_TLS_MIN_VERSION: &str = "tls12";
+/// Default maximum TLS version.
+pub const DEFAULT_TLS_MAX_VERSION: &str = "tls13";
+/// Default TLS handshake timeout in seconds.
+pub const DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
+
+// ============================================================================
+// WebSocket Defaults
+// ============================================================================
+
+/// Default WebSocket enabled.
+pub const DEFAULT_WS_ENABLED: bool = true;
+/// Default WebSocket mode: "mixed" or "split".
+pub const DEFAULT_WS_MODE: &str = "mixed";
+/// Default WebSocket path.
+pub const DEFAULT_WS_PATH: &str = "/";
+/// Default max WebSocket frame size.
+pub const DEFAULT_WS_MAX_FRAME_BYTES: usize = 1 << 20;
+
+// ============================================================================
+// Protocol Constants
+// ============================================================================
+
+/// Trojan protocol hash length (SHA-224 hex = 56 chars).
+pub const HASH_LEN: usize = 56;
+/// Minimum header bytes (hash + CRLF + cmd + atyp + ipv4 + port + CRLF).
+pub const MIN_HEADER_BYTES: usize = HASH_LEN + 2 + 1 + 1 + 4 + 2 + 2;
