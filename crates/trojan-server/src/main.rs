@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Create reloadable auth backend
-    let auth = Arc::new(ReloadableAuth::new(MemoryAuth::from_plain(
+    let auth = Arc::new(ReloadableAuth::new(MemoryAuth::from_passwords(
         &config.auth.passwords,
     )));
 
@@ -146,7 +146,7 @@ fn reload_config(
     validate_config(&config)?;
 
     // Reload auth passwords
-    let new_auth = MemoryAuth::from_plain(&config.auth.passwords);
+    let new_auth = MemoryAuth::from_passwords(&config.auth.passwords);
     auth.reload(new_auth);
     info!(
         password_count = config.auth.passwords.len(),

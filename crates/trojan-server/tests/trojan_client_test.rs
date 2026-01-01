@@ -42,23 +42,21 @@ impl MockEchoServer {
         let addr = listener.local_addr().unwrap();
 
         let handle = thread::spawn(move || {
-            for stream in listener.incoming() {
-                if let Ok(mut stream) = stream {
-                    thread::spawn(move || {
-                        let mut buf = [0u8; 4096];
-                        loop {
-                            match stream.read(&mut buf) {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    if stream.write_all(&buf[..n]).is_err() {
-                                        break;
-                                    }
+            for mut stream in listener.incoming().flatten() {
+                thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        match stream.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                if stream.write_all(&buf[..n]).is_err() {
+                                    break;
                                 }
-                                Err(_) => break,
                             }
+                            Err(_) => break,
                         }
-                    });
-                }
+                    }
+                });
             }
         });
 
@@ -84,16 +82,14 @@ impl MockHttpServer {
         let addr = listener.local_addr().unwrap();
 
         let handle = thread::spawn(move || {
-            for stream in listener.incoming() {
-                if let Ok(mut stream) = stream {
-                    let response = response.to_string();
-                    thread::spawn(move || {
-                        let mut buf = [0u8; 4096];
-                        let _ = stream.read(&mut buf);
-                        let _ = stream.write_all(response.as_bytes());
-                        let _ = stream.shutdown(std::net::Shutdown::Write);
-                    });
-                }
+            for mut stream in listener.incoming().flatten() {
+                let response = response.to_string();
+                thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    let _ = stream.read(&mut buf);
+                    let _ = stream.write_all(response.as_bytes());
+                    let _ = stream.shutdown(std::net::Shutdown::Write);
+                });
             }
         });
 
@@ -171,7 +167,7 @@ impl TestServer {
             },
         };
 
-        let auth = MemoryAuth::from_plain(&config.auth.passwords);
+        let auth = MemoryAuth::from_passwords(&config.auth.passwords);
 
         // Spawn server in background
         let config_clone = config.clone();
@@ -330,10 +326,7 @@ impl TrojanClient {
         let mut response = [0u8; 2];
         stream.read_exact(&mut response)?;
         if response[0] != 0x05 || response[1] != 0x00 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "SOCKS5 auth failed",
-            ));
+            return Err(std::io::Error::other("SOCKS5 auth failed"));
         }
 
         // 3. Send connect request
@@ -355,10 +348,10 @@ impl TrojanClient {
         let mut response = [0u8; 10]; // Minimum response size for IPv4
         stream.read_exact(&mut response)?;
         if response[0] != 0x05 || response[1] != 0x00 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("SOCKS5 connect failed: {:02x}", response[1]),
-            ));
+            return Err(std::io::Error::other(format!(
+                "SOCKS5 connect failed: {:02x}",
+                response[1]
+            )));
         }
 
         Ok(stream)
