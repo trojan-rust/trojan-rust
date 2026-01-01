@@ -9,7 +9,7 @@ use tokio::net::UdpSocket;
 use tokio::time::Instant;
 use tracing::{debug, warn};
 use trojan_metrics::{record_bytes_received, record_bytes_sent, record_udp_packet};
-use trojan_proto::{parse_udp_packet, write_udp_packet, ParseResult};
+use trojan_proto::{ParseResult, parse_udp_packet, write_udp_packet};
 
 use crate::error::ServerError;
 use crate::resolve::{address_from_socket, resolve_address};

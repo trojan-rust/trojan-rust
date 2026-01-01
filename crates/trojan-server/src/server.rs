@@ -17,13 +17,14 @@ use crate::rate_limit::RateLimiter;
 use crate::resolve::resolve_sockaddr;
 use crate::state::ServerState;
 use crate::tls::load_tls_config;
-use crate::util::{create_listener, ConnectionGuard, ConnectionTracker};
+use crate::util::{ConnectionGuard, ConnectionTracker, create_listener};
 use trojan_auth::AuthBackend;
 use trojan_config::Config;
 use trojan_core::defaults;
 use trojan_metrics::{
-    record_connection_accepted, record_connection_closed, record_connection_rejected,
-    record_error, record_tls_handshake_duration, set_connection_queue_depth, ERROR_TLS_HANDSHAKE,
+    ERROR_TLS_HANDSHAKE, record_connection_accepted, record_connection_closed,
+    record_connection_rejected, record_error, record_tls_handshake_duration,
+    set_connection_queue_depth,
 };
 
 /// Default graceful shutdown timeout.

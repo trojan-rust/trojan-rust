@@ -28,8 +28,12 @@ where
     let mut backend = match &state.fallback_pool {
         Some(pool) => pool.get().await?,
         None => {
-            connect_with_buffers(state.fallback_addr, state.tcp_send_buffer, state.tcp_recv_buffer)
-                .await?
+            connect_with_buffers(
+                state.fallback_addr,
+                state.tcp_send_buffer,
+                state.tcp_recv_buffer,
+            )
+            .await?
         }
     };
 

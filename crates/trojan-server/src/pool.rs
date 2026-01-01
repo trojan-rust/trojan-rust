@@ -188,9 +188,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
 
-        std::thread::spawn(move || {
-            while let Ok((_, _)) = listener.accept() {}
-        });
+        std::thread::spawn(move || while let Ok((_, _)) = listener.accept() {});
 
         let pool = ConnectionPool::new(addr, 2, 60, 2, 0);
 
