@@ -1,0 +1,21 @@
+[package]
+name = "trojan-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Configuration loading and validation for trojan-rs"
+keywords = ["trojan", "proxy", "config"]
+categories = ["network-programming", "config"]
+
+[dependencies]
+trojan-core = { version = "0.1.0", path = "../trojan-core" }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.8"
+thiserror = "1"

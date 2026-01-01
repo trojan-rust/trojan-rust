@@ -1,0 +1,70 @@
+[package]
+name = "trojan-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "High-performance Trojan protocol server"
+keywords = ["trojan", "proxy", "tls", "server"]
+categories = ["network-programming"]
+
+[features]
+default = ["ws"]
+ws = []
+
+[lib]
+name = "trojan_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "trojan-server"
+path = "src/main.rs"
+
+[dependencies]
+async-trait = "0.1"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+metrics = "0.23"
+metrics-exporter-prometheus = "0.14"
+rustls = "0.23"
+rustls-pemfile = "2"
+rustls-pki-types = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+thiserror = "1"
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "io-util",
+    "time",
+    "signal",
+    "sync",
+] }
+tokio-rustls = "0.26"
+tokio-util = "0.7"
+socket2 = "0.5"
+toml = "0.8"
+parking_lot = "0.12"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# workspace crates
+trojan-core = { version = "0.1.0", path = "../trojan-core" }
+trojan-proto = { version = "0.1.0", path = "../trojan-proto" }
+trojan-auth = { version = "0.1.0", path = "../trojan-auth" }
+trojan-config = { version = "0.1.0", path = "../trojan-config" }
+trojan-metrics = { version = "0.1.0", path = "../trojan-metrics" }
+
+[dev-dependencies]
+rcgen = "0.13"
+tempfile = "3"
+serde_json = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

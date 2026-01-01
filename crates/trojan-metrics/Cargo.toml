@@ -1,0 +1,17 @@
+[package]
+name = "trojan-metrics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Prometheus metrics for trojan-rs"
+keywords = ["trojan", "proxy", "metrics", "prometheus"]
+categories = ["network-programming"]
+
+[dependencies]
+trojan-core = { version = "0.1.0", path = "../trojan-core" }
+metrics = "0.23"
+metrics-exporter-prometheus = "0.14"
