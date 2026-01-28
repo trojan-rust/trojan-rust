@@ -25,7 +25,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_rustls::TlsConnector;
 use trojan_auth::{MemoryAuth, sha224_hex};
 use trojan_config::{
-    AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TlsConfig, WebSocketConfig,
+    AnalyticsConfig, AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TlsConfig,
+    WebSocketConfig,
 };
 use trojan_proto::{
     AddressRef, CMD_CONNECT, CMD_UDP_ASSOCIATE, HostRef, write_request_header, write_udp_packet,
@@ -206,6 +207,7 @@ impl TestServer {
             },
             websocket: WebSocketConfig::default(),
             metrics: MetricsConfig { listen: None },
+            analytics: AnalyticsConfig::default(),
             logging: LoggingConfig {
                 level: Some("warn".to_string()),
                 ..Default::default()
