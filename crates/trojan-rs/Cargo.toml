@@ -1,0 +1,15 @@
+[package]
+name = "trojan-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "A Rust implementation of the Trojan protocol (re-exports trojan crate)"
+keywords = ["trojan", "proxy", "tls", "network"]
+categories = ["network-programming"]
+
+[dependencies]
+trojan = { version = "0.1.3", path = "../.." }
