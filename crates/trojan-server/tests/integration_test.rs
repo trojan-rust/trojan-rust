@@ -208,6 +208,7 @@ impl TestServer {
             metrics: MetricsConfig { listen: None },
             logging: LoggingConfig {
                 level: Some("warn".to_string()),
+                ..Default::default()
             },
         };
 
@@ -451,6 +452,7 @@ async fn test_graceful_shutdown() {
         metrics: MetricsConfig { listen: None },
         logging: LoggingConfig {
             level: Some("warn".to_string()),
+            ..Default::default()
         },
     };
 
@@ -603,6 +605,7 @@ async fn test_max_connections_limit() {
         metrics: MetricsConfig { listen: None },
         logging: LoggingConfig {
             level: Some("warn".to_string()),
+            ..Default::default()
         },
     };
 
@@ -743,6 +746,7 @@ async fn test_rate_limiting() {
         metrics: MetricsConfig { listen: None },
         logging: LoggingConfig {
             level: Some("warn".to_string()),
+            ..Default::default()
         },
     };
 
@@ -866,6 +870,7 @@ async fn test_tls13_only() {
         metrics: MetricsConfig { listen: None },
         logging: LoggingConfig {
             level: Some("warn".to_string()),
+            ..Default::default()
         },
     };
 
@@ -1053,6 +1058,7 @@ async fn test_udp_idle_timeout() {
         metrics: MetricsConfig { listen: None },
         logging: LoggingConfig {
             level: Some("warn".to_string()),
+            ..Default::default()
         },
     };
 
@@ -1285,6 +1291,7 @@ async fn test_tcp_idle_timeout() {
         metrics: MetricsConfig { listen: None },
         logging: LoggingConfig {
             level: Some("warn".to_string()),
+            ..Default::default()
         },
     };
 

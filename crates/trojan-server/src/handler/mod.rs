@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use bytes::BytesMut;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
-use tracing::{debug, warn};
+use tracing::{debug, instrument, warn};
 use trojan_auth::AuthBackend;
 use trojan_metrics::{
     record_auth_failure, record_auth_success, record_connect_request, record_fallback,
@@ -31,6 +31,7 @@ use crate::state::ServerState;
 use crate::ws::{WsInspect, accept_ws, inspect_mixed, send_reject, WsIo, INITIAL_BUFFER_SIZE};
 
 /// Handle a new connection after TLS handshake.
+#[instrument(level = "debug", skip(stream, state, auth))]
 pub async fn handle_conn<S, A>(
     stream: S,
     state: Arc<ServerState>,

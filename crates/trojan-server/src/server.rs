@@ -2,13 +2,14 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, info_span, warn, Instrument};
 
 use crate::error::ServerError;
 use crate::handler::handle_conn;
@@ -29,6 +30,15 @@ use trojan_metrics::{
 
 /// Default graceful shutdown timeout.
 pub const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Global connection ID counter.
+static CONN_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Generate a unique connection ID.
+#[inline]
+fn next_conn_id() -> u64 {
+    CONN_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Run the server with a cancellation token for graceful shutdown.
 pub async fn run_with_shutdown(
@@ -181,48 +191,58 @@ pub async fn run_with_shutdown(
                             None => None,
                         };
 
+                        let conn_id = next_conn_id();
                         let acceptor = ws_acceptor.clone();
                         let state = ws_state.clone();
                         let auth = ws_auth.clone();
                         ws_tracker.increment();
                         let guard = ConnectionGuard::new(ws_tracker.clone());
 
-                        tokio::spawn(async move {
-                            let _guard = guard;
-                            let _permit = permit;
-                            record_connection_accepted();
-                            let start = Instant::now();
+                        let span = info_span!("conn", id = conn_id, peer = %peer, transport = "ws");
+                        tokio::spawn(
+                            async move {
+                                let _guard = guard;
+                                let _permit = permit;
+                                record_connection_accepted();
+                                let start = Instant::now();
 
-                            let result = async {
-                                let tls_start = Instant::now();
-                                let tls_timeout = Duration::from_secs(defaults::DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS);
-                                match tokio::time::timeout(tls_timeout, acceptor.accept(tcp)).await {
-                                    Ok(Ok(tls)) => {
-                                        let tls_duration = tls_start.elapsed().as_secs_f64();
-                                        record_tls_handshake_duration(tls_duration);
-                                        crate::handler::handle_ws_only(tls, state, auth, peer).await
-                                    }
-                                    Ok(Err(err)) => {
-                                        record_error(ERROR_TLS_HANDSHAKE);
-                                        warn!(peer = %peer, error = %err, "TLS handshake failed");
-                                        Ok(())
-                                    }
-                                    Err(_) => {
-                                        record_error(ERROR_TLS_HANDSHAKE);
-                                        warn!(peer = %peer, timeout_secs = tls_timeout.as_secs(), "TLS handshake timed out");
-                                        Ok(())
+                                let result = async {
+                                    let tls_start = Instant::now();
+                                    let tls_timeout =
+                                        Duration::from_secs(defaults::DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS);
+                                    match tokio::time::timeout(tls_timeout, acceptor.accept(tcp)).await
+                                    {
+                                        Ok(Ok(tls)) => {
+                                            let tls_duration = tls_start.elapsed().as_secs_f64();
+                                            record_tls_handshake_duration(tls_duration);
+                                            crate::handler::handle_ws_only(tls, state, auth, peer).await
+                                        }
+                                        Ok(Err(err)) => {
+                                            record_error(ERROR_TLS_HANDSHAKE);
+                                            warn!(error = %err, "TLS handshake failed");
+                                            Ok(())
+                                        }
+                                        Err(_) => {
+                                            record_error(ERROR_TLS_HANDSHAKE);
+                                            warn!(
+                                                timeout_secs = tls_timeout.as_secs(),
+                                                "TLS handshake timed out"
+                                            );
+                                            Ok(())
+                                        }
                                     }
                                 }
-                            }
-                            .await;
+                                .await;
 
-                            let duration_secs = start.elapsed().as_secs_f64();
-                            record_connection_closed(duration_secs);
+                                let duration_secs = start.elapsed().as_secs_f64();
+                                record_connection_closed(duration_secs);
 
-                            if let Err(ref err) = result {
-                                warn!(peer = %peer, error = %err, "connection error");
+                                if let Err(ref err) = result {
+                                    warn!(error = %err, "connection error");
+                                }
                             }
-                        });
+                            .instrument(span),
+                        );
                     }
                 }
             }
@@ -277,7 +297,8 @@ pub async fn run_with_shutdown(
                     None => None,
                 };
 
-                debug!(peer = %peer, "new connection");
+                let conn_id = next_conn_id();
+                debug!(conn_id, peer = %peer, "new connection");
 
                 let acceptor = acceptor.clone();
                 let state = state.clone();
@@ -285,47 +306,52 @@ pub async fn run_with_shutdown(
                 tracker.increment();
                 let guard = ConnectionGuard::new(tracker.clone());
 
-                tokio::spawn(async move {
-                    let _guard = guard; // ensure decrement on drop
-                    let _permit = permit; // hold permit until connection closes
-                    record_connection_accepted();
-                    let start = Instant::now();
+                let span = info_span!("conn", id = conn_id, peer = %peer);
+                tokio::spawn(
+                    async move {
+                        let _guard = guard; // ensure decrement on drop
+                        let _permit = permit; // hold permit until connection closes
+                        record_connection_accepted();
+                        let start = Instant::now();
 
-                    let result = async {
-                        // Measure TLS handshake duration with timeout
-                        let tls_start = Instant::now();
-                        let tls_timeout = Duration::from_secs(defaults::DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS);
-                        match tokio::time::timeout(tls_timeout, acceptor.accept(tcp)).await {
-                            Ok(Ok(tls)) => {
-                                let tls_duration = tls_start.elapsed().as_secs_f64();
-                                record_tls_handshake_duration(tls_duration);
-                                debug!(peer = %peer, duration_ms = tls_duration * 1000.0, "TLS handshake completed");
-                                handle_conn(tls, state, auth, peer).await
-                            }
-                            Ok(Err(err)) => {
-                                record_error(ERROR_TLS_HANDSHAKE);
-                                warn!(peer = %peer, error = %err, "TLS handshake failed");
-                                Ok(())
-                            }
-                            Err(_) => {
-                                record_error(ERROR_TLS_HANDSHAKE);
-                                warn!(peer = %peer, timeout_secs = tls_timeout.as_secs(), "TLS handshake timed out");
-                                Ok(())
+                        let result = async {
+                            // Measure TLS handshake duration with timeout
+                            let tls_start = Instant::now();
+                            let tls_timeout =
+                                Duration::from_secs(defaults::DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS);
+                            match tokio::time::timeout(tls_timeout, acceptor.accept(tcp)).await {
+                                Ok(Ok(tls)) => {
+                                    let tls_duration = tls_start.elapsed().as_secs_f64();
+                                    record_tls_handshake_duration(tls_duration);
+                                    debug!(duration_ms = tls_duration * 1000.0, "TLS handshake completed");
+                                    handle_conn(tls, state, auth, peer).await
+                                }
+                                Ok(Err(err)) => {
+                                    record_error(ERROR_TLS_HANDSHAKE);
+                                    warn!(error = %err, "TLS handshake failed");
+                                    Ok(())
+                                }
+                                Err(_) => {
+                                    record_error(ERROR_TLS_HANDSHAKE);
+                                    warn!(timeout_secs = tls_timeout.as_secs(), "TLS handshake timed out");
+                                    Ok(())
+                                }
                             }
                         }
-                    }
-                    .await;
+                        .await;
 
-                    let duration_secs = start.elapsed().as_secs_f64();
-                    record_connection_closed(duration_secs);
+                        let duration_secs = start.elapsed().as_secs_f64();
+                        record_connection_closed(duration_secs);
 
-                    if let Err(ref err) = result {
-                        record_error(err.error_type());
-                        warn!(peer = %peer, duration_secs, error = %err, "connection closed with error");
-                    } else {
-                        debug!(peer = %peer, duration_secs, "connection closed");
+                        if let Err(ref err) = result {
+                            record_error(err.error_type());
+                            warn!(duration_secs, error = %err, "connection closed with error");
+                        } else {
+                            debug!(duration_secs, "connection closed");
+                        }
                     }
-                });
+                    .instrument(span),
+                );
             }
         }
     }

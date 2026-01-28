@@ -4,6 +4,8 @@ use std::borrow::Cow;
 use std::fmt::Write;
 use std::net::SocketAddr;
 
+use tokio::time::Instant;
+use trojan_metrics::record_dns_resolve_duration;
 use trojan_proto::{AddressRef, HostRef};
 
 use crate::error::ServerError;
@@ -30,7 +32,12 @@ pub async fn resolve_address(address: &AddressRef<'_>) -> Result<SocketAddr, Ser
             // Use stack buffer to avoid heap allocation (domain max 255 + ":" + port max 5 = 261)
             let mut buf = StackString::<270>::new();
             let _ = write!(buf, "{}:{}", host, address.port);
-            resolve_sockaddr(buf.as_str()).await
+
+            // Measure DNS resolution time
+            let start = Instant::now();
+            let result = resolve_sockaddr(buf.as_str()).await;
+            record_dns_resolve_duration(start.elapsed().as_secs_f64());
+            result
         }
     }
 }
