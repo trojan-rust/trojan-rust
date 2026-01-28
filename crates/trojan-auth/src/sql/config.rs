@@ -36,6 +36,12 @@ pub struct SqlAuthConfig {
 
     /// Maximum pending traffic updates before forced flush.
     pub batch_max_pending: usize,
+
+    /// Whether to enable authentication caching.
+    pub cache_enabled: bool,
+
+    /// Cache TTL (time-to-live) for authenticated users.
+    pub cache_ttl: Duration,
 }
 
 /// How traffic is recorded to the database.
@@ -66,6 +72,8 @@ impl Default for SqlAuthConfig {
             traffic_mode: TrafficRecordingMode::default(),
             batch_flush_interval: Duration::from_secs(30),
             batch_max_pending: 1000,
+            cache_enabled: false,
+            cache_ttl: Duration::from_secs(60), // 1 minute default
         }
     }
 }
@@ -112,6 +120,18 @@ impl SqlAuthConfig {
     /// Builder: set max pending batch size.
     pub fn batch_max_pending(mut self, max: usize) -> Self {
         self.batch_max_pending = max;
+        self
+    }
+
+    /// Builder: enable authentication caching.
+    pub fn cache_enabled(mut self, enabled: bool) -> Self {
+        self.cache_enabled = enabled;
+        self
+    }
+
+    /// Builder: set cache TTL.
+    pub fn cache_ttl(mut self, ttl: Duration) -> Self {
+        self.cache_ttl = ttl;
         self
     }
 }

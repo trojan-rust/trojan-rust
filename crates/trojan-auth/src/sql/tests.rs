@@ -393,3 +393,123 @@ async fn test_debug_impl_hides_credentials() {
     assert!(debug_str.contains("SqlAuth"));
     assert!(debug_str.contains("db_type"));
 }
+
+/// Create a test SqlAuth with caching enabled.
+async fn setup_test_db_with_cache() -> SqlAuth {
+    let config = SqlAuthConfig::new("sqlite::memory:")
+        .max_connections(1)
+        .traffic_mode(TrafficRecordingMode::Immediate)
+        .cache_enabled(true)
+        .cache_ttl(Duration::from_secs(60));
+
+    SqlAuth::connect(config).await.expect("Failed to connect")
+}
+
+#[tokio::test]
+async fn test_cache_enabled() {
+    let auth = setup_test_db_with_cache().await;
+    assert!(auth.cache_enabled());
+
+    let auth_no_cache = setup_test_db().await;
+    assert!(!auth_no_cache.cache_enabled());
+}
+
+#[tokio::test]
+async fn test_cache_hit() {
+    let auth = setup_test_db_with_cache().await;
+    create_schema(&auth).await;
+    insert_user(&auth, "test_password", Some("user1"), 0, 0, 0, true).await;
+
+    let hash = sha224_hex("test_password");
+
+    // First call - cache miss, queries DB
+    let result1 = auth.verify(&hash).await;
+    assert!(result1.is_ok());
+
+    let stats = auth.cache_stats().unwrap();
+    assert_eq!(stats.misses, 1);
+    assert_eq!(stats.hits, 0);
+
+    // Second call - cache hit
+    let result2 = auth.verify(&hash).await;
+    assert!(result2.is_ok());
+
+    let stats = auth.cache_stats().unwrap();
+    assert_eq!(stats.misses, 1);
+    assert_eq!(stats.hits, 1);
+}
+
+#[tokio::test]
+async fn test_cache_invalidate() {
+    let auth = setup_test_db_with_cache().await;
+    create_schema(&auth).await;
+    insert_user(&auth, "test_password", Some("user1"), 0, 0, 0, true).await;
+
+    let hash = sha224_hex("test_password");
+
+    // Populate cache
+    let _ = auth.verify(&hash).await;
+    assert_eq!(auth.cache_stats().unwrap().size, 1);
+
+    // Invalidate
+    auth.cache_invalidate(&hash);
+    assert_eq!(auth.cache_stats().unwrap().size, 0);
+}
+
+#[tokio::test]
+async fn test_cache_clear() {
+    let auth = setup_test_db_with_cache().await;
+    create_schema(&auth).await;
+    insert_user(&auth, "password1", Some("user1"), 0, 0, 0, true).await;
+    insert_user(&auth, "password2", Some("user2"), 0, 0, 0, true).await;
+
+    // Populate cache
+    let _ = auth.verify(&sha224_hex("password1")).await;
+    let _ = auth.verify(&sha224_hex("password2")).await;
+    assert_eq!(auth.cache_stats().unwrap().size, 2);
+
+    // Clear all
+    auth.cache_clear();
+    assert_eq!(auth.cache_stats().unwrap().size, 0);
+}
+
+#[tokio::test]
+async fn test_cache_does_not_cache_failures() {
+    let auth = setup_test_db_with_cache().await;
+    create_schema(&auth).await;
+
+    let hash = sha224_hex("nonexistent");
+
+    // Try to verify non-existent user
+    let result = auth.verify(&hash).await;
+    assert!(matches!(result, Err(AuthError::Invalid)));
+
+    // Cache should be empty (failures not cached)
+    assert_eq!(auth.cache_stats().unwrap().size, 0);
+}
+
+#[tokio::test]
+async fn test_cache_respects_disabled_user() {
+    let auth = setup_test_db_with_cache().await;
+    create_schema(&auth).await;
+    insert_user(&auth, "test_password", Some("user1"), 0, 0, 0, false).await;
+
+    let hash = sha224_hex("test_password");
+
+    // First call - should fail (disabled)
+    let result = auth.verify(&hash).await;
+    assert!(matches!(result, Err(AuthError::Disabled)));
+
+    // Cache should be empty (disabled user not cached)
+    assert_eq!(auth.cache_stats().unwrap().size, 0);
+}
+
+#[tokio::test]
+async fn test_config_cache_builder() {
+    let config = SqlAuthConfig::new("sqlite::memory:")
+        .cache_enabled(true)
+        .cache_ttl(Duration::from_secs(120));
+
+    assert!(config.cache_enabled);
+    assert_eq!(config.cache_ttl, Duration::from_secs(120));
+}

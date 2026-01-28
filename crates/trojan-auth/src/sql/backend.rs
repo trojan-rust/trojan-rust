@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use sqlx::any::{AnyPoolOptions, AnyRow};
@@ -12,6 +12,7 @@ use crate::error::AuthError;
 use crate::result::{AuthMetadata, AuthResult};
 use crate::traits::AuthBackend;
 
+use super::cache::{AuthCache, CacheStats, CachedUser};
 use super::config::{SqlAuthConfig, TrafficRecordingMode};
 use super::queries;
 use super::traffic::{FlushFn, TrafficRecorder};
@@ -61,6 +62,7 @@ pub struct SqlAuth {
     pool: AnyPool,
     db_type: DatabaseType,
     traffic_recorder: Option<TrafficRecorder>,
+    auth_cache: Option<AuthCache>,
     config: SqlAuthConfig,
 }
 
@@ -104,10 +106,18 @@ impl SqlAuth {
             _ => None,
         };
 
+        // Set up auth cache if enabled
+        let auth_cache = if config.cache_enabled {
+            Some(AuthCache::new(config.cache_ttl))
+        } else {
+            None
+        };
+
         Ok(Self {
             pool,
             db_type,
             traffic_recorder,
+            auth_cache,
             config,
         })
     }
@@ -225,6 +235,39 @@ impl SqlAuth {
     pub fn database_type(&self) -> DatabaseType {
         self.db_type
     }
+
+    /// Check if caching is enabled.
+    pub fn cache_enabled(&self) -> bool {
+        self.auth_cache.is_some()
+    }
+
+    /// Get cache statistics.
+    ///
+    /// Returns `None` if caching is disabled.
+    pub fn cache_stats(&self) -> Option<CacheStats> {
+        self.auth_cache.as_ref().map(|c| c.stats())
+    }
+
+    /// Invalidate cache entry by password hash.
+    pub fn cache_invalidate(&self, hash: &str) {
+        if let Some(ref cache) = self.auth_cache {
+            cache.remove(hash);
+        }
+    }
+
+    /// Invalidate all cache entries for a user.
+    pub fn cache_invalidate_user(&self, user_id: &str) {
+        if let Some(ref cache) = self.auth_cache {
+            cache.invalidate_user(user_id);
+        }
+    }
+
+    /// Clear all cache entries.
+    pub fn cache_clear(&self) {
+        if let Some(ref cache) = self.auth_cache {
+            cache.clear();
+        }
+    }
 }
 
 /// Internal struct for parsed user data.
@@ -239,7 +282,54 @@ struct UserRowData {
 #[async_trait]
 impl AuthBackend for SqlAuth {
     async fn verify(&self, hash: &str) -> Result<AuthResult, AuthError> {
+        // Check cache first if enabled
+        if let Some(ref cache) = self.auth_cache
+            && let Some(cached) = cache.get(hash)
+        {
+            // Re-validate cached data (check expiration and traffic)
+            if !cached.enabled {
+                return Err(AuthError::Disabled);
+            }
+
+            let now = Self::now_unix();
+            if cached.expires_at > 0 && now >= cached.expires_at {
+                // Remove from cache since expired
+                cache.remove(hash);
+                return Err(AuthError::Expired);
+            }
+
+            if cached.traffic_limit > 0 && cached.traffic_used >= cached.traffic_limit {
+                return Err(AuthError::TrafficExceeded);
+            }
+
+            let metadata = AuthMetadata {
+                traffic_limit: cached.traffic_limit as u64,
+                traffic_used: cached.traffic_used as u64,
+                expires_at: cached.expires_at as u64,
+                enabled: cached.enabled,
+            };
+
+            return Ok(AuthResult {
+                user_id: cached.user_id,
+                metadata: Some(metadata),
+            });
+        }
+
+        // Cache miss - query database
         let user = self.verify_user(hash).await?;
+
+        // Cache successful result
+        if let Some(ref cache) = self.auth_cache {
+            let cached_user = CachedUser {
+                user_id: user.user_id.clone(),
+                traffic_limit: user.traffic_limit,
+                traffic_used: user.traffic_used,
+                expires_at: user.expires_at,
+                enabled: user.enabled,
+                cached_at: Instant::now(),
+            };
+            cache.insert(hash.to_string(), cached_user);
+        }
 
         let metadata = AuthMetadata {
             traffic_limit: user.traffic_limit as u64,
@@ -275,6 +365,7 @@ impl std::fmt::Debug for SqlAuth {
             .field("db_type", &self.db_type)
             .field("max_connections", &self.config.max_connections)
             .field("traffic_mode", &self.config.traffic_mode)
+            .field("cache_enabled", &self.config.cache_enabled)
             .finish_non_exhaustive()
     }
 }
