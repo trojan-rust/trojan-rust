@@ -51,6 +51,11 @@ tabled = { version = "0.17", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "auth"
+harness = false
 
 [[bin]]
 name = "trojan-auth"
