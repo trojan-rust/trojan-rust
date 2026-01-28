@@ -120,8 +120,8 @@ impl TestServer {
     async fn start(fallback_addr: SocketAddr) -> Self {
         use trojan_auth::MemoryAuth;
         use trojan_config::{
-            AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TlsConfig,
-            WebSocketConfig,
+            AnalyticsConfig, AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig,
+            TlsConfig, WebSocketConfig,
         };
 
         let password = "test_password_123".to_string();
@@ -168,6 +168,7 @@ impl TestServer {
             },
             websocket: WebSocketConfig::default(),
             metrics: MetricsConfig { listen: None },
+            analytics: AnalyticsConfig::default(),
             logging: LoggingConfig {
                 level: Some("debug".to_string()),
                 ..Default::default()

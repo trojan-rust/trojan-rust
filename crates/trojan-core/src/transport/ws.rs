@@ -11,8 +11,8 @@ use bytes::Bytes;
 use futures_util::{Sink, Stream};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_tungstenite::{
-    tungstenite::{Error as WsError, Message},
     WebSocketStream,
+    tungstenite::{Error as WsError, Message},
 };
 
 /// WebSocket stream adapter that exposes AsyncRead/AsyncWrite using binary frames.

@@ -86,10 +86,7 @@ fn is_musl() -> bool {
         return true;
     }
     // Check ldd output
-    if let Ok(output) = std::process::Command::new("ldd")
-        .arg("--version")
-        .output()
-    {
+    if let Ok(output) = std::process::Command::new("ldd").arg("--version").output() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stdout.contains("musl") || stderr.contains("musl") {
@@ -128,9 +125,7 @@ pub async fn run(args: UpgradeArgs) -> Result<(), Box<dyn std::error::Error + Se
 
     println!("Current version: v{}", current_version);
 
-    let client = Client::builder()
-        .user_agent(USER_AGENT)
-        .build()?;
+    let client = Client::builder().user_agent(USER_AGENT).build()?;
 
     // Get release info
     let (latest_version, assets) = if let Some(ref ver) = args.target {
@@ -191,7 +186,10 @@ pub async fn run(args: UpgradeArgs) -> Result<(), Box<dyn std::error::Error + Se
             println!("Force downgrading...");
         }
         std::cmp::Ordering::Less => {
-            println!("New version available: {} -> {}", current_version, latest_version);
+            println!(
+                "New version available: {} -> {}",
+                current_version, latest_version
+            );
         }
     }
 
@@ -298,7 +296,10 @@ pub async fn run(args: UpgradeArgs) -> Result<(), Box<dyn std::error::Error + Se
     // Use self_replace for safe binary replacement
     self_replace::self_replace(&binary_path)?;
 
-    println!("Upgrade complete: v{} -> {}", current_version, latest_version);
+    println!(
+        "Upgrade complete: v{} -> {}",
+        current_version, latest_version
+    );
     println!("Please restart the service to use the new version.");
 
     Ok(())
@@ -318,12 +319,12 @@ fn extract_tar_gz(
         let path = entry.path()?;
 
         // Look for the binary (might be at root or in a subdirectory)
-        if let Some(name) = path.file_name() {
-            if name == binary_name {
-                let dest_path = dest_dir.join(binary_name);
-                entry.unpack(&dest_path)?;
-                return Ok(dest_path);
-            }
+        if let Some(name) = path.file_name()
+            && name == binary_name
+        {
+            let dest_path = dest_dir.join(binary_name);
+            entry.unpack(&dest_path)?;
+            return Ok(dest_path);
         }
     }
 

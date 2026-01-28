@@ -452,6 +452,7 @@ async fn test_graceful_shutdown() {
         },
         websocket: WebSocketConfig::default(),
         metrics: MetricsConfig { listen: None },
+        analytics: AnalyticsConfig::default(),
         logging: LoggingConfig {
             level: Some("warn".to_string()),
             ..Default::default()
@@ -605,6 +606,7 @@ async fn test_max_connections_limit() {
         },
         websocket: WebSocketConfig::default(),
         metrics: MetricsConfig { listen: None },
+        analytics: AnalyticsConfig::default(),
         logging: LoggingConfig {
             level: Some("warn".to_string()),
             ..Default::default()
@@ -746,6 +748,7 @@ async fn test_rate_limiting() {
         },
         websocket: WebSocketConfig::default(),
         metrics: MetricsConfig { listen: None },
+        analytics: AnalyticsConfig::default(),
         logging: LoggingConfig {
             level: Some("warn".to_string()),
             ..Default::default()
@@ -870,6 +873,7 @@ async fn test_tls13_only() {
         },
         websocket: WebSocketConfig::default(),
         metrics: MetricsConfig { listen: None },
+        analytics: AnalyticsConfig::default(),
         logging: LoggingConfig {
             level: Some("warn".to_string()),
             ..Default::default()
@@ -1058,6 +1062,7 @@ async fn test_udp_idle_timeout() {
         },
         websocket: WebSocketConfig::default(),
         metrics: MetricsConfig { listen: None },
+        analytics: AnalyticsConfig::default(),
         logging: LoggingConfig {
             level: Some("warn".to_string()),
             ..Default::default()
@@ -1291,6 +1296,7 @@ async fn test_tcp_idle_timeout() {
         },
         websocket: WebSocketConfig::default(),
         metrics: MetricsConfig { listen: None },
+        analytics: AnalyticsConfig::default(),
         logging: LoggingConfig {
             level: Some("warn".to_string()),
             ..Default::default()

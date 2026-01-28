@@ -5,12 +5,7 @@
 
 use std::net::SocketAddr;
 
-use axum::{
-    Router,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::get,
-};
+use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
 use metrics::{counter, gauge, histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 
@@ -22,9 +17,7 @@ use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 /// - `/ready` - Readiness probe (always returns 200 READY)
 ///
 /// Returns a tokio JoinHandle for the server task.
-pub fn init_metrics_server(
-    listen: &str,
-) -> Result<tokio::task::JoinHandle<()>, String> {
+pub fn init_metrics_server(listen: &str) -> Result<tokio::task::JoinHandle<()>, String> {
     let addr: SocketAddr = listen
         .parse()
         .map_err(|e| format!("invalid metrics listen address: {}", e))?;

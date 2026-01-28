@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite};
-use trojan_core::io::{relay_bidirectional, RelayMetrics};
+use trojan_core::io::{RelayMetrics, relay_bidirectional};
 use trojan_metrics::{record_bytes_received, record_bytes_sent, record_target_bytes};
 
 use crate::error::ServerError;

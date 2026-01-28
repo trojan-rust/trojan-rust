@@ -1,6 +1,6 @@
 //! Benchmarks for trojan authentication.
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main, BenchmarkId};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use trojan_auth::{AuthBackend, MemoryAuth, sha224_hex, verify_password};
 
 fn bench_sha224_hex(c: &mut Criterion) {

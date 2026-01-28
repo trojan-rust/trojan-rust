@@ -9,7 +9,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, info_span, warn, Instrument};
+use tracing::{Instrument, debug, info, info_span, warn};
 
 use crate::error::ServerError;
 use crate::handler::handle_conn;
@@ -105,6 +105,24 @@ pub async fn run_with_shutdown(
             ),
         };
 
+    // Initialize analytics if feature enabled and configured
+    #[cfg(feature = "analytics")]
+    let analytics = if config.analytics.enabled {
+        match trojan_analytics::init(config.analytics.clone()).await {
+            Ok(collector) => {
+                info!("analytics enabled, sending to ClickHouse");
+                Some(collector)
+            }
+            Err(e) => {
+                warn!("failed to init analytics: {}, disabled", e);
+                None
+            }
+        }
+    } else {
+        debug!("analytics disabled in config");
+        None
+    };
+
     let state = Arc::new(ServerState {
         fallback_addr,
         max_udp_payload: config.server.max_udp_payload,
@@ -117,6 +135,8 @@ pub async fn run_with_shutdown(
         tcp_send_buffer,
         tcp_recv_buffer,
         websocket: config.websocket.clone(),
+        #[cfg(feature = "analytics")]
+        analytics,
     });
     let auth = Arc::new(auth);
     let tracker = ConnectionTracker::new();

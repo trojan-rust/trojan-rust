@@ -23,12 +23,14 @@ use trojan_metrics::{
     record_auth_failure, record_auth_success, record_connect_request, record_fallback,
     record_udp_associate_request,
 };
-use trojan_proto::{CMD_CONNECT, CMD_UDP_ASSOCIATE, HASH_LEN, ParseError, ParseResult, parse_request};
+use trojan_proto::{
+    CMD_CONNECT, CMD_UDP_ASSOCIATE, HASH_LEN, ParseError, ParseResult, parse_request,
+};
 
 use crate::error::ServerError;
 use crate::state::ServerState;
 #[cfg(feature = "ws")]
-use crate::ws::{WsInspect, accept_ws, inspect_mixed, send_reject, WsIo, INITIAL_BUFFER_SIZE};
+use crate::ws::{INITIAL_BUFFER_SIZE, WsInspect, WsIo, accept_ws, inspect_mixed, send_reject};
 
 /// Handle a new connection after TLS handshake.
 #[instrument(level = "debug", skip(stream, state, auth))]
@@ -137,7 +139,8 @@ where
                             buf[i] = byte.to_ascii_lowercase();
                         }
                         // Safe: ASCII hex digits remain valid UTF-8 after lowercase
-                        let hash_lower = std::str::from_utf8(&buf).expect("ASCII hex is valid UTF-8");
+                        let hash_lower =
+                            std::str::from_utf8(&buf).expect("ASCII hex is valid UTF-8");
                         auth.verify(hash_lower).await
                     } else {
                         auth.verify(hash).await

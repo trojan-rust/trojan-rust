@@ -8,10 +8,10 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tracing::{debug, warn};
 use trojan_auth::AuthBackend;
 
+use super::handle_trojan_stream;
 use crate::error::ServerError;
 use crate::state::ServerState;
-use crate::ws::{WsInspect, accept_ws, inspect_mixed, send_reject, WsIo, INITIAL_BUFFER_SIZE};
-use super::handle_trojan_stream;
+use crate::ws::{INITIAL_BUFFER_SIZE, WsInspect, WsIo, accept_ws, inspect_mixed, send_reject};
 
 /// Handle a TLS connection that must be upgraded to WebSocket (split mode).
 pub async fn handle_ws_only<S, A>(

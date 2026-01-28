@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use criterion::{Criterion, black_box, criterion_group, criterion_main, BenchmarkId, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
 use trojan_core::io::{NoOpMetrics, PrefixedStream, relay_bidirectional};

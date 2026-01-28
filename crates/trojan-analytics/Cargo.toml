@@ -1,0 +1,23 @@
+[package]
+name = "trojan-analytics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Analytics module for trojan-rs with ClickHouse support"
+keywords = ["trojan", "analytics", "clickhouse", "metrics"]
+categories = ["network-programming"]
+
+[dependencies]
+trojan-config = { version = "0.1.0", path = "../trojan-config" }
+clickhouse = { version = "0.13", features = ["inserter", "time"] }
+time = "0.3"
+tokio = { version = "1", features = ["sync", "time", "fs", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+thiserror = "2"
+rand = "0.8"
