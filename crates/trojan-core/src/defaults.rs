@@ -31,6 +31,21 @@ pub const DEFAULT_TCP_SEND_BUFFER: usize = 0;
 pub const DEFAULT_TCP_RECV_BUFFER: usize = 0;
 
 // ============================================================================
+// TCP Socket Defaults
+// ============================================================================
+
+/// Default TCP_NODELAY (disable Nagle's algorithm for lower latency).
+pub const DEFAULT_TCP_NO_DELAY: bool = true;
+/// Default TCP Keep-Alive interval in seconds (0 = disabled).
+pub const DEFAULT_TCP_KEEPALIVE_SECS: u64 = 300;
+/// Default SO_REUSEPORT for multi-process load balancing.
+pub const DEFAULT_TCP_REUSE_PORT: bool = false;
+/// Default TCP Fast Open (TFO) enabled.
+pub const DEFAULT_TCP_FAST_OPEN: bool = false;
+/// Default TCP Fast Open queue length.
+pub const DEFAULT_TCP_FAST_OPEN_QLEN: u32 = 5;
+
+// ============================================================================
 // Connection Defaults
 // ============================================================================
 

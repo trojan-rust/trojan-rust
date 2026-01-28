@@ -39,8 +39,13 @@ where
 
     // Measure target connection time
     let connect_start = Instant::now();
-    let mut outbound =
-        connect_with_buffers(target, state.tcp_send_buffer, state.tcp_recv_buffer).await?;
+    let mut outbound = connect_with_buffers(
+        target,
+        state.tcp_send_buffer,
+        state.tcp_recv_buffer,
+        &state.tcp_config,
+    )
+    .await?;
     record_target_connect_duration(connect_start.elapsed().as_secs_f64());
     debug!(peer = %peer, target = %target, "target connected");
 
