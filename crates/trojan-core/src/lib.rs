@@ -3,10 +3,14 @@
 //! This crate provides:
 //! - Default configuration values
 //! - Error type constants for metrics/logging
+//! - I/O utilities (relay, stream adapters)
+//! - Transport adapters (WebSocket, etc.)
 //! - Common project metadata
 
 pub mod defaults;
 pub mod errors;
+pub mod io;
+pub mod transport;
 
 // Re-export commonly used items at crate root
 pub use defaults::*;
