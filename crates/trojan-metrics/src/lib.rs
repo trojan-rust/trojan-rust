@@ -5,13 +5,79 @@
 
 use std::net::SocketAddr;
 
+use axum::{
+    Router,
+    http::StatusCode,
+    response::IntoResponse,
+    routing::get,
+};
 use metrics::{counter, gauge, histogram};
-use metrics_exporter_prometheus::PrometheusBuilder;
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 
-/// Initialize Prometheus metrics exporter.
+/// Initialize metrics server with Prometheus exporter and health check endpoints.
+///
+/// Starts an HTTP server on the given address with:
+/// - `/metrics` - Prometheus metrics endpoint
+/// - `/health` - Liveness probe (always returns 200 OK)
+/// - `/ready` - Readiness probe (always returns 200 READY)
+///
+/// Returns a tokio JoinHandle for the server task.
+pub fn init_metrics_server(
+    listen: &str,
+) -> Result<tokio::task::JoinHandle<()>, String> {
+    let addr: SocketAddr = listen
+        .parse()
+        .map_err(|e| format!("invalid metrics listen address: {}", e))?;
+
+    // Build the Prometheus recorder and get a handle for rendering
+    let builder = PrometheusBuilder::new();
+    let handle = builder
+        .install_recorder()
+        .map_err(|e| format!("failed to install prometheus recorder: {}", e))?;
+
+    // Build the Axum router with metrics and health endpoints
+    let app = Router::new()
+        .route("/metrics", get(move || metrics_handler(handle.clone())))
+        .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler));
+
+    // Spawn the server
+    let server_handle = tokio::spawn(async move {
+        let listener = match tokio::net::TcpListener::bind(addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("failed to bind metrics server to {}: {}", addr, e);
+                return;
+            }
+        };
+        if let Err(e) = axum::serve(listener, app).await {
+            eprintln!("metrics server error: {}", e);
+        }
+    });
+
+    Ok(server_handle)
+}
+
+/// Handler for /metrics endpoint - returns Prometheus format metrics.
+async fn metrics_handler(handle: PrometheusHandle) -> impl IntoResponse {
+    handle.render()
+}
+
+/// Handler for /health endpoint - liveness probe.
+async fn health_handler() -> impl IntoResponse {
+    (StatusCode::OK, "OK")
+}
+
+/// Handler for /ready endpoint - readiness probe.
+async fn ready_handler() -> impl IntoResponse {
+    (StatusCode::OK, "READY")
+}
+
+/// Initialize Prometheus metrics exporter (legacy function).
 ///
 /// Starts an HTTP server on the given address to expose metrics.
 /// Returns an error message if binding fails.
+#[deprecated(since = "0.2.0", note = "Use init_metrics_server instead")]
 pub fn init_prometheus(listen: &str) -> Result<(), String> {
     let addr: SocketAddr = listen
         .parse()
@@ -67,6 +133,10 @@ pub const TARGET_BYTES_TOTAL: &str = "trojan_target_bytes_total";
 pub const FALLBACK_POOL_SIZE: &str = "trojan_fallback_pool_size";
 /// Total number of warm-fill connection failures.
 pub const FALLBACK_POOL_WARM_FAIL_TOTAL: &str = "trojan_fallback_pool_warm_fail_total";
+/// DNS resolution duration histogram (seconds).
+pub const DNS_RESOLVE_DURATION_SECONDS: &str = "trojan_dns_resolve_duration_seconds";
+/// Target connection establishment duration histogram (seconds).
+pub const TARGET_CONNECT_DURATION_SECONDS: &str = "trojan_target_connect_duration_seconds";
 
 // ============================================================================
 // Metric Recording Functions
@@ -187,6 +257,18 @@ pub fn set_fallback_pool_size(size: usize) {
 #[inline]
 pub fn record_fallback_pool_warm_fail() {
     counter!(FALLBACK_POOL_WARM_FAIL_TOTAL).increment(1);
+}
+
+/// Record DNS resolution duration.
+#[inline]
+pub fn record_dns_resolve_duration(duration_secs: f64) {
+    histogram!(DNS_RESOLVE_DURATION_SECONDS).record(duration_secs);
+}
+
+/// Record target connection establishment duration.
+#[inline]
+pub fn record_target_connect_duration(duration_secs: f64) {
+    histogram!(TARGET_CONNECT_DURATION_SECONDS).record(duration_secs);
 }
 
 // ============================================================================

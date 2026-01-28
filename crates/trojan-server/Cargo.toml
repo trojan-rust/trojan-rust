@@ -54,9 +54,9 @@ tokio-util = "0.7"
 socket2 = "0.6"
 toml = "0.9"
 parking_lot = "0.12"
-tracing = "0.1"
+tracing = { version = "0.1", features = ["attributes"] }
 tracing-appender = "0.2"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 
 # workspace crates
 trojan-core = { version = "0.1.0", path = "../trojan-core" }

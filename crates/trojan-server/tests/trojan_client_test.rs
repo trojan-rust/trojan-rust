@@ -170,6 +170,7 @@ impl TestServer {
             metrics: MetricsConfig { listen: None },
             logging: LoggingConfig {
                 level: Some("debug".to_string()),
+                ..Default::default()
             },
         };
 

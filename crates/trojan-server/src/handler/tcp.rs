@@ -4,8 +4,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-use tracing::debug;
-use trojan_metrics::{record_bytes_sent, record_target_bytes, record_target_connection};
+use tokio::time::Instant;
+use tracing::{debug, instrument};
+use trojan_metrics::{
+    record_bytes_sent, record_target_bytes, record_target_connect_duration, record_target_connection,
+};
 use trojan_proto::AddressRef;
 
 use crate::error::ServerError;
@@ -15,7 +18,7 @@ use crate::state::ServerState;
 use crate::util::connect_with_buffers;
 
 /// Handle TCP CONNECT command.
-#[inline]
+#[instrument(level = "debug", skip(stream, payload, state), fields(target = ?address))]
 pub async fn handle_connect<S>(
     stream: S,
     address: AddressRef<'_>,
@@ -33,8 +36,11 @@ where
     // Record per-target connection
     record_target_connection(&target_label);
 
+    // Measure target connection time
+    let connect_start = Instant::now();
     let mut outbound =
         connect_with_buffers(target, state.tcp_send_buffer, state.tcp_recv_buffer).await?;
+    record_target_connect_duration(connect_start.elapsed().as_secs_f64());
     debug!(peer = %peer, target = %target, "target connected");
 
     if !payload.is_empty() {

@@ -3,14 +3,20 @@
 //! This module provides the command-line interface that can be used either
 //! as a standalone binary or as a subcommand of the main trojan-rs CLI.
 
+use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
 use tracing::{info, warn};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{
+    EnvFilter,
+    fmt,
+    layer::SubscriberExt,
+    util::SubscriberInitExt,
+};
 use trojan_auth::{MemoryAuth, ReloadableAuth};
-use trojan_config::{CliOverrides, apply_overrides, load_config, validate_config};
+use trojan_config::{CliOverrides, LoggingConfig, apply_overrides, load_config, validate_config};
 
 use crate::{CancellationToken, run_with_shutdown};
 
@@ -35,16 +41,14 @@ pub async fn run(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> {
     apply_overrides(&mut config, &args.overrides);
     validate_config(&config)?;
 
-    let level = config.logging.level.as_deref().unwrap_or("info");
-    let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .init();
+    init_tracing(&config.logging);
 
     if let Some(listen) = &config.metrics.listen {
-        match trojan_metrics::init_prometheus(listen) {
-            Ok(()) => info!("prometheus metrics server listening on {}", listen),
+        match trojan_metrics::init_metrics_server(listen) {
+            Ok(_handle) => info!(
+                "metrics server listening on {} (/metrics, /health, /ready)",
+                listen
+            ),
             Err(e) => warn!("failed to start metrics server: {}", e),
         }
     }
@@ -166,4 +170,71 @@ fn reload_config(
     // Future enhancement: implement TLS cert hot-reload via rustls ResolvesServerCert
 
     Ok(())
+}
+
+/// Initialize tracing subscriber with the given logging configuration.
+///
+/// Supports:
+/// - `level`: Base log level (trace, debug, info, warn, error)
+/// - `format`: Output format (json, pretty, compact). Default: pretty
+/// - `output`: Output target (stdout, stderr). Default: stderr
+/// - `filters`: Per-module log level overrides
+fn init_tracing(config: &LoggingConfig) {
+    // Build the env filter from base level and per-module filters
+    let base_level = config.level.as_deref().unwrap_or("info");
+    let mut filter_str = base_level.to_string();
+
+    for (module, level) in &config.filters {
+        filter_str.push(',');
+        filter_str.push_str(module);
+        filter_str.push('=');
+        filter_str.push_str(level);
+    }
+
+    let filter = EnvFilter::try_new(&filter_str).unwrap_or_else(|_| EnvFilter::new("info"));
+
+    let format = config.format.as_deref().unwrap_or("pretty");
+    let output = config.output.as_deref().unwrap_or("stderr");
+
+    // Create the subscriber based on format and output
+    match (format, output) {
+        ("json", "stdout") => {
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(fmt::layer().json().with_writer(io::stdout))
+                .init();
+        }
+        ("json", _) => {
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(fmt::layer().json().with_writer(io::stderr))
+                .init();
+        }
+        ("compact", "stdout") => {
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(fmt::layer().compact().with_writer(io::stdout))
+                .init();
+        }
+        ("compact", _) => {
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(fmt::layer().compact().with_writer(io::stderr))
+                .init();
+        }
+        (_, "stdout") => {
+            // pretty is default
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(fmt::layer().with_writer(io::stdout))
+                .init();
+        }
+        _ => {
+            // pretty to stderr is default
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(fmt::layer().with_writer(io::stderr))
+                .init();
+        }
+    }
 }

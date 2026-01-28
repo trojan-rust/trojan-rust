@@ -153,7 +153,15 @@ pub struct MetricsConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LoggingConfig {
+    /// Log level (trace, debug, info, warn, error).
     pub level: Option<String>,
+    /// Log format: json, pretty, or compact. Default: pretty.
+    pub format: Option<String>,
+    /// Output target: stdout or stderr. Default: stderr.
+    pub output: Option<String>,
+    /// Per-module log level filters (e.g., {"trojan_auth": "debug", "rustls": "warn"}).
+    #[serde(default)]
+    pub filters: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Parser, Default)]
