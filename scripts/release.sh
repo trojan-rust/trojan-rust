@@ -84,7 +84,7 @@ PY
 
 git-cliff -c cliff.toml --tag "$tag" -o CHANGELOG.md
 
-git add Cargo.toml CHANGELOG.md
+git add Cargo.toml Cargo.lock CHANGELOG.md
 
 git commit -m "chore: release $tag"
 
@@ -92,3 +92,4 @@ git tag -a "$tag" -m "Release $tag"
 
 echo "Release prepared: $tag"
 echo "Next: git push origin HEAD && git push origin $tag"
+echo "Next: cargo publish --workspace"
