@@ -13,7 +13,7 @@ categories = ["network-programming"]
 
 [features]
 default = ["ws"]
-ws = ["tokio-tungstenite"]
+ws = ["tokio-tungstenite", "trojan-core/ws"]
 
 [lib]
 name = "trojan_server"

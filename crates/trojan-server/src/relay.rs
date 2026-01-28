@@ -1,12 +1,47 @@
-//! Bidirectional data relay with metrics.
+//! Bidirectional data relay with Prometheus metrics.
+//!
+//! This module wraps the generic relay from `trojan-core` with server-specific
+//! metrics recording using Prometheus.
 
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::time::Instant;
+use tokio::io::{AsyncRead, AsyncWrite};
+use trojan_core::io::{relay_bidirectional, RelayMetrics};
 use trojan_metrics::{record_bytes_received, record_bytes_sent, record_target_bytes};
 
 use crate::error::ServerError;
+
+/// Metrics recorder for global bytes tracking only.
+struct GlobalMetrics;
+
+impl RelayMetrics for GlobalMetrics {
+    #[inline]
+    fn record_inbound(&self, bytes: u64) {
+        record_bytes_received(bytes);
+    }
+    #[inline]
+    fn record_outbound(&self, bytes: u64) {
+        record_bytes_sent(bytes);
+    }
+}
+
+/// Metrics recorder with per-target tracking.
+struct TargetMetrics<'a> {
+    target_label: &'a str,
+}
+
+impl RelayMetrics for TargetMetrics<'_> {
+    #[inline]
+    fn record_inbound(&self, bytes: u64) {
+        record_bytes_received(bytes);
+        record_target_bytes(self.target_label, "sent", bytes);
+    }
+    #[inline]
+    fn record_outbound(&self, bytes: u64) {
+        record_bytes_sent(bytes);
+        record_target_bytes(self.target_label, "received", bytes);
+    }
+}
 
 /// Bidirectional relay with proper half-close handling and metrics.
 ///
@@ -22,8 +57,9 @@ where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
 {
-    relay_with_idle_timeout_and_metrics_per_target(inbound, outbound, idle_timeout, buffer_size, "")
+    relay_bidirectional(inbound, outbound, idle_timeout, buffer_size, &GlobalMetrics)
         .await
+        .map_err(ServerError::from)
 }
 
 /// Bidirectional relay with per-target metrics tracking.
@@ -38,61 +74,13 @@ where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
 {
-    let (mut in_r, mut in_w) = tokio::io::split(inbound);
-    let (mut out_r, mut out_w) = tokio::io::split(outbound);
-
-    let mut buf_in = vec![0u8; buffer_size];
-    let mut buf_out = vec![0u8; buffer_size];
-    let idle_sleep = tokio::time::sleep(idle_timeout);
-    tokio::pin!(idle_sleep);
-
-    let mut in_closed = false;
-    let mut out_closed = false;
-    let track_target = !target_label.is_empty();
-
-    loop {
-        if in_closed && out_closed {
-            return Ok(());
-        }
-
-        tokio::select! {
-            res = in_r.read(&mut buf_in), if !in_closed => {
-                match res {
-                    Ok(0) => {
-                        in_closed = true;
-                        let _ = out_w.shutdown().await;
-                    }
-                    Ok(n) => {
-                        record_bytes_received(n as u64);
-                        if track_target {
-                            record_target_bytes(target_label, "sent", n as u64);
-                        }
-                        out_w.write_all(&buf_in[..n]).await?;
-                        idle_sleep.as_mut().reset(Instant::now() + idle_timeout);
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-            }
-            res = out_r.read(&mut buf_out), if !out_closed => {
-                match res {
-                    Ok(0) => {
-                        out_closed = true;
-                        let _ = in_w.shutdown().await;
-                    }
-                    Ok(n) => {
-                        record_bytes_sent(n as u64);
-                        if track_target {
-                            record_target_bytes(target_label, "received", n as u64);
-                        }
-                        in_w.write_all(&buf_out[..n]).await?;
-                        idle_sleep.as_mut().reset(Instant::now() + idle_timeout);
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-            }
-            _ = &mut idle_sleep => {
-                return Ok(());
-            }
-        }
+    if target_label.is_empty() {
+        return relay_with_idle_timeout_and_metrics(inbound, outbound, idle_timeout, buffer_size)
+            .await;
     }
+
+    let metrics = TargetMetrics { target_label };
+    relay_bidirectional(inbound, outbound, idle_timeout, buffer_size, &metrics)
+        .await
+        .map_err(ServerError::from)
 }

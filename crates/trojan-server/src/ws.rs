@@ -1,16 +1,13 @@
 //! WebSocket transport support.
-
-use std::pin::Pin;
-use std::task::{Context, Poll};
+//!
+//! This module provides WebSocket upgrade handling for the server.
+//! The `WsIo` adapter is provided by `trojan-core::transport`.
 
 use bytes::Bytes;
-use futures_util::{Sink, Stream};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::{
     WebSocketStream, accept_hdr_async_with_config,
     tungstenite::{
-        Error as WsError,
-        Message,
         handshake::server::{Request, Response},
         protocol::WebSocketConfig,
     },
@@ -21,16 +18,25 @@ use trojan_config::WebSocketConfig as WsCfg;
 use crate::error::ServerError;
 use crate::util::PrefixedStream;
 
+// Re-export WsIo from trojan-core for convenience
+pub use trojan_core::transport::WsIo;
+
 /// Initial buffer size for reading HTTP headers during WebSocket upgrade.
 pub const INITIAL_BUFFER_SIZE: usize = 2048;
 
 const HTTP_HEADER_END: &[u8] = b"\r\n\r\n";
 
+/// Result of inspecting buffered bytes for WebSocket upgrade.
 pub enum WsInspect {
+    /// Need more data to determine protocol.
     NeedMore,
+    /// Not HTTP traffic, proceed as raw Trojan.
     NotHttp,
+    /// HTTP but not WebSocket upgrade, fallback to HTTP backend.
     HttpFallback,
+    /// Valid WebSocket upgrade request.
     Upgrade,
+    /// Reject with reason (e.g., path/host mismatch).
     Reject(&'static str),
 }
 
@@ -107,6 +113,7 @@ pub fn inspect_mixed(buf: &[u8], cfg: &WsCfg) -> WsInspect {
     WsInspect::Upgrade
 }
 
+/// Accept a WebSocket upgrade on the given stream.
 pub async fn accept_ws<S>(
     stream: S,
     initial: Bytes,
@@ -138,6 +145,7 @@ where
     Ok(ws)
 }
 
+/// Send an HTTP 400 Bad Request response to reject the connection.
 pub async fn send_reject<S>(mut stream: S, reason: &'static str) -> Result<(), ServerError>
 where
     S: AsyncWrite + Unpin,
@@ -170,123 +178,4 @@ fn host_matches(cfg: &WsCfg, host: Option<&str>) -> bool {
     };
     let host_only = host.split(':').next().unwrap_or("");
     host_only.eq_ignore_ascii_case(expected)
-}
-
-/// WebSocket stream adapter that exposes AsyncRead/AsyncWrite using binary frames.
-pub struct WsIo<S> {
-    ws: WebSocketStream<S>,
-    read_buf: Bytes,
-}
-
-impl<S> WsIo<S> {
-    pub fn new(ws: WebSocketStream<S>) -> Self {
-        Self {
-            ws,
-            read_buf: Bytes::new(),
-        }
-    }
-}
-
-impl<S> AsyncRead for WsIo<S>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        if !self.read_buf.is_empty() {
-            let to_copy = self.read_buf.len().min(buf.remaining());
-            buf.put_slice(&self.read_buf[..to_copy]);
-            self.read_buf = self.read_buf.slice(to_copy..);
-            return Poll::Ready(Ok(()));
-        }
-
-        loop {
-            match Pin::new(&mut self.ws).poll_next(cx) {
-                Poll::Ready(Some(Ok(msg))) => match msg {
-                    Message::Binary(data) => {
-                        self.read_buf = Bytes::from(data);
-                        let to_copy = self.read_buf.len().min(buf.remaining());
-                        buf.put_slice(&self.read_buf[..to_copy]);
-                        self.read_buf = self.read_buf.slice(to_copy..);
-                        return Poll::Ready(Ok(()));
-                    }
-                    Message::Text(text) => {
-                        self.read_buf = Bytes::from(text.into_bytes());
-                        let to_copy = self.read_buf.len().min(buf.remaining());
-                        buf.put_slice(&self.read_buf[..to_copy]);
-                        self.read_buf = self.read_buf.slice(to_copy..);
-                        return Poll::Ready(Ok(()));
-                    }
-                    Message::Ping(payload) => {
-                        let mut ws = Pin::new(&mut self.ws);
-                        match ws.as_mut().poll_ready(cx) {
-                            Poll::Ready(Ok(())) => {
-                                if let Err(err) = ws.start_send(Message::Pong(payload)) {
-                                    return Poll::Ready(Err(ws_err(err)));
-                                }
-                                continue;
-                            }
-                            Poll::Ready(Err(err)) => return Poll::Ready(Err(ws_err(err))),
-                            Poll::Pending => return Poll::Pending,
-                        }
-                    }
-                    Message::Pong(_) => continue,
-                    Message::Close(_) => return Poll::Ready(Ok(())),
-                    Message::Frame(_) => continue,
-                },
-                Poll::Ready(Some(Err(err))) => return Poll::Ready(Err(ws_err(err))),
-                Poll::Ready(None) => return Poll::Ready(Ok(())),
-                Poll::Pending => return Poll::Pending,
-            }
-        }
-    }
-}
-
-impl<S> AsyncWrite for WsIo<S>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        data: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
-        if data.is_empty() {
-            return Poll::Ready(Ok(0));
-        }
-        let mut ws = Pin::new(&mut self.ws);
-        match ws.as_mut().poll_ready(cx) {
-            Poll::Ready(Ok(())) => {
-                if let Err(err) = ws.start_send(Message::Binary(data.to_vec())) {
-                    return Poll::Ready(Err(ws_err(err)));
-                }
-                Poll::Ready(Ok(data.len()))
-            }
-            Poll::Ready(Err(err)) => Poll::Ready(Err(ws_err(err))),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        let ws = Pin::new(&mut self.ws);
-        ws.poll_flush(cx).map_err(ws_err)
-    }
-
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        let ws = Pin::new(&mut self.ws);
-        ws.poll_close(cx).map_err(ws_err)
-    }
-}
-
-fn ws_err(err: WsError) -> std::io::Error {
-    std::io::Error::other(err)
 }
