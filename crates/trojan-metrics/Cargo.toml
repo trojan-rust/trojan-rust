@@ -12,7 +12,7 @@ keywords = ["trojan", "proxy", "metrics", "prometheus"]
 categories = ["network-programming"]
 
 [dependencies]
-trojan-core = { version = "0.1.3", path = "../trojan-core" }
+trojan-core.workspace = true
 metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
 axum = "0.8"
