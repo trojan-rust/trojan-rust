@@ -31,6 +31,20 @@ repository = "https://github.com/trojan-rs/trojan-rs"
 homepage = "https://github.com/trojan-rs/trojan-rs"
 documentation = "https://docs.rs/trojan-rs"
 
+[features]
+default = ["cli", "sql-sqlite"]
+cli = ["trojan-auth/cli", "dep:clap", "dep:tokio"]
+
+# Database drivers for auth CLI
+sql-sqlite = ["trojan-auth/sql-sqlite"]
+sql-postgres = ["trojan-auth/sql-postgres"]
+sql-mysql = ["trojan-auth/sql-mysql"]
+
+[[bin]]
+name = "trojan-rs"
+path = "src/main.rs"
+required-features = ["cli"]
+
 [dependencies]
 trojan-core = { version = "0.1.0", path = "crates/trojan-core" }
 trojan-proto = { version = "0.1.0", path = "crates/trojan-proto" }
@@ -38,3 +52,7 @@ trojan-auth = { version = "0.1.0", path = "crates/trojan-auth" }
 trojan-config = { version = "0.1.0", path = "crates/trojan-config" }
 trojan-metrics = { version = "0.1.0", path = "crates/trojan-metrics" }
 trojan-server = { version = "0.1.0", path = "crates/trojan-server" }
+
+# CLI dependencies
+clap = { version = "4", features = ["derive"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
