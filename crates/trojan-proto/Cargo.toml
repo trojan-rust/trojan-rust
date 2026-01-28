@@ -13,3 +13,10 @@ categories = ["network-programming", "parser-implementations"]
 
 [dependencies]
 bytes = "1"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "proto"
+harness = false

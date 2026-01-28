@@ -22,4 +22,9 @@ tokio-tungstenite = { version = "0.24", optional = true }
 futures-util = { version = "0.3", optional = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros", "io-util", "time", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "time", "sync"] }
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "io"
+harness = false
