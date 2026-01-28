@@ -89,6 +89,10 @@ pub fn create_listener(
     backlog: u32,
     tcp_cfg: &TcpConfig,
 ) -> Result<TcpListener, ServerError> {
+    // Suppress unused warning on Windows where reuse_port/fast_open are not available
+    #[cfg(not(unix))]
+    let _ = tcp_cfg;
+
     let domain = if addr.is_ipv4() {
         Domain::IPV4
     } else {
