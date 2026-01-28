@@ -1,1 +1,36 @@
 /target
+
+# Environment and secrets
+.env
+.env.*
+*.local
+
+# Certificates and keys
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+*.jks
+
+# Local config overrides
+config.local.*
+*.local.toml
+*.local.yaml
+*.local.json
+
+# Logs
+*.log
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
