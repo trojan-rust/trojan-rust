@@ -55,6 +55,7 @@
 //! ```
 
 mod backend;
+mod cache;
 mod config;
 mod queries;
 mod traffic;
@@ -63,4 +64,5 @@ mod traffic;
 mod tests;
 
 pub use backend::{DatabaseType, SqlAuth};
+pub use cache::{AuthCache, CacheStats, CachedUser};
 pub use config::{SqlAuthConfig, TrafficRecordingMode};
