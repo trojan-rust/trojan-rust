@@ -12,7 +12,7 @@ pub mod cli;
 pub mod generate;
 
 pub use cli::{CertArgs, CertCommands, GenerateArgs};
-pub use generate::{generate, CertError};
+pub use generate::{CertError, generate};
 
 /// Run the cert CLI with the given arguments.
 pub fn run(args: CertArgs) -> Result<(), CertError> {
