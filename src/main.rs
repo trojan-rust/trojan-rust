@@ -3,6 +3,7 @@
 //! This binary provides a unified interface to all trojan components:
 //! - `trojan server` - Run the trojan server
 //! - `trojan auth` - Manage authentication users (SQL backend)
+//! - `trojan cert` - Generate self-signed certificates (requires `cert` feature)
 //! - `trojan upgrade` - Self-upgrade from GitHub releases (requires `upgrade` feature)
 //!
 //! Each subcommand can also be run as a standalone binary.
@@ -37,6 +38,11 @@ enum Commands {
     #[command(name = "auth")]
     Auth(trojan_auth::AuthArgs),
 
+    /// Generate and manage TLS certificates.
+    #[cfg(feature = "cert")]
+    #[command(name = "cert")]
+    Cert(trojan_cert::CertArgs),
+
     /// Upgrade to latest version from GitHub releases.
     #[cfg(feature = "upgrade")]
     #[command(name = "upgrade", alias = "update")]
@@ -52,6 +58,8 @@ async fn main() -> ExitCode {
             .await
             .map_err(|e| e.to_string()),
         Commands::Auth(args) => trojan_auth::cli::run(args).await.map_err(|e| e.to_string()),
+        #[cfg(feature = "cert")]
+        Commands::Cert(args) => trojan_cert::run(args).map_err(|e| e.to_string()),
         #[cfg(feature = "upgrade")]
         Commands::Upgrade(args) => upgrade::run(args).await.map_err(|e| e.to_string()),
     };

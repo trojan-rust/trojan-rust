@@ -3371,6 +3371,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "trojan-auth",
+ "trojan-cert",
  "trojan-config",
  "trojan-core",
  "trojan-metrics",
@@ -3408,6 +3409,16 @@ dependencies = [
  "tabled",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "trojan-cert"
+version = "0.1.4"
+dependencies = [
+ "clap",
+ "rcgen",
+ "thiserror 2.0.18",
+ "time",
 ]
 
 [[package]]

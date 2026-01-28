@@ -1,0 +1,18 @@
+[package]
+name = "trojan-cert"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Certificate generation utilities for trojan-rs"
+keywords = ["trojan", "certificate", "tls", "self-signed"]
+categories = ["cryptography"]
+
+[dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+time = "0.3"
