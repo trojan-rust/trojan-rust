@@ -34,7 +34,27 @@ documentation = "https://docs.rs/trojan"
 
 [features]
 default = ["cli", "sql-sqlite"]
-cli = ["trojan-auth/cli", "dep:clap", "dep:tokio"]
+cli = [
+    "trojan-auth/cli",
+    "dep:clap",
+    "dep:tokio",
+]
+
+# Self-upgrade from GitHub releases (disabled by default, enabled in CI builds)
+upgrade = [
+    "cli",
+    "dep:reqwest",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:self-replace",
+    "dep:flate2",
+    "dep:tar",
+    "dep:sha2",
+    "dep:hex",
+    "dep:tokio-util",
+    "dep:futures-util",
+    "dep:tempfile",
+]
 
 # Database drivers for auth CLI
 sql-sqlite = ["trojan-auth/sql-sqlite"]
@@ -57,3 +77,14 @@ trojan-server = { version = "0.1.0", path = "crates/trojan-server" }
 # CLI dependencies
 clap = { version = "4", features = ["derive"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
+reqwest = { version = "0.12", features = ["json", "stream"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+self-replace = { version = "1", optional = true }
+flate2 = { version = "1", optional = true }
+tar = { version = "0.4", optional = true }
+sha2 = { version = "0.10", optional = true }
+hex = { version = "0.4", optional = true }
+tokio-util = { version = "0.7", features = ["io"], optional = true }
+futures-util = { version = "0.3", optional = true }
+tempfile = { version = "3", optional = true }

@@ -1,8 +1,9 @@
-//! Unified trojan-rs CLI.
+//! Unified trojan CLI.
 //!
 //! This binary provides a unified interface to all trojan components:
-//! - `trojan-rs server` - Run the trojan server
-//! - `trojan-rs auth` - Manage authentication users (SQL backend)
+//! - `trojan server` - Run the trojan server
+//! - `trojan auth` - Manage authentication users (SQL backend)
+//! - `trojan upgrade` - Self-upgrade from GitHub releases (requires `upgrade` feature)
 //!
 //! Each subcommand can also be run as a standalone binary.
 
@@ -10,10 +11,13 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-/// Trojan-rs unified CLI.
+#[cfg(feature = "upgrade")]
+mod upgrade;
+
+/// Trojan unified CLI.
 #[derive(Parser)]
 #[command(
-    name = "trojan-rs",
+    name = "trojan",
     version,
     about = "A Rust implementation of the Trojan protocol",
     propagate_version = true
@@ -32,15 +36,28 @@ enum Commands {
     /// Manage authentication users (SQL backend).
     #[command(name = "auth")]
     Auth(trojan_auth::AuthArgs),
+
+    /// Upgrade to latest version from GitHub releases.
+    #[cfg(feature = "upgrade")]
+    #[command(name = "upgrade", alias = "update")]
+    Upgrade(upgrade::UpgradeArgs),
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    let result = match cli.command {
-        Commands::Server(args) => trojan_server::cli::run(*args).await,
-        Commands::Auth(args) => trojan_auth::cli::run(args).await,
+    let result: Result<(), String> = match cli.command {
+        Commands::Server(args) => trojan_server::cli::run(*args)
+            .await
+            .map_err(|e| e.to_string()),
+        Commands::Auth(args) => trojan_auth::cli::run(args)
+            .await
+            .map_err(|e| e.to_string()),
+        #[cfg(feature = "upgrade")]
+        Commands::Upgrade(args) => upgrade::run(args)
+            .await
+            .map_err(|e| e.to_string()),
     };
 
     match result {
