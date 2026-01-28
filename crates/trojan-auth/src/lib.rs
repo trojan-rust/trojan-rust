@@ -17,6 +17,18 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! # SQL Backend
+//!
+//! Enable the `sql-postgres`, `sql-mysql`, or `sql-sqlite` feature to use
+//! SQL database authentication:
+//!
+//! ```toml
+//! [dependencies]
+//! trojan-auth = { version = "0.1", features = ["sql-postgres"] }
+//! ```
+//!
+//! See the [`sql`] module for more details.
 
 mod error;
 mod hash;
@@ -25,12 +37,23 @@ mod reloadable;
 mod result;
 mod traits;
 
+// SQL backend (optional feature)
+#[cfg(feature = "sql")]
+pub mod sql;
+
+// CLI module (optional feature)
+#[cfg(feature = "cli")]
+pub mod cli;
+
 pub use error::AuthError;
 pub use hash::{sha224_hex, verify_password};
 pub use memory::MemoryAuth;
 pub use reloadable::ReloadableAuth;
 pub use result::{AuthMetadata, AuthResult};
 pub use traits::AuthBackend;
+
+#[cfg(feature = "cli")]
+pub use cli::AuthArgs;
 
 // Backward compatibility alias
 #[doc(hidden)]

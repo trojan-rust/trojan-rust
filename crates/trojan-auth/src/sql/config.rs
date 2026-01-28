@@ -1,0 +1,117 @@
+//! SQL backend configuration.
+
+use std::time::Duration;
+
+/// Configuration for SQL authentication backend.
+#[derive(Debug, Clone)]
+pub struct SqlAuthConfig {
+    /// Database connection URL.
+    ///
+    /// Examples:
+    /// - PostgreSQL: `postgres://user:pass@host/db`
+    /// - MySQL: `mysql://user:pass@host/db`
+    /// - SQLite: `sqlite:path/to/db.sqlite` or `sqlite::memory:`
+    pub database_url: String,
+
+    /// Maximum number of connections in the pool.
+    pub max_connections: u32,
+
+    /// Minimum number of connections to maintain.
+    pub min_connections: u32,
+
+    /// Connection timeout.
+    pub connect_timeout: Duration,
+
+    /// Maximum connection lifetime.
+    pub max_lifetime: Duration,
+
+    /// Idle connection timeout.
+    pub idle_timeout: Duration,
+
+    /// Traffic recording mode.
+    pub traffic_mode: TrafficRecordingMode,
+
+    /// Batch flush interval (only used with Batched mode).
+    pub batch_flush_interval: Duration,
+
+    /// Maximum pending traffic updates before forced flush.
+    pub batch_max_pending: usize,
+}
+
+/// How traffic is recorded to the database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TrafficRecordingMode {
+    /// Immediate database update on each record_traffic call.
+    /// Most accurate but highest database load.
+    Immediate,
+
+    /// Batch updates at regular intervals.
+    /// Better performance, slight delay in traffic accounting.
+    #[default]
+    Batched,
+
+    /// Disabled - do not record traffic to database.
+    Disabled,
+}
+
+impl Default for SqlAuthConfig {
+    fn default() -> Self {
+        Self {
+            database_url: String::new(),
+            max_connections: 10,
+            min_connections: 1,
+            connect_timeout: Duration::from_secs(30),
+            max_lifetime: Duration::from_secs(1800), // 30 minutes
+            idle_timeout: Duration::from_secs(600),  // 10 minutes
+            traffic_mode: TrafficRecordingMode::default(),
+            batch_flush_interval: Duration::from_secs(30),
+            batch_max_pending: 1000,
+        }
+    }
+}
+
+impl SqlAuthConfig {
+    /// Create a new config with just the database URL.
+    pub fn new(database_url: impl Into<String>) -> Self {
+        Self {
+            database_url: database_url.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Builder: set max connections.
+    pub fn max_connections(mut self, n: u32) -> Self {
+        self.max_connections = n;
+        self
+    }
+
+    /// Builder: set min connections.
+    pub fn min_connections(mut self, n: u32) -> Self {
+        self.min_connections = n;
+        self
+    }
+
+    /// Builder: set connect timeout.
+    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
+        self.connect_timeout = timeout;
+        self
+    }
+
+    /// Builder: set traffic recording mode.
+    pub fn traffic_mode(mut self, mode: TrafficRecordingMode) -> Self {
+        self.traffic_mode = mode;
+        self
+    }
+
+    /// Builder: set batch flush interval.
+    pub fn batch_flush_interval(mut self, interval: Duration) -> Self {
+        self.batch_flush_interval = interval;
+        self
+    }
+
+    /// Builder: set max pending batch size.
+    pub fn batch_max_pending(mut self, max: usize) -> Self {
+        self.batch_max_pending = max;
+        self
+    }
+}

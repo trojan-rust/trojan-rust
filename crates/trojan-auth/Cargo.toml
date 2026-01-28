@@ -11,6 +11,24 @@ description = "Authentication backends for trojan-rs"
 keywords = ["trojan", "proxy", "authentication"]
 categories = ["network-programming", "authentication"]
 
+[features]
+default = []
+
+# SQL backend with SQLx
+sql = ["dep:sqlx", "dep:tokio"]
+
+# Database drivers (user picks one or more)
+sql-postgres = ["sql", "sqlx/postgres"]
+sql-mysql = ["sql", "sqlx/mysql"]
+sql-sqlite = ["sql", "sqlx/sqlite"]
+
+# TLS options for SQL connections
+sql-tls-rustls = ["sqlx/tls-rustls-ring"]
+sql-tls-native = ["sqlx/tls-native-tls"]
+
+# CLI tool for auth management
+cli = ["sql", "dep:clap", "dep:tabled", "tokio/rt-multi-thread"]
+
 [dependencies]
 async-trait = "0.1"
 thiserror = "2"
@@ -18,5 +36,23 @@ sha2 = "0.10"
 hex = "0.4"
 parking_lot = "0.12"
 
+# Optional SQLx dependency
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "any",
+], optional = true }
+
+# For batch traffic recording (optional, only with sql feature)
+tokio = { version = "1", features = ["sync", "time", "macros"], optional = true }
+
+# CLI dependencies (optional)
+clap = { version = "4", features = ["derive", "env"], optional = true }
+tabled = { version = "0.17", optional = true }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[[bin]]
+name = "trojan-auth"
+path = "src/bin/cli.rs"
+required-features = ["cli"]

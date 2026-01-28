@@ -3,6 +3,7 @@
 //! This module exposes the server implementation for use by integration tests
 //! and potential embedding scenarios.
 
+pub mod cli;
 mod error;
 mod handler;
 mod pool;
@@ -14,6 +15,7 @@ mod state;
 mod tls;
 mod util;
 
+pub use cli::ServerArgs;
 pub use error::ServerError;
 pub use pool::ConnectionPool;
 pub use rate_limit::RateLimiter;
