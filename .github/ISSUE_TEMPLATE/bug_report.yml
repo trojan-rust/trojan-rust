@@ -1,0 +1,122 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug. Please fill out all required fields carefully.
+        Issues that do not follow this template may be closed without response.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      description: Please confirm the following before submitting
+      options:
+        - label: I have searched existing issues and this bug has not been reported
+          required: true
+        - label: I am using the latest version of trojan-rs
+          required: true
+        - label: I have read the documentation and configuration examples
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `trojan --version`
+      placeholder: "trojan 0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Linux (glibc)
+        - Linux (musl)
+        - macOS (Intel)
+        - macOS (Apple Silicon)
+        - Windows
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os_version
+    attributes:
+      label: OS Version
+      description: e.g., Ubuntu 22.04, macOS 14.0, Windows 11
+      placeholder: "Ubuntu 22.04"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which component is affected?
+      options:
+        - Server (trojan server)
+        - Auth CLI (trojan auth)
+        - Configuration
+        - TLS/Certificates
+        - WebSocket
+        - Metrics
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of the bug
+      placeholder: Describe what happened and what you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: Minimal steps to reproduce the behavior
+      placeholder: |
+        1. Configure with '...'
+        2. Run command '...'
+        3. Send request to '...'
+        4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Your config file (remove sensitive data like passwords and real domains)
+      render: toml
+      placeholder: |
+        [server]
+        listen = "0.0.0.0:443"
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant log output (run with `--log-level debug` for more details)
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other context, screenshots, or information
+    validations:
+      required: false
