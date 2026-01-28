@@ -1,6 +1,9 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [Unreleased]
+
 ## 0.1.6 - 2026-01-28
 
 ### <!-- 5 -->🎨 Styling
@@ -139,5 +142,4 @@ All notable changes to this project will be documented in this file.
 ### <!-- 0 -->🚀 Features
 
 - initial trojan-rs server implementation
-
 
