@@ -134,6 +134,7 @@ struct TestServer {
     addr: SocketAddr,
     password: String,
     tls_connector: TlsConnector,
+    _temp_dir: tempfile::TempDir,
 }
 
 impl TestServer {
@@ -146,19 +147,13 @@ impl TestServer {
         let password = "test_password_123".to_string();
         let (cert_pem, key_pem) = generate_test_certs();
 
-        // Write certs to temp files (using std::fs, not tokio::fs)
-        let temp_dir = std::env::temp_dir().join(format!(
-            "trojan-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&temp_dir).unwrap();
-
-        let cert_path = temp_dir.join("cert.pem");
-        let key_path = temp_dir.join("key.pem");
+        // Write certs to a unique temp directory to avoid collisions in parallel tests.
+        let temp_dir = tempfile::Builder::new()
+            .prefix("trojan-test-")
+            .tempdir()
+            .unwrap();
+        let cert_path = temp_dir.path().join("cert.pem");
+        let key_path = temp_dir.path().join("key.pem");
 
         fs::write(&cert_path, &cert_pem).unwrap();
         fs::write(&key_path, &key_pem).unwrap();
@@ -231,6 +226,7 @@ impl TestServer {
             addr,
             password,
             tls_connector,
+            _temp_dir: temp_dir,
         }
     }
 
