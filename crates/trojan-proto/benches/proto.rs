@@ -3,8 +3,8 @@
 use bytes::BytesMut;
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use trojan_proto::{
-    AddressRef, CMD_CONNECT, CMD_UDP_ASSOCIATE, HASH_LEN, HostRef, parse_request,
-    parse_udp_packet, write_request_header, write_udp_packet,
+    AddressRef, CMD_CONNECT, CMD_UDP_ASSOCIATE, HASH_LEN, HostRef, parse_request, parse_udp_packet,
+    write_request_header, write_udp_packet,
 };
 
 fn sample_hash() -> [u8; HASH_LEN] {

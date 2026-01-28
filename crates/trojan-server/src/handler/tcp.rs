@@ -7,7 +7,8 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::time::Instant;
 use tracing::{debug, instrument};
 use trojan_metrics::{
-    record_bytes_sent, record_target_bytes, record_target_connect_duration, record_target_connection,
+    record_bytes_sent, record_target_bytes, record_target_connect_duration,
+    record_target_connection,
 };
 use trojan_proto::AddressRef;
 

@@ -9,12 +9,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use tracing::{info, warn};
-use tracing_subscriber::{
-    EnvFilter,
-    fmt,
-    layer::SubscriberExt,
-    util::SubscriberInitExt,
-};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 use trojan_auth::{MemoryAuth, ReloadableAuth};
 use trojan_config::{CliOverrides, LoggingConfig, apply_overrides, load_config, validate_config};
 

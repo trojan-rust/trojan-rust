@@ -14,6 +14,7 @@ categories = ["network-programming"]
 [features]
 default = ["ws"]
 ws = ["tokio-tungstenite", "trojan-core/ws"]
+analytics = ["trojan-analytics"]
 
 [lib]
 name = "trojan_server"
@@ -64,6 +65,7 @@ trojan-proto = { version = "0.1.0", path = "../trojan-proto" }
 trojan-auth = { version = "0.1.0", path = "../trojan-auth" }
 trojan-config = { version = "0.1.0", path = "../trojan-config" }
 trojan-metrics = { version = "0.1.0", path = "../trojan-metrics" }
+trojan-analytics = { version = "0.1.0", path = "../trojan-analytics", optional = true }
 
 [dev-dependencies]
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }

@@ -2,10 +2,10 @@
 
 use std::net::IpAddr;
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main, BenchmarkId};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use trojan_config::WebSocketConfig;
-use trojan_server::ws::inspect_mixed;
 use trojan_server::RateLimiter;
+use trojan_server::ws::inspect_mixed;
 
 fn sample_ws_config() -> WebSocketConfig {
     WebSocketConfig {
@@ -25,7 +25,8 @@ Upgrade: websocket\r\n\
 Connection: Upgrade\r\n\
 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
 Sec-WebSocket-Version: 13\r\n\
-\r\n".to_vec()
+\r\n"
+        .to_vec()
 }
 
 fn sample_http_request() -> Vec<u8> {
@@ -33,7 +34,8 @@ fn sample_http_request() -> Vec<u8> {
 Host: example.com\r\n\
 User-Agent: Mozilla/5.0\r\n\
 Accept: text/html\r\n\
-\r\n".to_vec()
+\r\n"
+        .to_vec()
 }
 
 fn sample_trojan_header() -> Vec<u8> {
@@ -112,7 +114,11 @@ fn bench_inspect_mixed_header_sizes(c: &mut Criterion) {
     for i in 0..50 {
         large.splice(
             large.len() - 4..large.len() - 4,
-            format!("X-Custom-Header-{}: some-value-here-with-more-content\r\n", i).bytes(),
+            format!(
+                "X-Custom-Header-{}: some-value-here-with-more-content\r\n",
+                i
+            )
+            .bytes(),
         );
     }
     group.bench_with_input(

@@ -180,8 +180,8 @@ mod tests {
         assert_eq!(prefixed.prefix_remaining(), 5);
 
         let mut buf = [0u8; 3];
-        prefixed.read(&mut buf).await.unwrap();
-
+        let n = prefixed.read(&mut buf).await.unwrap();
+        assert_eq!(n, 3);
         assert_eq!(prefixed.prefix_remaining(), 2);
     }
 }

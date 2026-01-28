@@ -21,4 +21,7 @@ pub struct ServerState {
     pub tcp_send_buffer: usize,
     pub tcp_recv_buffer: usize,
     pub websocket: WebSocketConfig,
+    /// Analytics event collector (only available when analytics feature is enabled).
+    #[cfg(feature = "analytics")]
+    pub analytics: Option<trojan_analytics::EventCollector>,
 }

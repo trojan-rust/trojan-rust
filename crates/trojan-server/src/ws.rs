@@ -133,15 +133,21 @@ where
         ..WebSocketConfig::default()
     };
     let prefixed = PrefixedStream::new(initial, stream);
-    let ws = accept_hdr_async_with_config(prefixed, |req: &Request, resp: Response| {
-        debug!(path = %req.uri().path(), "websocket upgrade");
-        Ok(resp)
-    }, Some(ws_cfg))
+    let ws = accept_hdr_async_with_config(
+        prefixed,
+        |req: &Request, resp: Response| {
+            debug!(path = %req.uri().path(), "websocket upgrade");
+            Ok(resp)
+        },
+        Some(ws_cfg),
+    )
     .await
-    .map_err(|e| ServerError::Io(std::io::Error::new(
-        std::io::ErrorKind::InvalidData,
-        format!("websocket handshake failed: {e}"),
-    )))?;
+    .map_err(|e| {
+        ServerError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("websocket handshake failed: {e}"),
+        ))
+    })?;
     Ok(ws)
 }
 

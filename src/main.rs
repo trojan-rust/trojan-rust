@@ -51,13 +51,9 @@ async fn main() -> ExitCode {
         Commands::Server(args) => trojan_server::cli::run(*args)
             .await
             .map_err(|e| e.to_string()),
-        Commands::Auth(args) => trojan_auth::cli::run(args)
-            .await
-            .map_err(|e| e.to_string()),
+        Commands::Auth(args) => trojan_auth::cli::run(args).await.map_err(|e| e.to_string()),
         #[cfg(feature = "upgrade")]
-        Commands::Upgrade(args) => upgrade::run(args)
-            .await
-            .map_err(|e| e.to_string()),
+        Commands::Upgrade(args) => upgrade::run(args).await.map_err(|e| e.to_string()),
     };
 
     match result {
