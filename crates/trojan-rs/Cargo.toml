@@ -12,4 +12,4 @@ keywords = ["trojan", "proxy", "tls", "network"]
 categories = ["network-programming"]
 
 [dependencies]
-trojan = { version = "0.1.3", path = "../.." }
+trojan.workspace = true
