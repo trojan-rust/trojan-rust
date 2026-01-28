@@ -19,14 +19,18 @@ use std::{
 // ============================================================================
 
 fn generate_test_certs() -> (String, String) {
-    use rcgen::{CertifiedKey, generate_simple_self_signed};
+    use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
 
-    let subject_alt_names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
-    let CertifiedKey {
-        cert, signing_key, ..
-    } = generate_simple_self_signed(subject_alt_names).unwrap();
+    // Use ECDSA P-256 for cross-platform compatibility with aws-lc-rs
+    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+    let mut params = CertificateParams::default();
+    params.subject_alt_names = vec![
+        rcgen::SanType::DnsName("localhost".try_into().unwrap()),
+        rcgen::SanType::IpAddress(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1))),
+    ];
+    let cert = params.self_signed(&key_pair).unwrap();
 
-    (cert.pem(), signing_key.serialize_pem())
+    (cert.pem(), key_pair.serialize_pem())
 }
 
 // ============================================================================
