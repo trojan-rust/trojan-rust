@@ -14,6 +14,8 @@ mod server;
 mod state;
 mod tls;
 mod util;
+#[cfg(feature = "ws")]
+mod ws;
 
 pub use cli::ServerArgs;
 pub use error::ServerError;

@@ -106,6 +106,7 @@ pub async fn run_with_shutdown(
         relay_buffer_size,
         tcp_send_buffer,
         tcp_recv_buffer,
+        websocket: config.websocket.clone(),
     });
     let auth = Arc::new(auth);
     let tracker = ConnectionTracker::new();
@@ -131,6 +132,107 @@ pub async fn run_with_shutdown(
     // Create listener with custom backlog using socket2
     let listener = create_listener(listen, connection_backlog)?;
     info!(address = %listen, backlog = connection_backlog, "listening");
+
+    #[cfg(feature = "ws")]
+    if config.websocket.enabled && config.websocket.mode == "split" {
+        let ws_listen = config.websocket.listen.clone().unwrap_or_default();
+        let ws_addr: SocketAddr = ws_listen
+            .parse()
+            .map_err(|_| ServerError::Config("invalid websocket.listen address".into()))?;
+        let ws_listener = create_listener(ws_addr, connection_backlog)?;
+        let ws_acceptor = acceptor.clone();
+        let ws_state = state.clone();
+        let ws_auth = auth.clone();
+        let ws_tracker = tracker.clone();
+        let ws_conn_limit = conn_limit.clone();
+        let ws_rate_limiter = rate_limiter.clone();
+        let ws_shutdown = shutdown.clone();
+
+        info!(address = %ws_addr, "websocket split listener started");
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = ws_shutdown.cancelled() => break,
+                    result = ws_listener.accept() => {
+                        let (tcp, peer) = match result {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+
+                        if let Some(ref limiter) = ws_rate_limiter {
+                            let ip = peer.ip();
+                            if !limiter.check_and_increment(ip) {
+                                record_connection_rejected("rate_limit");
+                                drop(tcp);
+                                continue;
+                            }
+                        }
+
+                        let permit: Option<OwnedSemaphorePermit> = match &ws_conn_limit {
+                            Some(sem) => match sem.clone().try_acquire_owned() {
+                                Ok(p) => Some(p),
+                                Err(_) => {
+                                    record_connection_rejected("max_connections");
+                                    drop(tcp);
+                                    continue;
+                                }
+                            },
+                            None => None,
+                        };
+
+                        let acceptor = ws_acceptor.clone();
+                        let state = ws_state.clone();
+                        let auth = ws_auth.clone();
+                        ws_tracker.increment();
+                        let guard = ConnectionGuard::new(ws_tracker.clone());
+
+                        tokio::spawn(async move {
+                            let _guard = guard;
+                            let _permit = permit;
+                            record_connection_accepted();
+                            let start = Instant::now();
+
+                            let result = async {
+                                let tls_start = Instant::now();
+                                let tls_timeout = Duration::from_secs(defaults::DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS);
+                                match tokio::time::timeout(tls_timeout, acceptor.accept(tcp)).await {
+                                    Ok(Ok(tls)) => {
+                                        let tls_duration = tls_start.elapsed().as_secs_f64();
+                                        record_tls_handshake_duration(tls_duration);
+                                        crate::handler::handle_ws_only(tls, state, auth, peer).await
+                                    }
+                                    Ok(Err(err)) => {
+                                        record_error(ERROR_TLS_HANDSHAKE);
+                                        warn!(peer = %peer, error = %err, "TLS handshake failed");
+                                        Ok(())
+                                    }
+                                    Err(_) => {
+                                        record_error(ERROR_TLS_HANDSHAKE);
+                                        warn!(peer = %peer, timeout_secs = tls_timeout.as_secs(), "TLS handshake timed out");
+                                        Ok(())
+                                    }
+                                }
+                            }
+                            .await;
+
+                            let duration_secs = start.elapsed().as_secs_f64();
+                            record_connection_closed(duration_secs);
+
+                            if let Err(ref err) = result {
+                                warn!(peer = %peer, error = %err, "connection error");
+                            }
+                        });
+                    }
+                }
+            }
+        });
+    }
+
+    #[cfg(not(feature = "ws"))]
+    if config.websocket.enabled {
+        warn!("websocket.enabled=true but ws feature is disabled; ignoring websocket");
+    }
 
     loop {
         tokio::select! {

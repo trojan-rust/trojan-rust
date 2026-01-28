@@ -8,6 +8,10 @@ use std::time::Duration;
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use bytes::Bytes;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use crate::error::ServerError;
 
@@ -93,6 +97,64 @@ pub fn create_listener(addr: SocketAddr, backlog: u32) -> Result<TcpListener, Se
     socket.listen(backlog as i32)?;
     let listener = TcpListener::from_std(std::net::TcpListener::from(socket))?;
     Ok(listener)
+}
+
+/// A stream wrapper that yields a prefetched prefix before reading from the inner stream.
+pub struct PrefixedStream<S> {
+    prefix: Bytes,
+    pos: usize,
+    inner: S,
+}
+
+impl<S> PrefixedStream<S> {
+    pub fn new(prefix: Bytes, inner: S) -> Self {
+        Self {
+            prefix,
+            pos: 0,
+            inner,
+        }
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for PrefixedStream<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if self.pos < self.prefix.len() {
+            let remaining = &self.prefix[self.pos..];
+            let to_copy = remaining.len().min(buf.remaining());
+            buf.put_slice(&remaining[..to_copy]);
+            self.pos += to_copy;
+            return Poll::Ready(Ok(()));
+        }
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for PrefixedStream<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        data: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, data)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
 }
 
 /// Connect to target with optional socket buffer configuration.
