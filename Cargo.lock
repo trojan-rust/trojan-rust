@@ -3089,6 +3089,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "clap",
+ "criterion",
  "futures-util",
  "hex",
  "metrics",
