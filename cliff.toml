@@ -1,0 +1,72 @@
+# git-cliff configuration for trojan-rs
+# https://git-cliff.org/docs
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to this project will be documented in this file.
+"""
+body = """
+{% if version %}## {{ version | trim_start_matches(pat=\"v\") }} - {{ timestamp | date(format=\"%Y-%m-%d\") }}{% else %}## [Unreleased]{% endif %}
+{% for group, commits in commits | group_by(attribute=\"group\") %}
+### {{ group }}
+{% for commit in commits %}
+- {{ commit.message | trim }}
+{% endfor %}
+{% endfor %}
+"""
+trim = true
+footer = """
+"""
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+tag_pattern = "v[0-9].*"
+sort_commits = "oldest"
+
+[[commit_parsers]]
+message = "^feat"
+group = "Features"
+
+[[commit_parsers]]
+message = "^fix"
+group = "Bug Fixes"
+
+[[commit_parsers]]
+message = "^perf"
+group = "Performance"
+
+[[commit_parsers]]
+message = "^refactor"
+group = "Refactoring"
+
+[[commit_parsers]]
+message = "^docs"
+group = "Documentation"
+
+[[commit_parsers]]
+message = "^test"
+group = "Tests"
+
+[[commit_parsers]]
+message = "^build"
+group = "Build"
+
+[[commit_parsers]]
+message = "^ci"
+group = "CI"
+
+[[commit_parsers]]
+message = "^chore"
+group = "Chores"
+
+[[commit_parsers]]
+message = "^style"
+group = "Style"
+
+[[commit_parsers]]
+message = "^revert"
+group = "Reverts"
