@@ -53,6 +53,7 @@ jobs:
             os: ubuntu-latest
           - target: i686-unknown-linux-musl
             os: ubuntu-latest
+            use_cross: true
           # macOS
           - target: x86_64-apple-darwin
             os: macos-latest
@@ -90,10 +91,6 @@ jobs:
             i686-unknown-linux-gnu)
               sudo apt-get update
               sudo apt-get install -y gcc-multilib
-              ;;
-            i686-unknown-linux-musl)
-              sudo apt-get update
-              sudo apt-get install -y musl-tools
               ;;
           esac
 
