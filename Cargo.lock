@@ -3481,6 +3481,7 @@ dependencies = [
  "criterion",
  "futures-util",
  "hex",
+ "libc",
  "metrics",
  "metrics-exporter-prometheus",
  "parking_lot",

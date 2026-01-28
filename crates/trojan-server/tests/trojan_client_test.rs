@@ -121,7 +121,7 @@ impl TestServer {
         use trojan_auth::MemoryAuth;
         use trojan_config::{
             AnalyticsConfig, AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig,
-            TlsConfig, WebSocketConfig,
+            TcpConfig, TlsConfig, WebSocketConfig,
         };
 
         let password = "test_password_123".to_string();
@@ -153,6 +153,7 @@ impl TestServer {
                 rate_limit: None,
                 fallback_pool: None,
                 resource_limits: None,
+                tcp: TcpConfig::default(),
             },
             tls: TlsConfig {
                 cert: cert_path.to_string_lossy().to_string(),

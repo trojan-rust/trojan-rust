@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::pool::ConnectionPool;
-use trojan_config::WebSocketConfig;
+use trojan_config::{TcpConfig, WebSocketConfig};
 
 /// Shared server state for all connections.
 #[derive(Clone)]
@@ -20,6 +20,7 @@ pub struct ServerState {
     pub relay_buffer_size: usize,
     pub tcp_send_buffer: usize,
     pub tcp_recv_buffer: usize,
+    pub tcp_config: TcpConfig,
     pub websocket: WebSocketConfig,
     /// Analytics event collector (only available when analytics feature is enabled).
     #[cfg(feature = "analytics")]

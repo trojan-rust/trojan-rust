@@ -47,6 +47,41 @@ pub struct ServerConfig {
     /// Resource limits configuration
     #[serde(default)]
     pub resource_limits: Option<ResourceLimitsConfig>,
+    /// TCP socket options
+    #[serde(default)]
+    pub tcp: TcpConfig,
+}
+
+/// TCP socket configuration options.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TcpConfig {
+    /// Disable Nagle's algorithm (TCP_NODELAY) for lower latency.
+    #[serde(default = "default_tcp_no_delay")]
+    pub no_delay: bool,
+    /// TCP Keep-Alive interval in seconds (0 = disabled).
+    #[serde(default = "default_tcp_keepalive_secs")]
+    pub keepalive_secs: u64,
+    /// Enable SO_REUSEPORT for multi-process load balancing.
+    #[serde(default = "default_tcp_reuse_port")]
+    pub reuse_port: bool,
+    /// Enable TCP Fast Open (requires kernel support).
+    #[serde(default = "default_tcp_fast_open")]
+    pub fast_open: bool,
+    /// TCP Fast Open queue length (server-side).
+    #[serde(default = "default_tcp_fast_open_qlen")]
+    pub fast_open_qlen: u32,
+}
+
+impl Default for TcpConfig {
+    fn default() -> Self {
+        Self {
+            no_delay: default_tcp_no_delay(),
+            keepalive_secs: default_tcp_keepalive_secs(),
+            reuse_port: default_tcp_reuse_port(),
+            fast_open: default_tcp_fast_open(),
+            fast_open_qlen: default_tcp_fast_open_qlen(),
+        }
+    }
 }
 
 /// Configuration for fallback connection warm pool.
@@ -442,6 +477,21 @@ pub struct CliOverrides {
     /// WebSocket max frame bytes
     #[arg(long)]
     pub ws_max_frame_bytes: Option<usize>,
+    /// Disable TCP_NODELAY (enable Nagle's algorithm)
+    #[arg(long)]
+    pub tcp_no_delay: Option<bool>,
+    /// TCP Keep-Alive interval in seconds (0 = disabled)
+    #[arg(long)]
+    pub tcp_keepalive_secs: Option<u64>,
+    /// Enable SO_REUSEPORT for multi-process load balancing
+    #[arg(long)]
+    pub tcp_reuse_port: Option<bool>,
+    /// Enable TCP Fast Open (requires kernel support)
+    #[arg(long)]
+    pub tcp_fast_open: Option<bool>,
+    /// TCP Fast Open queue length
+    #[arg(long)]
+    pub tcp_fast_open_qlen: Option<u32>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -590,6 +640,22 @@ pub fn apply_overrides(config: &mut Config, overrides: &CliOverrides) {
     }
     if let Some(v) = overrides.ws_max_frame_bytes {
         config.websocket.max_frame_bytes = v;
+    }
+    // TCP socket options
+    if let Some(v) = overrides.tcp_no_delay {
+        config.server.tcp.no_delay = v;
+    }
+    if let Some(v) = overrides.tcp_keepalive_secs {
+        config.server.tcp.keepalive_secs = v;
+    }
+    if let Some(v) = overrides.tcp_reuse_port {
+        config.server.tcp.reuse_port = v;
+    }
+    if let Some(v) = overrides.tcp_fast_open {
+        config.server.tcp.fast_open = v;
+    }
+    if let Some(v) = overrides.tcp_fast_open_qlen {
+        config.server.tcp.fast_open_qlen = v;
     }
 }
 
@@ -769,6 +835,12 @@ default_fns! {
     default_connection_backlog    => DEFAULT_CONNECTION_BACKLOG: u32,
     default_ws_enabled            => DEFAULT_WS_ENABLED: bool,
     default_ws_max_frame_bytes    => DEFAULT_WS_MAX_FRAME_BYTES: usize,
+    // TCP socket options
+    default_tcp_no_delay          => DEFAULT_TCP_NO_DELAY: bool,
+    default_tcp_keepalive_secs    => DEFAULT_TCP_KEEPALIVE_SECS: u64,
+    default_tcp_reuse_port        => DEFAULT_TCP_REUSE_PORT: bool,
+    default_tcp_fast_open         => DEFAULT_TCP_FAST_OPEN: bool,
+    default_tcp_fast_open_qlen    => DEFAULT_TCP_FAST_OPEN_QLEN: u32,
 }
 
 default_string_fns! {

@@ -18,7 +18,7 @@ use crate::rate_limit::RateLimiter;
 use crate::resolve::resolve_sockaddr;
 use crate::state::ServerState;
 use crate::tls::load_tls_config;
-use crate::util::{ConnectionGuard, ConnectionTracker, create_listener};
+use crate::util::{ConnectionGuard, ConnectionTracker, apply_tcp_options, create_listener};
 use trojan_auth::AuthBackend;
 use trojan_config::Config;
 use trojan_core::defaults;
@@ -123,6 +123,16 @@ pub async fn run_with_shutdown(
         None
     };
 
+    // Log TCP options
+    let tcp_cfg = &config.server.tcp;
+    info!(
+        no_delay = tcp_cfg.no_delay,
+        keepalive_secs = tcp_cfg.keepalive_secs,
+        reuse_port = tcp_cfg.reuse_port,
+        fast_open = tcp_cfg.fast_open,
+        "TCP options configured"
+    );
+
     let state = Arc::new(ServerState {
         fallback_addr,
         max_udp_payload: config.server.max_udp_payload,
@@ -134,6 +144,7 @@ pub async fn run_with_shutdown(
         relay_buffer_size,
         tcp_send_buffer,
         tcp_recv_buffer,
+        tcp_config: config.server.tcp.clone(),
         websocket: config.websocket.clone(),
         #[cfg(feature = "analytics")]
         analytics,
@@ -159,8 +170,8 @@ pub async fn run_with_shutdown(
         limiter
     });
 
-    // Create listener with custom backlog using socket2
-    let listener = create_listener(listen, connection_backlog)?;
+    // Create listener with custom backlog and TCP options using socket2
+    let listener = create_listener(listen, connection_backlog, &config.server.tcp)?;
     info!(address = %listen, backlog = connection_backlog, "listening");
 
     #[cfg(feature = "ws")]
@@ -169,7 +180,7 @@ pub async fn run_with_shutdown(
         let ws_addr: SocketAddr = ws_listen
             .parse()
             .map_err(|_| ServerError::Config("invalid websocket.listen address".into()))?;
-        let ws_listener = create_listener(ws_addr, connection_backlog)?;
+        let ws_listener = create_listener(ws_addr, connection_backlog, &config.server.tcp)?;
         let ws_acceptor = acceptor.clone();
         let ws_state = state.clone();
         let ws_auth = auth.clone();
@@ -189,6 +200,11 @@ pub async fn run_with_shutdown(
                             Ok(v) => v,
                             Err(_) => continue,
                         };
+
+                        // Apply TCP socket options
+                        if let Err(e) = apply_tcp_options(&tcp, &ws_state.tcp_config) {
+                            tracing::debug!(error = %e, "failed to apply TCP options");
+                        }
 
                         if let Some(ref limiter) = ws_rate_limiter {
                             let ip = peer.ip();
@@ -285,6 +301,11 @@ pub async fn run_with_shutdown(
 
             result = listener.accept() => {
                 let (tcp, peer) = result?;
+
+                // Apply TCP socket options (no_delay, keepalive)
+                if let Err(e) = apply_tcp_options(&tcp, &state.tcp_config) {
+                    debug!(error = %e, "failed to apply TCP options");
+                }
 
                 // Update connection queue depth metric (based on semaphore usage)
                 if let Some(ref sem) = conn_limit {
