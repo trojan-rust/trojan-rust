@@ -1,7 +1,7 @@
 //! Self-signed certificate generation.
 
 use crate::cli::GenerateArgs;
-use rcgen::{CertificateParams, KeyPair, SanType, PKCS_ECDSA_P256_SHA256};
+use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256, SanType};
 use std::fs;
 use thiserror::Error;
 
@@ -71,10 +71,7 @@ pub fn generate(args: &GenerateArgs) -> Result<(), CertError> {
     println!("  Certificate: {}", cert_path.display());
     println!("  Private key: {}", key_path.display());
     println!("  Valid for:   {} days", args.days);
-    println!(
-        "  Domains:     {}",
-        args.domain.join(", ")
-    );
+    println!("  Domains:     {}", args.domain.join(", "));
     if !args.ip.is_empty() {
         println!(
             "  IPs:         {}",

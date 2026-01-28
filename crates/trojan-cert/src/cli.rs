@@ -6,7 +6,11 @@ use std::path::PathBuf;
 
 /// Certificate management for trojan.
 #[derive(Parser, Debug, Clone)]
-#[command(name = "trojan-cert", version, about = "Certificate management for trojan")]
+#[command(
+    name = "trojan-cert",
+    version,
+    about = "Certificate management for trojan"
+)]
 pub struct CertArgs {
     #[command(subcommand)]
     pub command: CertCommands,
