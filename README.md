@@ -1,5 +1,10 @@
 # trojan-rs
 
+[![Crates.io](https://img.shields.io/crates/v/trojan.svg)](https://crates.io/crates/trojan)
+[![Documentation](https://docs.rs/trojan/badge.svg)](https://docs.rs/trojan)
+[![CI](https://github.com/trojan-rs/trojan-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/trojan-rs/trojan-rs/actions/workflows/ci.yml)
+[![License](https://img.shields.io/crates/l/trojan.svg)](https://github.com/trojan-rs/trojan-rs/blob/master/LICENSE)
+
 A high-performance Rust implementation of the [Trojan](https://trojan-gfw.github.io/trojan/protocol) protocol.
 
 ## Features
