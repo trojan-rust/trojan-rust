@@ -36,6 +36,8 @@ where
     // Separate buffers for each address family to avoid borrow conflicts
     let mut udp_buf_v4 = vec![0u8; state.max_udp_payload];
     let mut udp_buf_v6 = vec![0u8; state.max_udp_payload];
+    // Reusable buffer for UDP responses (avoids allocation per packet)
+    let mut response_buf = BytesMut::with_capacity(state.max_udp_payload + 64);
     let idle_sleep = tokio::time::sleep(state.udp_idle_timeout);
     tokio::pin!(idle_sleep);
 
@@ -108,7 +110,7 @@ where
                 let (size, udp_peer) = res?;
                 if size <= state.max_udp_payload {
                     idle_sleep.as_mut().reset(Instant::now() + state.udp_idle_timeout);
-                    send_udp_response(&mut stream, udp_peer, &udp_buf_v4[..size]).await?;
+                    send_udp_response(&mut stream, udp_peer, &udp_buf_v4[..size], &mut response_buf).await?;
                     record_udp_packet("inbound");
                     packets_in += 1;
                 }
@@ -124,7 +126,7 @@ where
                 let (size, udp_peer) = res?;
                 if size <= state.max_udp_payload {
                     idle_sleep.as_mut().reset(Instant::now() + state.udp_idle_timeout);
-                    send_udp_response(&mut stream, udp_peer, &udp_buf_v6[..size]).await?;
+                    send_udp_response(&mut stream, udp_peer, &udp_buf_v6[..size], &mut response_buf).await?;
                     record_udp_packet("inbound");
                     packets_in += 1;
                 }
@@ -138,19 +140,20 @@ where
     }
 }
 
-/// Send a UDP response back to the client.
+/// Send a UDP response back to the client using a reusable buffer.
 async fn send_udp_response<S>(
     stream: &mut S,
     peer: SocketAddr,
     payload: &[u8],
+    buf: &mut BytesMut,
 ) -> Result<(), ServerError>
 where
     S: AsyncWrite + Unpin,
 {
+    buf.clear();
     let addr = address_from_socket(peer);
-    let mut out = BytesMut::new();
-    write_udp_packet(&mut out, &addr, payload).map_err(ServerError::ProtoWrite)?;
-    stream.write_all(&out).await?;
-    record_bytes_sent(out.len() as u64);
+    write_udp_packet(buf, &addr, payload).map_err(ServerError::ProtoWrite)?;
+    stream.write_all(buf).await?;
+    record_bytes_sent(buf.len() as u64);
     Ok(())
 }
