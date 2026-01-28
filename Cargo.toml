@@ -26,7 +26,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 license = "GPL-3.0-only"
 authors = ["0x72757374 <257538187+0x72757374@users.noreply.github.com>"]
@@ -35,14 +35,14 @@ homepage = "https://github.com/trojan-rs/trojan-rs"
 documentation = "https://docs.rs/trojan"
 
 [workspace.dependencies]
-trojan = { version = "0.1.5", path = "." }
-trojan-core = { version = "0.1.5", path = "crates/trojan-core" }
-trojan-proto = { version = "0.1.5", path = "crates/trojan-proto" }
-trojan-auth = { version = "0.1.5", path = "crates/trojan-auth" }
-trojan-config = { version = "0.1.5", path = "crates/trojan-config" }
-trojan-metrics = { version = "0.1.5", path = "crates/trojan-metrics" }
-trojan-analytics = { version = "0.1.5", path = "crates/trojan-analytics" }
-trojan-server = { version = "0.1.5", path = "crates/trojan-server" }
+trojan = { version = "0.1.6", path = "." }
+trojan-core = { version = "0.1.6", path = "crates/trojan-core" }
+trojan-proto = { version = "0.1.6", path = "crates/trojan-proto" }
+trojan-auth = { version = "0.1.6", path = "crates/trojan-auth" }
+trojan-config = { version = "0.1.6", path = "crates/trojan-config" }
+trojan-metrics = { version = "0.1.6", path = "crates/trojan-metrics" }
+trojan-analytics = { version = "0.1.6", path = "crates/trojan-analytics" }
+trojan-server = { version = "0.1.6", path = "crates/trojan-server" }
 trojan-cert = { version = "0.1.4", path = "crates/trojan-cert" }
 
 [features]

@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## 0.1.6 - 2026-01-28
+
+### <!-- 5 -->🎨 Styling
+
+- apply cargo fmt to trojan-cert
+
 ## 0.1.5 - 2026-01-28
 
 ### <!-- 0 -->🚀 Features
@@ -18,6 +24,8 @@ All notable changes to this project will be documented in this file.
 ### <!-- 7 -->⚙️ Miscellaneous Tasks
 
 - add git-cliff for automated release notes
+
+- release v0.1.5
 
 ## 0.1.4 - 2026-01-28
 
