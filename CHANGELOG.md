@@ -3,6 +3,42 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+## [0.1.8](https://github.com/trojan-rs/trojan-rs/compare/v0.1.4...v0.1.8) - 2026-01-28
+
+### Bug Fixes
+
+- suppress unused variable warning on Windows
+
+
+### CI
+
+- add git-cliff for automated release notes
+
+
+### Chores
+
+- update Cargo.lock dependencies
+
+- release v0.1.5
+
+- release v0.1.6
+
+- adopt release-plz
+
+- release v0.1.7 ([#4](https://github.com/trojan-rs/trojan-rs/pull/4))
+
+
+### Documentation
+
+- add changelog scaffold
+
+
+### Features
+
+- add self-signed certificate generation
+
+- add TCP socket configuration options
+
 ## [0.1.7](https://github.com/trojan-rs/trojan-rs/compare/v0.1.4...v0.1.7) - 2026-01-28
 
 ### Bug Fixes
