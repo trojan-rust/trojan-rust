@@ -14,18 +14,18 @@ categories = ["network-programming"]
 [workspace]
 resolver = "2"
 members = [
-  "crates/trojan-core",
-  "crates/trojan-proto",
-  "crates/trojan-auth",
-  "crates/trojan-config",
-  "crates/trojan-metrics",
-  "crates/trojan-analytics",
-  "crates/trojan-server",
-  "crates/trojan-rs",
+    "crates/trojan-core",
+    "crates/trojan-proto",
+    "crates/trojan-auth",
+    "crates/trojan-config",
+    "crates/trojan-metrics",
+    "crates/trojan-analytics",
+    "crates/trojan-server",
+    "crates/trojan-rs",
 ]
 
 [workspace.package]
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 license = "GPL-3.0-only"
 authors = ["trojan-rust <164051043+trojan-rust@users.noreply.github.com>"]
@@ -34,22 +34,18 @@ homepage = "https://github.com/trojan-rs/trojan-rs"
 documentation = "https://docs.rs/trojan"
 
 [workspace.dependencies]
-trojan = { version = "0.1.3", path = "." }
-trojan-core = { version = "0.1.3", path = "crates/trojan-core" }
-trojan-proto = { version = "0.1.3", path = "crates/trojan-proto" }
-trojan-auth = { version = "0.1.3", path = "crates/trojan-auth" }
-trojan-config = { version = "0.1.3", path = "crates/trojan-config" }
-trojan-metrics = { version = "0.1.3", path = "crates/trojan-metrics" }
-trojan-analytics = { version = "0.1.3", path = "crates/trojan-analytics" }
-trojan-server = { version = "0.1.3", path = "crates/trojan-server" }
+trojan = { version = "0.1.4", path = "." }
+trojan-core = { version = "0.1.4", path = "crates/trojan-core" }
+trojan-proto = { version = "0.1.4", path = "crates/trojan-proto" }
+trojan-auth = { version = "0.1.4", path = "crates/trojan-auth" }
+trojan-config = { version = "0.1.4", path = "crates/trojan-config" }
+trojan-metrics = { version = "0.1.4", path = "crates/trojan-metrics" }
+trojan-analytics = { version = "0.1.4", path = "crates/trojan-analytics" }
+trojan-server = { version = "0.1.4", path = "crates/trojan-server" }
 
 [features]
 default = ["cli", "sql-sqlite"]
-cli = [
-    "trojan-auth/cli",
-    "dep:clap",
-    "dep:tokio",
-]
+cli = ["trojan-auth/cli", "dep:clap", "dep:tokio"]
 
 # Self-upgrade from GitHub releases (disabled by default, enabled in CI builds)
 upgrade = [
@@ -88,8 +84,15 @@ trojan-server.workspace = true
 
 # CLI dependencies
 clap = { version = "4", features = ["derive"], optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"], optional = true }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+], optional = true }
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "stream",
+    "rustls-tls",
+], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 self-replace = { version = "1", optional = true }
@@ -103,4 +106,6 @@ tempfile = { version = "3", optional = true }
 
 # Windows-only dependencies for upgrade feature
 [target.'cfg(windows)'.dependencies]
-zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
+zip = { version = "2", default-features = false, features = [
+    "deflate",
+], optional = true }

@@ -3355,7 +3355,7 @@ dependencies = [
 
 [[package]]
 name = "trojan"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "clap",
  "flate2",
@@ -3381,7 +3381,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-analytics"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "clickhouse",
  "rand 0.8.5",
@@ -3396,7 +3396,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-auth"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "clap",
@@ -3412,7 +3412,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-config"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "clap",
  "serde",
@@ -3425,7 +3425,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "bytes",
  "criterion",
@@ -3436,7 +3436,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-metrics"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "axum",
  "metrics",
@@ -3447,7 +3447,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-proto"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "bytes",
  "criterion",
@@ -3455,14 +3455,14 @@ dependencies = [
 
 [[package]]
 name = "trojan-rs"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "trojan",
 ]
 
 [[package]]
 name = "trojan-server"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "bytes",
