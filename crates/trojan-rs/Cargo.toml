@@ -10,6 +10,7 @@ documentation.workspace = true
 description = "A Rust implementation of the Trojan protocol (re-exports trojan crate)"
 keywords = ["trojan", "proxy", "tls", "network"]
 categories = ["network-programming"]
+readme = "README.md"
 
 [dependencies]
 trojan.workspace = true

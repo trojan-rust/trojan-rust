@@ -10,6 +10,7 @@ documentation.workspace = true
 description = "Authentication backends for trojan-rs"
 keywords = ["trojan", "proxy", "authentication"]
 categories = ["network-programming", "authentication"]
+readme = "README.md"
 
 [features]
 default = []

@@ -10,6 +10,7 @@ documentation.workspace = true
 description = "Prometheus metrics for trojan-rs"
 keywords = ["trojan", "proxy", "metrics", "prometheus"]
 categories = ["network-programming"]
+readme = "README.md"
 
 [dependencies]
 trojan-core.workspace = true

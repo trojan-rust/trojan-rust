@@ -10,6 +10,7 @@ documentation.workspace = true
 description = "Core types and constants for trojan-rs"
 keywords = ["trojan", "proxy"]
 categories = ["network-programming"]
+readme = "README.md"
 
 [features]
 default = []

@@ -10,6 +10,7 @@ documentation.workspace = true
 description = "High-performance Trojan protocol server"
 keywords = ["trojan", "proxy", "tls", "server"]
 categories = ["network-programming"]
+readme = "README.md"
 
 [features]
 default = ["ws"]

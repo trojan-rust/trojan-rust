@@ -10,6 +10,7 @@ documentation.workspace = true
 description = "Trojan protocol parsing and serialization"
 keywords = ["trojan", "proxy", "protocol"]
 categories = ["network-programming", "parser-implementations"]
+readme = "README.md"
 
 [dependencies]
 bytes = "1"
