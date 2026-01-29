@@ -514,7 +514,10 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<Config, ConfigError> {
     let path = path.as_ref();
     let data = fs::read_to_string(path)?;
     match path.extension().and_then(|s| s.to_str()).unwrap_or("") {
-        "json" => Ok(serde_json::from_str(&data)?),
+        "json" | "jsonc" => {
+            let stripped = json_comments::StripComments::new(data.as_bytes());
+            Ok(serde_json::from_reader(stripped)?)
+        }
         "yaml" | "yml" => Ok(serde_yaml::from_str(&data)?),
         "toml" => Ok(toml::from_str(&data)?),
         _ => Err(ConfigError::UnsupportedFormat),

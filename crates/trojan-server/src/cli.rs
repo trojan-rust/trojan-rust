@@ -19,7 +19,7 @@ use crate::{CancellationToken, run_with_shutdown};
 #[derive(Parser, Debug, Clone)]
 #[command(name = "trojan-server", version, about = "Trojan server in Rust")]
 pub struct ServerArgs {
-    /// Config file path (json/yaml/toml)
+    /// Config file path (json/jsonc/yaml/toml)
     #[arg(short, long, default_value = "config.toml")]
     pub config: PathBuf,
 
