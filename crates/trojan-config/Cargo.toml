@@ -10,6 +10,7 @@ documentation.workspace = true
 description = "Configuration loading and validation for trojan-rs"
 keywords = ["trojan", "proxy", "config"]
 categories = ["network-programming", "config"]
+readme = "README.md"
 
 [dependencies]
 trojan-core.workspace = true

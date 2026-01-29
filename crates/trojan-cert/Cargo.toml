@@ -10,6 +10,7 @@ documentation.workspace = true
 description = "Certificate generation utilities for trojan-rs"
 keywords = ["trojan", "certificate", "tls", "self-signed"]
 categories = ["cryptography"]
+readme = "README.md"
 
 [dependencies]
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }

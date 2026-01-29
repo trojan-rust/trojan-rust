@@ -10,13 +10,16 @@ A high-performance Rust implementation of the [Trojan](https://trojan-gfw.github
 ## Features
 
 - **High Performance** - Built with async Rust and Tokio for maximum throughput
-- **TLS 1.3 Support** - Modern encryption with configurable TLS versions
+- **TLS 1.3 Support** - Modern encryption with configurable TLS versions and mTLS
 - **WebSocket Transport** - Optional WebSocket encapsulation for CDN compatibility
 - **Multiple Auth Backends** - Memory, SQLite, PostgreSQL, and MySQL support
 - **User Management** - Full CLI for managing users with traffic limits
 - **Prometheus Metrics** - Built-in metrics exporter for monitoring
+- **Analytics** - Connection event tracking with ClickHouse backend
 - **Rate Limiting** - Per-IP connection rate limiting
-- **Fallback Server** - Configurable fallback for non-Trojan traffic
+- **TCP Tuning** - Configurable TCP_NODELAY, Keep-Alive, SO_REUSEPORT, TCP Fast Open
+- **Fallback Server** - Configurable fallback with connection warm pool
+- **Certificate Management** - Self-signed certificate generation (optional feature)
 - **Self-Upgrade** - Auto-update from GitHub releases (optional feature)
 - **Cross-Platform** - Linux, macOS, and Windows support
 
@@ -56,6 +59,18 @@ trojan server --listen 0.0.0.0:443 \
   --fallback 127.0.0.1:80
 ```
 
+### Certificate Generation
+
+```bash
+# Generate a self-signed certificate
+trojan cert generate \
+  --domain example.com \
+  --domain localhost \
+  --ip 127.0.0.1 \
+  --output /etc/trojan \
+  --days 365
+```
+
 ### User Management (SQL Backend)
 
 ```bash
@@ -77,7 +92,7 @@ trojan auth remove --database sqlite://users.db --password "user-password"
 
 ## Configuration
 
-Create a `config.toml` file:
+Supports TOML, YAML, JSON, and JSONC formats. Create a `config.toml` file:
 
 ```toml
 [server]
@@ -85,6 +100,12 @@ listen = "0.0.0.0:443"
 fallback = "127.0.0.1:80"
 tcp_idle_timeout_secs = 600
 udp_timeout_secs = 60
+
+[server.tcp]
+no_delay = true
+keepalive_secs = 300
+reuse_port = false
+fast_open = false
 
 [tls]
 cert = "/etc/trojan/cert.pem"
@@ -94,6 +115,11 @@ alpn = ["http/1.1"]
 [auth]
 passwords = ["password1", "password2"]
 
+[websocket]
+enabled = true
+mode = "mixed"
+path = "/ws"
+
 [metrics]
 listen = "127.0.0.1:9100"
 
@@ -101,7 +127,7 @@ listen = "127.0.0.1:9100"
 level = "info"
 ```
 
-JSON and YAML formats are also supported.
+For all available options, see the [`trojan-config` documentation](https://docs.rs/trojan-config).
 
 ## Supported Platforms
 
@@ -116,13 +142,14 @@ JSON and YAML formats are also supported.
 
 | Crate | Description |
 |-------|-------------|
-| `trojan-core` | Core types and utilities |
-| `trojan-proto` | Protocol encoding/decoding |
-| `trojan-auth` | Authentication backends |
-| `trojan-config` | Configuration parsing |
-| `trojan-metrics` | Prometheus metrics |
-| `trojan-analytics` | Connection tracking |
-| `trojan-server` | Server implementation |
+| [`trojan-core`](https://docs.rs/trojan-core) | Core types and utilities |
+| [`trojan-proto`](https://docs.rs/trojan-proto) | Protocol encoding/decoding |
+| [`trojan-auth`](https://docs.rs/trojan-auth) | Authentication backends |
+| [`trojan-config`](https://docs.rs/trojan-config) | Configuration parsing |
+| [`trojan-metrics`](https://docs.rs/trojan-metrics) | Prometheus metrics |
+| [`trojan-analytics`](https://docs.rs/trojan-analytics) | Connection tracking |
+| [`trojan-server`](https://docs.rs/trojan-server) | Server implementation |
+| [`trojan-cert`](https://docs.rs/trojan-cert) | Certificate management |
 
 ## License
 
