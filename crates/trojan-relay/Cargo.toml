@@ -1,0 +1,42 @@
+[package]
+name = "trojan-relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Relay chain and entry node for trojan-rs multi-hop tunneling"
+keywords = ["trojan", "relay", "tunnel", "proxy"]
+categories = ["network-programming"]
+readme = "README.md"
+
+[dependencies]
+trojan-core = { workspace = true }
+trojan-proto = { workspace = true }
+
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "net",
+    "io-util",
+    "time",
+    "macros",
+    "sync",
+] }
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "logging", "std", "tls12"] }
+rcgen = { version = "0.13", features = ["aws_lc_rs", "pem"] }
+
+sha2 = "0.10"
+hex = "0.4"
+rustls-pemfile = "2"
+
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+thiserror = "2"
+tracing = "0.1"
+tokio-util = { version = "0.7", features = ["compat", "rt"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net", "time"] }
