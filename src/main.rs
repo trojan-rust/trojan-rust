@@ -34,6 +34,10 @@ enum Commands {
     #[command(name = "server", alias = "serve")]
     Server(Box<trojan_server::ServerArgs>),
 
+    /// Run the trojan client (SOCKS5 proxy).
+    #[command(name = "client")]
+    Client(trojan_client::ClientArgs),
+
     /// Manage authentication users (SQL backend).
     #[command(name = "auth")]
     Auth(trojan_auth::AuthArgs),
@@ -55,6 +59,9 @@ async fn main() -> ExitCode {
 
     let result: Result<(), String> = match cli.command {
         Commands::Server(args) => trojan_server::cli::run(*args)
+            .await
+            .map_err(|e| e.to_string()),
+        Commands::Client(args) => trojan_client::cli::run(args)
             .await
             .map_err(|e| e.to_string()),
         Commands::Auth(args) => trojan_auth::cli::run(args).await.map_err(|e| e.to_string()),

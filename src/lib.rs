@@ -13,8 +13,10 @@
 //! - [`trojan_config`] - Configuration loading and validation
 //! - [`trojan_metrics`] - Prometheus-compatible metrics
 //! - [`trojan_server`] - Server implementation
+//! - [`trojan_client`] - Client implementation (SOCKS5 proxy)
 
 pub use trojan_auth as auth;
+pub use trojan_client as client;
 pub use trojan_config as config;
 pub use trojan_core as core;
 pub use trojan_metrics as metrics;
