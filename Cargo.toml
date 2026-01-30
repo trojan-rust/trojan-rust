@@ -91,6 +91,7 @@ trojan-config.workspace = true
 trojan-metrics.workspace = true
 trojan-server.workspace = true
 trojan-client.workspace = true
+trojan-relay.workspace = true
 trojan-cert = { workspace = true, optional = true }
 
 # CLI dependencies

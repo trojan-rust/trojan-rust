@@ -14,6 +14,7 @@
 //! - [`trojan_metrics`] - Prometheus-compatible metrics
 //! - [`trojan_server`] - Server implementation
 //! - [`trojan_client`] - Client implementation (SOCKS5 proxy)
+//! - [`trojan_relay`] - Relay chain (entry + relay nodes)
 
 pub use trojan_auth as auth;
 pub use trojan_client as client;
@@ -21,6 +22,7 @@ pub use trojan_config as config;
 pub use trojan_core as core;
 pub use trojan_metrics as metrics;
 pub use trojan_proto as proto;
+pub use trojan_relay as relay;
 pub use trojan_server as server;
 
 /// Prelude module for convenient imports.

@@ -17,6 +17,7 @@
 //! Basic relay without multiplexing. Each client connection creates a
 //! dedicated tunnel through the chain.
 
+pub mod cli;
 pub mod config;
 pub mod entry;
 pub mod error;

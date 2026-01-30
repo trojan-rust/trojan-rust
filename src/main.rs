@@ -2,6 +2,9 @@
 //!
 //! This binary provides a unified interface to all trojan components:
 //! - `trojan server` - Run the trojan server
+//! - `trojan client` - Run the trojan client (SOCKS5 proxy)
+//! - `trojan entry` - Run the relay chain entry node (A)
+//! - `trojan relay` - Run the relay chain relay node (B)
 //! - `trojan auth` - Manage authentication users (SQL backend)
 //! - `trojan cert` - Generate self-signed certificates (requires `cert` feature)
 //! - `trojan upgrade` - Self-upgrade from GitHub releases (requires `upgrade` feature)
@@ -38,6 +41,14 @@ enum Commands {
     #[command(name = "client")]
     Client(trojan_client::ClientArgs),
 
+    /// Run the relay chain entry node (A).
+    #[command(name = "entry")]
+    Entry(trojan_relay::cli::EntryArgs),
+
+    /// Run the relay chain relay node (B).
+    #[command(name = "relay")]
+    Relay(trojan_relay::cli::RelayArgs),
+
     /// Manage authentication users (SQL backend).
     #[command(name = "auth")]
     Auth(trojan_auth::AuthArgs),
@@ -62,6 +73,12 @@ async fn main() -> ExitCode {
             .await
             .map_err(|e| e.to_string()),
         Commands::Client(args) => trojan_client::cli::run(args)
+            .await
+            .map_err(|e| e.to_string()),
+        Commands::Entry(args) => trojan_relay::cli::run_entry(args)
+            .await
+            .map_err(|e| e.to_string()),
+        Commands::Relay(args) => trojan_relay::cli::run_relay(args)
             .await
             .map_err(|e| e.to_string()),
         Commands::Auth(args) => trojan_auth::cli::run(args).await.map_err(|e| e.to_string()),

@@ -23,6 +23,7 @@ tokio = { version = "1", features = [
     "time",
     "macros",
     "sync",
+    "signal",
 ] }
 tokio-rustls = "0.26"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "logging", "std", "tls12"] }
@@ -36,6 +37,8 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 thiserror = "2"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+clap = { version = "4", features = ["derive"] }
 tokio-util = { version = "0.7", features = ["compat", "rt"] }
 
 [dev-dependencies]
