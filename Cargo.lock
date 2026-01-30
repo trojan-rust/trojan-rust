@@ -3427,7 +3427,7 @@ dependencies = [
 
 [[package]]
 name = "trojan"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "clap",
  "flate2",
@@ -3456,7 +3456,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-analytics"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "clickhouse",
  "rand 0.8.5",
@@ -3471,7 +3471,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-auth"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "clap",
@@ -3487,7 +3487,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-cert"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "clap",
  "rcgen 0.14.7",
@@ -3497,7 +3497,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-client"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "clap",
@@ -3526,7 +3526,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-config"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "clap",
  "json_comments",
@@ -3540,7 +3540,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-core"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "criterion",
@@ -3551,7 +3551,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-metrics"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "axum",
  "metrics",
@@ -3562,7 +3562,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-proto"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "criterion",
@@ -3570,7 +3570,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-relay"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "clap",
  "hex",
@@ -3590,14 +3590,14 @@ dependencies = [
 
 [[package]]
 name = "trojan-rs"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "trojan",
 ]
 
 [[package]]
 name = "trojan-server"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3638,7 +3638,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-transport"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "rcgen 0.13.2",
  "rustls",
