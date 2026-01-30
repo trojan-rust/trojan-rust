@@ -121,3 +121,10 @@ tempfile = { version = "3", optional = true }
 zip = { version = "2", default-features = false, features = [
     "deflate",
 ], optional = true }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
