@@ -145,7 +145,7 @@ pub struct TlsConfig {
     pub cipher_suites: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSocketConfig {
     #[serde(default = "default_ws_enabled")]
     pub enabled: bool,
@@ -159,6 +159,19 @@ pub struct WebSocketConfig {
     pub listen: Option<String>,
     #[serde(default = "default_ws_max_frame_bytes")]
     pub max_frame_bytes: usize,
+}
+
+impl Default for WebSocketConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_ws_enabled(),
+            mode: default_ws_mode(),
+            path: default_ws_path(),
+            host: None,
+            listen: None,
+            max_frame_bytes: default_ws_max_frame_bytes(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
