@@ -58,6 +58,7 @@ impl HandshakeMetadata {
             let val = match t {
                 TransportType::Tls => "tls",
                 TransportType::Plain => "plain",
+                TransportType::Ws => "ws",
             };
             parts.push(format!("transport={}", val));
         }
@@ -80,6 +81,7 @@ impl HandshakeMetadata {
                         meta.transport = match value.trim() {
                             "tls" => Some(TransportType::Tls),
                             "plain" => Some(TransportType::Plain),
+                            "ws" => Some(TransportType::Ws),
                             _ => None,
                         };
                     }

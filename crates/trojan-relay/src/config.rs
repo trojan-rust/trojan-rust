@@ -120,6 +120,16 @@ pub struct RelayTlsConfig {
     pub key: String,
 }
 
+impl RelayTlsConfig {
+    /// Convert to the transport crate's `TlsConfig`.
+    pub fn to_transport_config(&self) -> trojan_transport::tls_config::TlsConfig {
+        trojan_transport::tls_config::TlsConfig {
+            cert: self.cert.clone(),
+            key: self.key.clone(),
+        }
+    }
+}
+
 /// Relay authentication configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayAuthConfig {
@@ -154,6 +164,8 @@ pub enum TransportType {
     Tls,
     /// Plain TCP (no encryption). For testing or trusted networks.
     Plain,
+    /// WebSocket transport.
+    Ws,
 }
 
 // ── Shared ──

@@ -1,0 +1,26 @@
+[package]
+name = "trojan-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Pluggable transport abstraction for trojan-rs (TLS, plain TCP, WebSocket)"
+keywords = ["trojan", "transport", "tls", "websocket"]
+categories = ["network-programming"]
+
+[dependencies]
+trojan-core = { workspace = true, features = ["ws"] }
+
+tokio = { version = "1", features = ["net", "io-util"] }
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "logging", "std", "tls12"] }
+rcgen = { version = "0.13", features = ["aws_lc_rs", "pem"] }
+rustls-pemfile = "2"
+
+tokio-tungstenite = "0.24"
+
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"

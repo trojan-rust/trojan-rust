@@ -15,6 +15,7 @@ readme = "README.md"
 [dependencies]
 trojan-core = { workspace = true }
 trojan-proto = { workspace = true }
+trojan-transport = { workspace = true }
 
 tokio = { version = "1", features = [
     "rt-multi-thread",
@@ -25,13 +26,10 @@ tokio = { version = "1", features = [
     "sync",
     "signal",
 ] }
-tokio-rustls = "0.26"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "logging", "std", "tls12"] }
-rcgen = { version = "0.13", features = ["aws_lc_rs", "pem"] }
 
 sha2 = "0.10"
 hex = "0.4"
-rustls-pemfile = "2"
 
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"

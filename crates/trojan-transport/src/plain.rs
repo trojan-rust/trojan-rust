@@ -8,8 +8,8 @@ use std::pin::Pin;
 
 use tokio::net::TcpStream;
 
-use crate::error::RelayError;
-use super::{TransportAcceptor, TransportConnector};
+use crate::error::TransportError;
+use crate::{TransportAcceptor, TransportConnector};
 
 /// Plain TCP acceptor — passes through the raw TCP stream.
 #[derive(Clone)]
@@ -21,7 +21,7 @@ impl TransportAcceptor for PlainTransportAcceptor {
     fn accept(
         &self,
         tcp: TcpStream,
-    ) -> Pin<Box<dyn Future<Output = Result<Self::Stream, RelayError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Self::Stream, TransportError>> + Send + '_>> {
         Box::pin(async move { Ok(tcp) })
     }
 }
@@ -36,7 +36,7 @@ impl TransportConnector for PlainTransportConnector {
     fn connect(
         &self,
         addr: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Self::Stream, RelayError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Self::Stream, TransportError>> + Send + '_>> {
         let addr = addr.to_string();
         Box::pin(async move {
             let tcp = TcpStream::connect(&addr).await?;
