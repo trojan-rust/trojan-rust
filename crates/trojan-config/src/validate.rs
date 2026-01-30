@@ -17,8 +17,10 @@ pub fn validate_config(config: &Config) -> Result<(), ConfigError> {
     if config.tls.key.trim().is_empty() {
         return Err(ConfigError::Validation("tls.key is empty".into()));
     }
-    if config.auth.passwords.is_empty() {
-        return Err(ConfigError::Validation("auth.passwords is empty".into()));
+    if config.auth.passwords.is_empty() && config.auth.users.is_empty() {
+        return Err(ConfigError::Validation(
+            "auth: at least one of 'passwords' or 'users' must be non-empty".into(),
+        ));
     }
     if config.server.tcp_idle_timeout_secs == 0 {
         return Err(ConfigError::Validation(
