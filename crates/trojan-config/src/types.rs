@@ -53,6 +53,9 @@ pub struct TcpConfig {
     /// TCP Fast Open queue length (server-side).
     #[serde(default = "default_tcp_fast_open_qlen")]
     pub fast_open_qlen: u32,
+    /// Prefer IPv4 addresses when resolving DNS for outbound connections.
+    #[serde(default = "default_tcp_prefer_ipv4")]
+    pub prefer_ipv4: bool,
 }
 
 impl Default for TcpConfig {
@@ -63,6 +66,7 @@ impl Default for TcpConfig {
             reuse_port: default_tcp_reuse_port(),
             fast_open: default_tcp_fast_open(),
             fast_open_qlen: default_tcp_fast_open_qlen(),
+            prefer_ipv4: default_tcp_prefer_ipv4(),
         }
     }
 }

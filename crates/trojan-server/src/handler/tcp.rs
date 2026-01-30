@@ -30,7 +30,7 @@ pub async fn handle_connect<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let target = resolve_address(&address).await?;
+    let target = resolve_address(&address, state.tcp_config.prefer_ipv4).await?;
     let target_label = target_to_label(&address);
     debug!(peer = %peer, target = %target, "connecting to target");
 

@@ -55,7 +55,7 @@ pub async fn run_with_shutdown(
         .parse()
         .map_err(|_| ServerError::Config("invalid listen address".into()))?;
 
-    let fallback_addr = resolve_sockaddr(&config.server.fallback).await?;
+    let fallback_addr = resolve_sockaddr(&config.server.fallback, config.server.tcp.prefer_ipv4).await?;
 
     // Initialize fallback connection pool if configured
     let fallback_pool: Option<Arc<ConnectionPool>> =

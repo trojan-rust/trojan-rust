@@ -67,7 +67,7 @@ where
                                 warn!(peer = %peer, size = pkt.length, max = state.max_udp_payload, "UDP payload too large");
                                 return Err(ServerError::UdpPayloadTooLarge);
                             }
-                            let target = resolve_address(&pkt.address).await?;
+                            let target = resolve_address(&pkt.address, state.tcp_config.prefer_ipv4).await?;
 
                             // Select or create appropriate socket based on target address family
                             let udp: &UdpSocket = match target {
