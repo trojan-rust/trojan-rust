@@ -180,7 +180,27 @@ impl Default for WebSocketConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
+    /// Simple password list (no user IDs).
+    /// ```toml
+    /// passwords = ["password1", "password2"]
+    /// ```
+    #[serde(default)]
     pub passwords: Vec<String>,
+
+    /// User entries with explicit IDs.
+    /// ```toml
+    /// [[auth.users]]
+    /// id = "alice"
+    /// password = "secret1"
+    /// ```
+    #[serde(default)]
+    pub users: Vec<UserEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserEntry {
+    pub id: String,
+    pub password: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

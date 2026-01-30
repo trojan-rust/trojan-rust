@@ -59,9 +59,7 @@ pub async fn run(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Create reloadable auth backend
-    let auth = Arc::new(ReloadableAuth::new(MemoryAuth::from_passwords(
-        &config.auth.passwords,
-    )));
+    let auth = Arc::new(ReloadableAuth::new(build_memory_auth(&config.auth)));
 
     // Set up SIGHUP handler for config reload
     #[cfg(unix)]
@@ -153,18 +151,31 @@ fn reload_config(
     apply_overrides(&mut config, overrides);
     validate_config(&config)?;
 
-    // Reload auth passwords
-    let new_auth = MemoryAuth::from_passwords(&config.auth.passwords);
+    // Reload auth passwords + users
+    let new_auth = build_memory_auth(&config.auth);
     auth.reload(new_auth);
     info!(
         password_count = config.auth.passwords.len(),
-        "auth passwords reloaded"
+        user_count = config.auth.users.len(),
+        "auth reloaded"
     );
 
     // Note: TLS certificates and other settings require server restart
     // Future enhancement: implement TLS cert hot-reload via rustls ResolvesServerCert
 
     Ok(())
+}
+
+/// Build a `MemoryAuth` from both `passwords` and `users` in the config.
+fn build_memory_auth(auth: &trojan_config::AuthConfig) -> MemoryAuth {
+    let mut mem = MemoryAuth::new();
+    for pw in &auth.passwords {
+        mem.add_password(pw, None);
+    }
+    for u in &auth.users {
+        mem.add_password(&u.password, Some(u.id.clone()));
+    }
+    mem
 }
 
 /// Initialize tracing subscriber with the given logging configuration.
