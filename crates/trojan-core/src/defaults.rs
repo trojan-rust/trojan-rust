@@ -23,8 +23,8 @@ pub const DEFAULT_MAX_UDP_PAYLOAD: usize = 8192;
 pub const DEFAULT_MAX_UDP_BUFFER_BYTES: usize = 65536;
 /// Default maximum header bytes.
 pub const DEFAULT_MAX_HEADER_BYTES: usize = 8192;
-/// Default relay buffer size.
-pub const DEFAULT_RELAY_BUFFER_SIZE: usize = 8192;
+/// Default relay buffer size (32 KiB — tuned for high-throughput relay chains).
+pub const DEFAULT_RELAY_BUFFER_SIZE: usize = 32768;
 /// Default TCP socket send buffer size (0 = OS default).
 pub const DEFAULT_TCP_SEND_BUFFER: usize = 0;
 /// Default TCP socket receive buffer size (0 = OS default).

@@ -4,10 +4,17 @@
 //! server and client implementations. Metrics recording is abstracted via the
 //! `RelayMetrics` trait, allowing each implementation to provide its own
 //! metrics backend.
+//!
+//! Each direction is driven as an independent poll-based state machine within
+//! a single future, so back-pressure on one direction never stalls the other.
+//! This prevents deadlocks in multi-hop relay chains.
 
+use std::io;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::time::Instant as TokioInstant;
 
 /// Trait for recording relay metrics.
@@ -33,10 +40,96 @@ impl RelayMetrics for NoOpMetrics {
     fn record_outbound(&self, _bytes: u64) {}
 }
 
+/// State machine for one-directional copy with flush.
+enum CopyState {
+    Reading,
+    Writing(usize, usize), // (pos, len)
+    Flushing(usize),       // bytes flushing
+    ShuttingDown,
+    Done,
+}
+
+/// Result of polling one copy direction.
+enum CopyPoll {
+    /// Data was flushed — contains byte count for metrics.
+    Flushed(usize),
+    /// Direction finished (EOF + shutdown).
+    Finished,
+}
+
+/// Poll-driven one-directional copy: read → write → flush.
+fn poll_copy_direction<R, W>(
+    cx: &mut Context<'_>,
+    reader: &mut R,
+    writer: &mut W,
+    buf: &mut [u8],
+    state: &mut CopyState,
+) -> Poll<io::Result<CopyPoll>>
+where
+    R: AsyncRead + Unpin + ?Sized,
+    W: AsyncWrite + Unpin + ?Sized,
+{
+    loop {
+        match state {
+            CopyState::Reading => {
+                let mut read_buf = ReadBuf::new(buf);
+                match Pin::new(&mut *reader).poll_read(cx, &mut read_buf) {
+                    Poll::Ready(Ok(())) => {
+                        let n = read_buf.filled().len();
+                        if n == 0 {
+                            *state = CopyState::ShuttingDown;
+                        } else {
+                            *state = CopyState::Writing(0, n);
+                        }
+                    }
+                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+            CopyState::Writing(pos, len) => {
+                match Pin::new(&mut *writer).poll_write(cx, &buf[*pos..*len]) {
+                    Poll::Ready(Ok(n)) => {
+                        *pos += n;
+                        if *pos >= *len {
+                            let total = *len;
+                            *state = CopyState::Flushing(total);
+                        }
+                    }
+                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+            CopyState::Flushing(bytes) => {
+                let bytes = *bytes;
+                match Pin::new(&mut *writer).poll_flush(cx) {
+                    Poll::Ready(Ok(())) => {
+                        *state = CopyState::Reading;
+                        return Poll::Ready(Ok(CopyPoll::Flushed(bytes)));
+                    }
+                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+            CopyState::ShuttingDown => {
+                match Pin::new(&mut *writer).poll_shutdown(cx) {
+                    Poll::Ready(_) => {
+                        *state = CopyState::Done;
+                        return Poll::Ready(Ok(CopyPoll::Finished));
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+            CopyState::Done => return Poll::Ready(Ok(CopyPoll::Finished)),
+        }
+    }
+}
+
 /// Bidirectional relay with proper half-close handling.
 ///
-/// When one side closes, we continue reading from the other side until it also closes,
-/// ensuring all data is properly transferred in both directions.
+/// Both directions run concurrently within a single task using poll-based
+/// I/O, so back-pressure on one direction cannot stall the other. An
+/// idle-timeout fires when **neither** direction has transferred data
+/// within `idle_timeout`.
 ///
 /// # Arguments
 ///
@@ -45,28 +138,13 @@ impl RelayMetrics for NoOpMetrics {
 /// * `idle_timeout` - Maximum time without data transfer before closing
 /// * `buffer_size` - Size of the read buffers
 /// * `metrics` - Metrics recorder for tracking bytes transferred
-///
-/// # Example
-///
-/// ```ignore
-/// use trojan_core::io::{relay_bidirectional, NoOpMetrics};
-/// use std::time::Duration;
-///
-/// relay_bidirectional(
-///     client_stream,
-///     target_stream,
-///     Duration::from_secs(300),
-///     8192,
-///     &NoOpMetrics,
-/// ).await?;
-/// ```
 pub async fn relay_bidirectional<A, B, M>(
     inbound: A,
     outbound: B,
     idle_timeout: Duration,
     buffer_size: usize,
     metrics: &M,
-) -> std::io::Result<()>
+) -> io::Result<()>
 where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
@@ -75,46 +153,84 @@ where
     let (mut in_r, mut in_w) = tokio::io::split(inbound);
     let (mut out_r, mut out_w) = tokio::io::split(outbound);
 
-    let mut buf_in = vec![0u8; buffer_size];
-    let mut buf_out = vec![0u8; buffer_size];
+    let mut buf_a = vec![0u8; buffer_size];
+    let mut buf_b = vec![0u8; buffer_size];
+    let mut state_a = CopyState::Reading;
+    let mut state_b = CopyState::Reading;
+
     let idle_sleep = tokio::time::sleep(idle_timeout);
     tokio::pin!(idle_sleep);
 
-    let mut in_closed = false;
-    let mut out_closed = false;
+    let mut a_done = false;
+    let mut b_done = false;
 
     loop {
-        if in_closed && out_closed {
+        if a_done && b_done {
             return Ok(());
         }
 
-        tokio::select! {
-            res = in_r.read(&mut buf_in), if !in_closed => {
-                match res {
-                    Ok(0) => {
-                        in_closed = true;
-                        let _ = out_w.shutdown().await;
-                    }
-                    Ok(n) => {
+        // Build a future that polls both directions concurrently.
+        // Each direction registers its own waker so either can make progress
+        // independently — one blocked write cannot stall the other direction.
+        let both = std::future::poll_fn(|cx| {
+            let mut any_ready = false;
+            let mut activity = false;
+            let mut error: Option<io::Error> = None;
+
+            if !a_done {
+                match poll_copy_direction(cx, &mut in_r, &mut out_w, &mut buf_a, &mut state_a) {
+                    Poll::Ready(Ok(CopyPoll::Flushed(n))) => {
                         metrics.record_inbound(n as u64);
-                        out_w.write_all(&buf_in[..n]).await?;
-                        idle_sleep.as_mut().reset(TokioInstant::now() + idle_timeout);
+                        activity = true;
+                        any_ready = true;
                     }
-                    Err(e) => return Err(e),
+                    Poll::Ready(Ok(CopyPoll::Finished)) => {
+                        a_done = true;
+                        any_ready = true;
+                    }
+                    Poll::Ready(Err(e)) => {
+                        error = Some(e);
+                        any_ready = true;
+                    }
+                    Poll::Pending => {}
                 }
             }
-            res = out_r.read(&mut buf_out), if !out_closed => {
-                match res {
-                    Ok(0) => {
-                        out_closed = true;
-                        let _ = in_w.shutdown().await;
-                    }
-                    Ok(n) => {
+
+            if !b_done {
+                match poll_copy_direction(cx, &mut out_r, &mut in_w, &mut buf_b, &mut state_b) {
+                    Poll::Ready(Ok(CopyPoll::Flushed(n))) => {
                         metrics.record_outbound(n as u64);
-                        in_w.write_all(&buf_out[..n]).await?;
-                        idle_sleep.as_mut().reset(TokioInstant::now() + idle_timeout);
+                        activity = true;
+                        any_ready = true;
                     }
-                    Err(e) => return Err(e),
+                    Poll::Ready(Ok(CopyPoll::Finished)) => {
+                        b_done = true;
+                        any_ready = true;
+                    }
+                    Poll::Ready(Err(e)) => {
+                        error = Some(e);
+                        any_ready = true;
+                    }
+                    Poll::Pending => {}
+                }
+            }
+
+            if let Some(e) = error {
+                return Poll::Ready(Err(e));
+            }
+
+            if any_ready {
+                Poll::Ready(Ok(activity))
+            } else {
+                Poll::Pending
+            }
+        });
+
+        tokio::select! {
+            result = both => {
+                let activity = result?;
+                if activity {
+                    idle_sleep.as_mut().reset(TokioInstant::now() + idle_timeout);
                 }
             }
             _ = &mut idle_sleep => {
@@ -128,7 +244,7 @@ where
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use tokio::io::duplex;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
     struct TestMetrics {
         inbound: AtomicU64,

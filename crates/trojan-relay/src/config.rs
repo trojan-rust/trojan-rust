@@ -158,7 +158,7 @@ pub enum TransportType {
 
 // ── Shared ──
 
-/// Timeout configuration shared by entry and relay nodes.
+/// Timeout and buffer configuration shared by entry and relay nodes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimeoutConfig {
     /// Timeout for establishing tunnel connections (seconds).
@@ -172,6 +172,10 @@ pub struct TimeoutConfig {
     /// Relay handshake timeout (seconds). Only used by relay nodes.
     #[serde(default = "default_handshake_timeout")]
     pub handshake_timeout_secs: u64,
+
+    /// Relay buffer size per direction (bytes).
+    #[serde(default = "default_relay_buffer_size")]
+    pub relay_buffer_size: usize,
 }
 
 impl Default for TimeoutConfig {
@@ -180,6 +184,7 @@ impl Default for TimeoutConfig {
             connect_timeout_secs: default_connect_timeout(),
             idle_timeout_secs: default_idle_timeout(),
             handshake_timeout_secs: default_handshake_timeout(),
+            relay_buffer_size: default_relay_buffer_size(),
         }
     }
 }
@@ -192,6 +197,9 @@ fn default_idle_timeout() -> u64 {
 }
 fn default_handshake_timeout() -> u64 {
     5
+}
+fn default_relay_buffer_size() -> usize {
+    trojan_core::defaults::DEFAULT_RELAY_BUFFER_SIZE
 }
 fn default_sni() -> String {
     "crates.io".to_string()
