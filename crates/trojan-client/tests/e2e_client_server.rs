@@ -458,6 +458,10 @@ async fn e2e_tcp_connect() {
         .expect("read echo");
     assert_eq!(&buf, b"ping");
 
+    // Drop the stream before stopping services so in-flight relays can finish
+    // and the server's graceful-drain doesn't block waiting for them.
+    drop(stream);
+
     echo.stop().await;
     client.stop().await;
     server.stop().await;
@@ -496,6 +500,11 @@ async fn e2e_udp_associate() {
     let parsed = parse_socks5_udp(&buf[..n]).expect("parse socks5 udp");
     assert_eq!(parsed.address, target);
     assert_eq!(parsed.payload, payload);
+
+    // Drop the control connection and UDP socket before stopping services
+    // so in-flight relays can finish and graceful-drain doesn't block.
+    drop(_control);
+    drop(udp_client);
 
     udp_echo.stop().await;
     client.stop().await;

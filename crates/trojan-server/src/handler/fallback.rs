@@ -40,6 +40,7 @@ where
 
     if !buffered.is_empty() {
         backend.write_all(&buffered).await?;
+        backend.flush().await?;
     }
     relay_with_idle_timeout_and_metrics(
         stream,

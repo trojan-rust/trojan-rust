@@ -119,6 +119,7 @@ async fn handle_connect(
         let _ = send_reply_unspecified(stream, REPLY_GENERAL_FAILURE).await;
         return Err(e.into());
     }
+    tls_stream.flush().await?;
 
     // Send SOCKS5 success reply
     send_reply_unspecified(stream, REPLY_SUCCEEDED).await?;
@@ -195,6 +196,7 @@ async fn handle_udp_associate(
         &placeholder_addr,
     )?;
     tls_stream.write_all(&header_buf).await?;
+    tls_stream.flush().await?;
 
     // UDP relay loop
     let idle_timeout = Duration::from_secs(DEFAULT_UDP_TIMEOUT_SECS);
@@ -245,6 +247,7 @@ where
                         let mut trojan_buf = BytesMut::with_capacity(header.payload.len() + 64);
                         if write_udp_packet(&mut trojan_buf, &header.address, header.payload).is_ok() {
                             tls_stream.write_all(&trojan_buf).await?;
+                            tls_stream.flush().await?;
                         }
                     }
                     Err(e) => {

@@ -93,6 +93,7 @@ impl TransportConnector for TlsTransportConnector {
         let addr = addr.to_string();
         Box::pin(async move {
             let tcp = TcpStream::connect(&addr).await?;
+            tcp.set_nodelay(true)?;
 
             let server_name = rustls::pki_types::ServerName::try_from(sni)
                 .map_err(|e| RelayError::Config(format!("invalid SNI: {}", e)))?;

@@ -42,8 +42,21 @@ pub enum WsInspect {
 
 /// Inspect buffered bytes for WebSocket upgrade in mixed mode.
 pub fn inspect_mixed(buf: &[u8], cfg: &WsCfg) -> WsInspect {
+    // Quick check: if the buffer doesn't start with a plausible HTTP method,
+    // it's definitely not HTTP. Trojan headers start with a hex hash which
+    // will never match these prefixes (except edge cases caught below).
+    if buf.len() >= 3 && !could_be_http_method(buf) {
+        return WsInspect::NotHttp;
+    }
+
     let header_end = find_header_end(buf);
     if header_end.is_none() {
+        // If we've read a significant amount of data without finding \r\n\r\n,
+        // and it doesn't look like HTTP is still being received, treat as not HTTP.
+        // HTTP request lines are typically under 8KB. Trojan headers are ~70 bytes.
+        if buf.len() >= 256 {
+            return WsInspect::NotHttp;
+        }
         return WsInspect::NeedMore;
     }
     let header_end = header_end.unwrap();
@@ -160,6 +173,20 @@ where
     let response = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
     tokio::io::AsyncWriteExt::write_all(&mut stream, response).await?;
     Ok(())
+}
+
+/// Check if the buffer could plausibly start with an HTTP method.
+/// HTTP methods: GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH, CONNECT, TRACE.
+fn could_be_http_method(buf: &[u8]) -> bool {
+    buf.starts_with(b"GET")
+        || buf.starts_with(b"POS")
+        || buf.starts_with(b"PUT")
+        || buf.starts_with(b"DEL")
+        || buf.starts_with(b"HEA")
+        || buf.starts_with(b"OPT")
+        || buf.starts_with(b"PAT")
+        || buf.starts_with(b"CON")
+        || buf.starts_with(b"TRA")
 }
 
 fn find_header_end(buf: &[u8]) -> Option<usize> {

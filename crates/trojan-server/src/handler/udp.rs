@@ -154,6 +154,7 @@ where
     let addr = address_from_socket(peer);
     write_udp_packet(buf, &addr, payload).map_err(ServerError::ProtoWrite)?;
     stream.write_all(buf).await?;
+    stream.flush().await?;
     record_bytes_sent(buf.len() as u64);
     Ok(())
 }
