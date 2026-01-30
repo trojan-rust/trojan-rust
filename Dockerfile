@@ -20,7 +20,7 @@ COPY . .
 RUN cargo build --release --features cert
 
 # ── Stage 2: Runtime ────────────────────────────────────────────
-FROM debian:bullseye-slim
+FROM debian:bullseye-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -29,3 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /src/target/release/trojan /usr/local/bin/trojan
 
 ENTRYPOINT ["trojan"]
+
+# ── Stage 3: Export (binary only) ──────────────────────────────
+FROM scratch AS export
+COPY --from=builder /src/target/release/trojan /trojan
