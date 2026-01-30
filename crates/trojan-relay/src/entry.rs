@@ -96,6 +96,7 @@ async fn run_listener(
             }
             accept_result = listener.accept() => {
                 let (tcp_stream, peer_addr) = accept_result?;
+                let _ = tcp_stream.set_nodelay(true);
 
                 let route = match router.resolve(&listen_addr) {
                     Some(r) => r,

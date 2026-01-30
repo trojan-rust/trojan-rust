@@ -80,6 +80,7 @@ where
             }
             accept_result = listener.accept() => {
                 let (tcp_stream, peer_addr) = accept_result?;
+                let _ = tcp_stream.set_nodelay(true);
                 let acceptor = acceptor.clone();
                 let connectors = connectors.clone();
                 let password = password.clone();
