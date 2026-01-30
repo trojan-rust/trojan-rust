@@ -3574,20 +3574,18 @@ version = "0.2.3"
 dependencies = [
  "clap",
  "hex",
- "rcgen 0.13.2",
  "rustls",
- "rustls-pemfile",
  "serde",
  "sha2",
  "thiserror 2.0.18",
  "tokio",
- "tokio-rustls",
  "tokio-util",
  "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
  "trojan-core",
  "trojan-proto",
+ "trojan-transport",
 ]
 
 [[package]]
@@ -3636,6 +3634,21 @@ dependencies = [
  "trojan-core",
  "trojan-metrics",
  "trojan-proto",
+]
+
+[[package]]
+name = "trojan-transport"
+version = "0.2.3"
+dependencies = [
+ "rcgen 0.13.2",
+ "rustls",
+ "rustls-pemfile",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
+ "trojan-core",
 ]
 
 [[package]]

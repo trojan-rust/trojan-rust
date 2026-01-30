@@ -32,3 +32,14 @@ pub enum RelayError {
     #[error("certificate generation failed: {0}")]
     CertGeneration(String),
 }
+
+impl From<trojan_transport::error::TransportError> for RelayError {
+    fn from(err: trojan_transport::error::TransportError) -> Self {
+        match err {
+            trojan_transport::error::TransportError::Io(e) => RelayError::Io(e),
+            trojan_transport::error::TransportError::Tls(e) => RelayError::Tls(e),
+            trojan_transport::error::TransportError::Config(s) => RelayError::Config(s),
+            trojan_transport::error::TransportError::CertGeneration(s) => RelayError::CertGeneration(s),
+        }
+    }
+}

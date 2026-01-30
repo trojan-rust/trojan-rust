@@ -19,14 +19,16 @@ use crate::handshake::{self, verify_hash};
 use crate::transport::TransportAcceptor;
 use crate::transport::plain::{PlainTransportAcceptor, PlainTransportConnector};
 use crate::transport::tls::{TlsTransportAcceptor, TlsTransportConnector};
+use crate::transport::ws::{WsTransportAcceptor, WsTransportConnector};
 
 use trojan_core::io::{NoOpMetrics, relay_bidirectional};
 
-/// Outbound connectors for both transport types, used by the relay node.
+/// Outbound connectors for all transport types, used by the relay node.
 #[derive(Clone)]
 struct OutboundConnectors {
     tls: TlsTransportConnector,
     plain: PlainTransportConnector,
+    ws: WsTransportConnector,
     /// Default transport when handshake metadata doesn't specify one.
     default_transport: TransportType,
     /// Default SNI when handshake metadata doesn't specify one.
@@ -40,17 +42,23 @@ pub async fn run(config: RelayNodeConfig, shutdown: tokio_util::sync::Cancellati
     let connectors = OutboundConnectors {
         tls: TlsTransportConnector::new_insecure(relay_cfg.outbound.sni.clone()),
         plain: PlainTransportConnector,
+        ws: WsTransportConnector,
         default_transport: relay_cfg.transport.clone(),
         default_sni: relay_cfg.outbound.sni.clone(),
     };
 
     match relay_cfg.transport {
         TransportType::Tls => {
-            let acceptor = TlsTransportAcceptor::new(relay_cfg.tls.as_ref())?;
+            let transport_tls = relay_cfg.tls.as_ref().map(|c| c.to_transport_config());
+            let acceptor = TlsTransportAcceptor::new(transport_tls.as_ref())?;
             run_inner(relay_cfg, acceptor, connectors, shutdown).await
         }
         TransportType::Plain => {
             let acceptor = PlainTransportAcceptor;
+            run_inner(relay_cfg, acceptor, connectors, shutdown).await
+        }
+        TransportType::Ws => {
+            let acceptor = WsTransportAcceptor;
             run_inner(relay_cfg, acceptor, connectors, shutdown).await
         }
     }
@@ -169,6 +177,16 @@ where
             let outbound = tokio::time::timeout(
                 connect_timeout,
                 crate::transport::TransportConnector::connect(&connectors.plain, &hs.target),
+            )
+            .await
+            .map_err(|_| RelayError::ConnectTimeout(hs.target.clone()))??;
+
+            relay_bidirectional(inbound, outbound, idle_timeout, relay_buffer_size, &NoOpMetrics).await?;
+        }
+        TransportType::Ws => {
+            let outbound = tokio::time::timeout(
+                connect_timeout,
+                crate::transport::TransportConnector::connect(&connectors.ws, &hs.target),
             )
             .await
             .map_err(|_| RelayError::ConnectTimeout(hs.target.clone()))??;

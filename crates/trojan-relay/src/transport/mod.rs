@@ -1,45 +1,18 @@
 //! Pluggable transport abstraction.
 //!
-//! Defines traits for accepting inbound connections and connecting outbound,
-//! allowing the relay system to work with TLS, plain TCP, or future
-//! TCP-based transports (WebSocket, H2, etc.) without changing core relay logic.
+//! Re-exports from `trojan_transport`. The transport traits and
+//! implementations now live in the standalone `trojan-transport` crate.
 
-pub mod plain;
-pub mod tls;
+pub use trojan_transport::{TransportAcceptor, TransportConnector, TransportStream};
 
-use std::future::Future;
-use std::pin::Pin;
-
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpStream;
-
-use crate::error::RelayError;
-
-/// Marker trait for streams usable by the relay system.
-pub trait TransportStream: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
-
-impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> TransportStream for T {}
-
-/// Accepts inbound TCP connections and wraps them in a transport stream.
-pub trait TransportAcceptor: Clone + Send + Sync + 'static {
-    /// The stream type produced by this acceptor.
-    type Stream: TransportStream;
-
-    /// Accept and wrap a raw TCP connection.
-    fn accept(
-        &self,
-        tcp: TcpStream,
-    ) -> Pin<Box<dyn Future<Output = Result<Self::Stream, RelayError>> + Send + '_>>;
+pub mod plain {
+    pub use trojan_transport::plain::*;
 }
 
-/// Connects outbound to a target address, producing a transport stream.
-pub trait TransportConnector: Clone + Send + Sync + 'static {
-    /// The stream type produced by this connector.
-    type Stream: TransportStream;
+pub mod tls {
+    pub use trojan_transport::tls::*;
+}
 
-    /// Connect to the given `host:port` address.
-    fn connect(
-        &self,
-        addr: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Self::Stream, RelayError>> + Send + '_>>;
+pub mod ws {
+    pub use trojan_transport::ws::*;
 }

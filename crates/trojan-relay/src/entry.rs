@@ -26,6 +26,7 @@ use crate::router::Router;
 use crate::transport::{TransportConnector, TransportStream};
 use crate::transport::plain::PlainTransportConnector;
 use crate::transport::tls::TlsTransportConnector;
+use crate::transport::ws::WsTransportConnector;
 
 use trojan_core::io::{NoOpMetrics, relay_bidirectional};
 
@@ -37,6 +38,7 @@ pub async fn run(config: EntryConfig, shutdown: tokio_util::sync::CancellationTo
     // Shared insecure TLS client config (SNI set per-connection via with_sni)
     let base_tls_connector = TlsTransportConnector::new_insecure("crates.io".to_string());
     let plain_connector = PlainTransportConnector;
+    let ws_connector = WsTransportConnector;
 
     // Spawn a listener task for each rule
     let mut handles = Vec::new();
@@ -54,6 +56,7 @@ pub async fn run(config: EntryConfig, shutdown: tokio_util::sync::CancellationTo
         let router = router.clone();
         let base_tls_connector = base_tls_connector.clone();
         let plain_connector = plain_connector.clone();
+        let ws_connector = ws_connector.clone();
         let timeouts = timeouts.clone();
         let listen_addr = rule.listen;
         let rule_name = rule.name.clone();
@@ -62,7 +65,7 @@ pub async fn run(config: EntryConfig, shutdown: tokio_util::sync::CancellationTo
         handles.push(tokio::spawn(async move {
             run_listener(
                 listener, listen_addr, &rule_name, router,
-                base_tls_connector, plain_connector, timeouts, shutdown,
+                base_tls_connector, plain_connector, ws_connector, timeouts, shutdown,
             ).await
         }));
     }
@@ -84,6 +87,7 @@ async fn run_listener(
     router: Arc<Router>,
     base_tls_connector: TlsTransportConnector,
     plain_connector: PlainTransportConnector,
+    ws_connector: WsTransportConnector,
     timeouts: TimeoutConfig,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<(), RelayError> {
@@ -110,6 +114,7 @@ async fn run_listener(
                 let rule = route.rule.clone();
                 let base_tls_connector = base_tls_connector.clone();
                 let plain_connector = plain_connector.clone();
+                let ws_connector = ws_connector.clone();
                 let timeouts = timeouts.clone();
                 let rule_name = rule.name.clone();
 
@@ -121,6 +126,7 @@ async fn run_listener(
                             &rule,
                             base_tls_connector,
                             plain_connector,
+                            ws_connector,
                             &timeouts,
                         ).await {
                             debug!(error = %e, "entry connection error");
@@ -140,6 +146,7 @@ async fn handle_entry_connection(
     rule: &RuleConfig,
     base_tls_connector: TlsTransportConnector,
     plain_connector: PlainTransportConnector,
+    ws_connector: WsTransportConnector,
     timeouts: &TimeoutConfig,
 ) -> Result<(), RelayError> {
     let connect_timeout = Duration::from_secs(timeouts.connect_timeout_secs);
@@ -185,6 +192,17 @@ async fn handle_entry_connection(
             debug!("tunnel established, starting relay");
             relay_bidirectional(client_stream, tunnel, idle_timeout, relay_buffer_size, &NoOpMetrics).await?;
         }
+        TransportType::Ws => {
+            let tunnel = tokio::time::timeout(
+                connect_timeout,
+                build_tunnel(chain, rule, &ws_connector),
+            )
+            .await
+            .map_err(|_| RelayError::ConnectTimeout(rule.dest.to_string()))??;
+
+            debug!("tunnel established, starting relay");
+            relay_bidirectional(client_stream, tunnel, idle_timeout, relay_buffer_size, &NoOpMetrics).await?;
+        }
     }
 
     Ok(())
@@ -209,7 +227,7 @@ where
 {
     if chain.nodes.is_empty() {
         // Direct connection — no relay handshake needed
-        return connector.connect(&rule.dest).await;
+        return Ok(connector.connect(&rule.dest).await?);
     }
 
     let first_node = &chain.nodes[0];

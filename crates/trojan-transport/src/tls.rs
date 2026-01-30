@@ -14,9 +14,9 @@ use tokio::net::TcpStream;
 use tokio_rustls::rustls;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
-use crate::config::RelayTlsConfig;
-use crate::error::RelayError;
-use super::{TransportAcceptor, TransportConnector};
+use crate::error::TransportError;
+use crate::tls_config::TlsConfig;
+use crate::{TransportAcceptor, TransportConnector};
 
 // ── TLS Acceptor ──
 
@@ -28,7 +28,7 @@ pub struct TlsTransportAcceptor {
 
 impl TlsTransportAcceptor {
     /// Build from optional TLS config. Auto-generates self-signed cert if `None`.
-    pub fn new(tls_config: Option<&RelayTlsConfig>) -> Result<Self, RelayError> {
+    pub fn new(tls_config: Option<&TlsConfig>) -> Result<Self, TransportError> {
         let server_config = build_server_tls_config(tls_config)?;
         Ok(Self {
             acceptor: TlsAcceptor::from(Arc::new(server_config)),
@@ -42,13 +42,13 @@ impl TransportAcceptor for TlsTransportAcceptor {
     fn accept(
         &self,
         tcp: TcpStream,
-    ) -> Pin<Box<dyn Future<Output = Result<Self::Stream, RelayError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Self::Stream, TransportError>> + Send + '_>> {
         let acceptor = self.acceptor.clone();
         Box::pin(async move {
             acceptor
                 .accept(tcp)
                 .await
-                .map_err(|e| RelayError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+                .map_err(|e| TransportError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
         })
     }
 }
@@ -87,7 +87,7 @@ impl TransportConnector for TlsTransportConnector {
     fn connect(
         &self,
         addr: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Self::Stream, RelayError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Self::Stream, TransportError>> + Send + '_>> {
         let client_config = self.client_config.clone();
         let sni = self.sni.clone();
         let addr = addr.to_string();
@@ -96,7 +96,7 @@ impl TransportConnector for TlsTransportConnector {
             tcp.set_nodelay(true)?;
 
             let server_name = rustls::pki_types::ServerName::try_from(sni)
-                .map_err(|e| RelayError::Config(format!("invalid SNI: {}", e)))?;
+                .map_err(|e| TransportError::Config(format!("invalid SNI: {}", e)))?;
 
             let connector = TlsConnector::from(client_config);
             let tls_stream = connector.connect(server_name, tcp).await?;
@@ -112,8 +112,8 @@ impl TransportConnector for TlsTransportConnector {
 /// If `tls_config` is provided, loads cert/key from files.
 /// Otherwise, generates an ephemeral self-signed certificate in memory.
 fn build_server_tls_config(
-    tls_config: Option<&RelayTlsConfig>,
-) -> Result<rustls::ServerConfig, RelayError> {
+    tls_config: Option<&TlsConfig>,
+) -> Result<rustls::ServerConfig, TransportError> {
     let (certs, key) = match tls_config {
         Some(cfg) => load_cert_files(&cfg.cert, &cfg.key)?,
         None => generate_self_signed()?,
@@ -122,7 +122,7 @@ fn build_server_tls_config(
     let config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)
-        .map_err(|e| RelayError::Tls(e))?;
+        .map_err(|e| TransportError::Tls(e))?;
 
     Ok(config)
 }
@@ -136,15 +136,15 @@ fn build_insecure_client_tls_config() -> rustls::ClientConfig {
 }
 
 /// Generate a self-signed certificate in memory using rcgen.
-fn generate_self_signed() -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), RelayError>
+fn generate_self_signed() -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), TransportError>
 {
     let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
-        .map_err(|e| RelayError::CertGeneration(e.to_string()))?;
+        .map_err(|e| TransportError::CertGeneration(e.to_string()))?;
 
     let params = CertificateParams::default();
     let cert = params
         .self_signed(&key_pair)
-        .map_err(|e| RelayError::CertGeneration(e.to_string()))?;
+        .map_err(|e| TransportError::CertGeneration(e.to_string()))?;
 
     let cert_der = CertificateDer::from(cert.der().to_vec());
     let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der()));
@@ -156,14 +156,14 @@ fn generate_self_signed() -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer
 fn load_cert_files(
     cert_path: &str,
     key_path: &str,
-) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), RelayError> {
+) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), TransportError> {
     let mut reader = std::io::BufReader::new(std::fs::File::open(cert_path)?);
     let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut reader)
         .filter_map(|c| c.ok().map(|v| v.into_owned()))
         .collect();
 
     if certs.is_empty() {
-        return Err(RelayError::Config(format!(
+        return Err(TransportError::Config(format!(
             "no certificates found in {}",
             cert_path
         )));
@@ -180,7 +180,7 @@ fn load_cert_files(
             }
             Some(_) => continue,
             None => {
-                return Err(RelayError::Config(format!(
+                return Err(TransportError::Config(format!(
                     "no private key found in {}",
                     key_path
                 )));
