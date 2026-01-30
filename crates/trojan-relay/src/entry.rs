@@ -143,6 +143,7 @@ async fn handle_entry_connection(
 ) -> Result<(), RelayError> {
     let connect_timeout = Duration::from_secs(timeouts.connect_timeout_secs);
     let idle_timeout = Duration::from_secs(timeouts.idle_timeout_secs);
+    let relay_buffer_size = timeouts.relay_buffer_size;
 
     // Determine the first hop's transport and SNI.
     // - Empty chain (direct): plain TCP to dest (client does its own TLS to trojan-server)
@@ -170,7 +171,7 @@ async fn handle_entry_connection(
             .map_err(|_| RelayError::ConnectTimeout(rule.dest.to_string()))??;
 
             debug!("tunnel established, starting relay");
-            relay_bidirectional(client_stream, tunnel, idle_timeout, 8192, &NoOpMetrics).await?;
+            relay_bidirectional(client_stream, tunnel, idle_timeout, relay_buffer_size, &NoOpMetrics).await?;
         }
         TransportType::Plain => {
             let tunnel = tokio::time::timeout(
@@ -181,7 +182,7 @@ async fn handle_entry_connection(
             .map_err(|_| RelayError::ConnectTimeout(rule.dest.to_string()))??;
 
             debug!("tunnel established, starting relay");
-            relay_bidirectional(client_stream, tunnel, idle_timeout, 8192, &NoOpMetrics).await?;
+            relay_bidirectional(client_stream, tunnel, idle_timeout, relay_buffer_size, &NoOpMetrics).await?;
         }
     }
 

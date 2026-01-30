@@ -117,6 +117,7 @@ where
     let handshake_timeout = Duration::from_secs(timeouts.handshake_timeout_secs);
     let connect_timeout = Duration::from_secs(timeouts.connect_timeout_secs);
     let idle_timeout = Duration::from_secs(timeouts.idle_timeout_secs);
+    let relay_buffer_size = timeouts.relay_buffer_size;
 
     // 1. Accept inbound transport
     let mut inbound = tokio::time::timeout(handshake_timeout, acceptor.accept(tcp_stream))
@@ -161,7 +162,7 @@ where
             .await
             .map_err(|_| RelayError::ConnectTimeout(hs.target.clone()))??;
 
-            relay_bidirectional(inbound, outbound, idle_timeout, 8192, &NoOpMetrics).await?;
+            relay_bidirectional(inbound, outbound, idle_timeout, relay_buffer_size, &NoOpMetrics).await?;
         }
         TransportType::Plain => {
             let outbound = tokio::time::timeout(
@@ -171,7 +172,7 @@ where
             .await
             .map_err(|_| RelayError::ConnectTimeout(hs.target.clone()))??;
 
-            relay_bidirectional(inbound, outbound, idle_timeout, 8192, &NoOpMetrics).await?;
+            relay_bidirectional(inbound, outbound, idle_timeout, relay_buffer_size, &NoOpMetrics).await?;
         }
     }
 
