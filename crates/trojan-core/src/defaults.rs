@@ -44,6 +44,8 @@ pub const DEFAULT_TCP_REUSE_PORT: bool = false;
 pub const DEFAULT_TCP_FAST_OPEN: bool = false;
 /// Default TCP Fast Open queue length.
 pub const DEFAULT_TCP_FAST_OPEN_QLEN: u32 = 5;
+/// Prefer IPv4 addresses when resolving DNS (server-side outbound).
+pub const DEFAULT_TCP_PREFER_IPV4: bool = false;
 
 // ============================================================================
 // Connection Defaults

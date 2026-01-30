@@ -11,19 +11,31 @@ use trojan_proto::{AddressRef, HostRef};
 use crate::error::ServerError;
 
 /// Resolve a string address (host:port) to a SocketAddr.
-pub async fn resolve_sockaddr(target: &str) -> Result<SocketAddr, ServerError> {
+///
+/// When `prefer_ipv4` is true, iterates all DNS results and returns the
+/// first IPv4 address if available; otherwise falls back to the first result.
+pub async fn resolve_sockaddr(target: &str, prefer_ipv4: bool) -> Result<SocketAddr, ServerError> {
     if let Ok(addr) = target.parse::<SocketAddr>() {
         return Ok(addr);
     }
-    let mut addrs = tokio::net::lookup_host(target)
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host(target)
         .await
-        .map_err(|_| ServerError::Resolve)?;
-    addrs.next().ok_or(ServerError::Resolve)
+        .map_err(|_| ServerError::Resolve)?
+        .collect();
+    if prefer_ipv4 {
+        if let Some(v4) = addrs.iter().find(|a| a.is_ipv4()) {
+            return Ok(*v4);
+        }
+    }
+    addrs.into_iter().next().ok_or(ServerError::Resolve)
 }
 
 /// Resolve a trojan AddressRef to a SocketAddr.
 #[inline]
-pub async fn resolve_address(address: &AddressRef<'_>) -> Result<SocketAddr, ServerError> {
+pub async fn resolve_address(
+    address: &AddressRef<'_>,
+    prefer_ipv4: bool,
+) -> Result<SocketAddr, ServerError> {
     match address.host {
         HostRef::Ipv4(ip) => Ok(SocketAddr::from((ip, address.port))),
         HostRef::Ipv6(ip) => Ok(SocketAddr::from((ip, address.port))),
@@ -35,7 +47,7 @@ pub async fn resolve_address(address: &AddressRef<'_>) -> Result<SocketAddr, Ser
 
             // Measure DNS resolution time
             let start = Instant::now();
-            let result = resolve_sockaddr(buf.as_str()).await;
+            let result = resolve_sockaddr(buf.as_str(), prefer_ipv4).await;
             record_dns_resolve_duration(start.elapsed().as_secs_f64());
             result
         }

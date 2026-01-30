@@ -51,6 +51,7 @@ default_fns! {
     default_tcp_reuse_port        => DEFAULT_TCP_REUSE_PORT: bool,
     default_tcp_fast_open         => DEFAULT_TCP_FAST_OPEN: bool,
     default_tcp_fast_open_qlen    => DEFAULT_TCP_FAST_OPEN_QLEN: u32,
+    default_tcp_prefer_ipv4       => DEFAULT_TCP_PREFER_IPV4: bool,
 }
 
 default_string_fns! {
