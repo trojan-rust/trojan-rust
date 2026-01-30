@@ -1,8 +1,8 @@
 .PHONY: build clean
 
 # Extract binary to ./out/ via Docker buildx
-build:
-	docker buildx build --output type=local,dest=out .
+build: clean
+	docker buildx build --target export --output type=local,dest=out .
 
 clean:
 	rm -rf out
