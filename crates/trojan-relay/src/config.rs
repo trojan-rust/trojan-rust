@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 // ── Entry Node Configuration ──
 
@@ -59,7 +59,7 @@ pub struct ChainNodeConfig {
     pub sni: String,
 }
 
-/// A routing rule: maps a listen address to a chain and destination.
+/// A routing rule: maps a listen address to a chain and destination(s).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleConfig {
     /// Human-readable name for logging / metrics.
@@ -71,10 +71,30 @@ pub struct RuleConfig {
     /// Name of the chain to use.
     pub chain: String,
 
-    /// Final destination address (the exit trojan-server, host:port).
-    /// The last relay node connects here via plain TCP; the actual TLS
-    /// handshake (including SNI) is performed end-to-end by the trojan client.
-    pub dest: String,
+    /// Final destination address(es) (the exit trojan-server(s), host:port).
+    /// Accepts a single string `"host:port"` or an array `["host1:port", "host2:port"]`.
+    /// When multiple destinations are configured, the `strategy` field controls
+    /// how connections are distributed.
+    #[serde(deserialize_with = "deserialize_one_or_many")]
+    #[serde(serialize_with = "serialize_one_or_many")]
+    pub dest: Vec<String>,
+
+    /// Load balancing strategy (default: round_robin).
+    /// Only meaningful when `dest` has multiple entries.
+    #[serde(default)]
+    pub strategy: trojan_lb::LbStrategy,
+
+    /// Failover cooldown in seconds before retrying a failed backend.
+    /// Only used when `strategy = "failover"`.
+    #[serde(default = "default_failover_cooldown")]
+    pub failover_cooldown_secs: u64,
+}
+
+impl RuleConfig {
+    /// Returns a display-friendly representation of dest for logging.
+    pub fn dest_display(&self) -> &str {
+        self.dest.first().map(|s| s.as_str()).unwrap_or("<empty>")
+    }
 }
 
 // ── Relay Node Configuration ──
@@ -216,6 +236,38 @@ fn default_relay_buffer_size() -> usize {
 fn default_sni() -> String {
     "crates.io".to_string()
 }
+fn default_failover_cooldown() -> u64 {
+    30
+}
+
+// ── Serde helpers for one-or-many dest ──
+
+fn deserialize_one_or_many<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    match OneOrMany::deserialize(deserializer)? {
+        OneOrMany::One(s) => Ok(vec![s]),
+        OneOrMany::Many(v) => Ok(v),
+    }
+}
+
+fn serialize_one_or_many<S>(v: &[String], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if v.len() == 1 {
+        serializer.serialize_str(&v[0])
+    } else {
+        v.serialize(serializer)
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,9 +305,28 @@ connect_timeout_secs = 15
         assert_eq!(config.chains["jp"].nodes[0].addr, "relay-hk:443");
         assert!(config.chains["direct"].nodes.is_empty());
         assert_eq!(config.rules[0].name, "japan");
-        assert_eq!(config.rules[0].dest, "trojan-jp:443");
+        assert_eq!(config.rules[0].dest, vec!["trojan-jp:443"]);
+        assert_eq!(config.rules[0].strategy, trojan_lb::LbStrategy::RoundRobin); // default
         assert_eq!(config.timeouts.connect_timeout_secs, 15);
         assert_eq!(config.timeouts.idle_timeout_secs, 300); // default
+    }
+
+    #[test]
+    fn parse_entry_config_multi_dest() {
+        let toml_str = r#"
+[chains.jp]
+nodes = []
+
+[[rules]]
+name = "japan-ha"
+listen = "127.0.0.1:1080"
+chain = "jp"
+dest = ["trojan-jp-1:443", "trojan-jp-2:443"]
+strategy = "least_connections"
+"#;
+        let config: EntryConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.rules[0].dest, vec!["trojan-jp-1:443", "trojan-jp-2:443"]);
+        assert_eq!(config.rules[0].strategy, trojan_lb::LbStrategy::LeastConnections);
     }
 
     #[test]

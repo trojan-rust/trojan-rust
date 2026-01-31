@@ -13,13 +13,16 @@
 //! The last hop to the trojan-server is always plain TCP — the trojan client
 //! performs its own end-to-end TLS handshake through the relay tunnel.
 
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, error, info, Instrument, info_span};
 
-use crate::config::{ChainConfig, EntryConfig, RuleConfig, TimeoutConfig, TransportType};
+use trojan_lb::LoadBalancer;
+
+use crate::config::{ChainConfig, EntryConfig, TimeoutConfig, TransportType};
 use crate::error::RelayError;
 use crate::handshake::{self, HandshakeMetadata};
 use crate::router::Router;
@@ -49,7 +52,8 @@ pub async fn run(config: EntryConfig, shutdown: tokio_util::sync::CancellationTo
             name = %rule.name,
             listen = %rule.listen,
             chain = %rule.chain,
-            dest = %rule.dest,
+            dest = ?rule.dest,
+            strategy = ?rule.strategy,
             "entry rule started"
         );
 
@@ -111,19 +115,20 @@ async fn run_listener(
                 };
 
                 let chain = route.chain.clone();
-                let rule = route.rule.clone();
+                let lb = route.lb.clone();
                 let base_tls_connector = base_tls_connector.clone();
                 let plain_connector = plain_connector.clone();
                 let ws_connector = ws_connector.clone();
                 let timeouts = timeouts.clone();
-                let rule_name = rule.name.clone();
+                let rule_name = route.rule.name.clone();
 
                 tokio::spawn(
                     async move {
                         if let Err(e) = handle_entry_connection(
                             tcp_stream,
                             &chain,
-                            &rule,
+                            lb,
+                            peer_addr.ip(),
                             base_tls_connector,
                             plain_connector,
                             ws_connector,
@@ -143,7 +148,8 @@ async fn run_listener(
 async fn handle_entry_connection(
     client_stream: TcpStream,
     chain: &ChainConfig,
-    rule: &RuleConfig,
+    lb: Arc<LoadBalancer>,
+    peer_ip: IpAddr,
     base_tls_connector: TlsTransportConnector,
     plain_connector: PlainTransportConnector,
     ws_connector: WsTransportConnector,
@@ -152,6 +158,14 @@ async fn handle_entry_connection(
     let connect_timeout = Duration::from_secs(timeouts.connect_timeout_secs);
     let idle_timeout = Duration::from_secs(timeouts.idle_timeout_secs);
     let relay_buffer_size = timeouts.relay_buffer_size;
+
+    // Select destination via load balancer
+    let selection = lb.select(peer_ip)?;
+    let selected_dest = selection.addr;
+    // Hold the guard alive for the connection lifetime (tracks active connections)
+    let _conn_guard = selection.guard;
+
+    debug!(dest = %selected_dest, "selected destination");
 
     // Determine the first hop's transport and SNI.
     // - Empty chain (direct): plain TCP to dest (client does its own TLS to trojan-server)
@@ -168,43 +182,54 @@ async fn handle_entry_connection(
     };
 
     // Build tunnel and relay — dispatch on first hop transport type
-    match first_transport {
+    let build_result = match first_transport {
         TransportType::Tls => {
             let tls_connector = base_tls_connector.with_sni(first_sni.to_string());
             let tunnel = tokio::time::timeout(
                 connect_timeout,
-                build_tunnel(chain, rule, &tls_connector),
+                build_tunnel(chain, &selected_dest, &tls_connector),
             )
             .await
-            .map_err(|_| RelayError::ConnectTimeout(rule.dest.to_string()))??;
+            .map_err(|_| RelayError::ConnectTimeout(selected_dest.clone()))??;
 
             debug!("tunnel established, starting relay");
-            relay_bidirectional(client_stream, tunnel, idle_timeout, relay_buffer_size, &NoOpMetrics).await?;
+            relay_bidirectional(client_stream, tunnel, idle_timeout, relay_buffer_size, &NoOpMetrics).await
         }
         TransportType::Plain => {
             let tunnel = tokio::time::timeout(
                 connect_timeout,
-                build_tunnel(chain, rule, &plain_connector),
+                build_tunnel(chain, &selected_dest, &plain_connector),
             )
             .await
-            .map_err(|_| RelayError::ConnectTimeout(rule.dest.to_string()))??;
+            .map_err(|_| RelayError::ConnectTimeout(selected_dest.clone()))??;
 
             debug!("tunnel established, starting relay");
-            relay_bidirectional(client_stream, tunnel, idle_timeout, relay_buffer_size, &NoOpMetrics).await?;
+            relay_bidirectional(client_stream, tunnel, idle_timeout, relay_buffer_size, &NoOpMetrics).await
         }
         TransportType::Ws => {
             let tunnel = tokio::time::timeout(
                 connect_timeout,
-                build_tunnel(chain, rule, &ws_connector),
+                build_tunnel(chain, &selected_dest, &ws_connector),
             )
             .await
-            .map_err(|_| RelayError::ConnectTimeout(rule.dest.to_string()))??;
+            .map_err(|_| RelayError::ConnectTimeout(selected_dest.clone()))??;
 
             debug!("tunnel established, starting relay");
-            relay_bidirectional(client_stream, tunnel, idle_timeout, relay_buffer_size, &NoOpMetrics).await?;
+            relay_bidirectional(client_stream, tunnel, idle_timeout, relay_buffer_size, &NoOpMetrics).await
+        }
+    };
+
+    // For failover: mark backend unhealthy on tunnel build failure.
+    // Note: errors from relay_bidirectional (post-connection) do NOT mark unhealthy —
+    // the connection was successfully established.
+    if let Err(ref e) = build_result {
+        if lb.is_failover() {
+            debug!(dest = %selected_dest, error = %e, "marking backend unhealthy");
+            lb.mark_unhealthy(&selected_dest);
         }
     }
 
+    build_result?;
     Ok(())
 }
 
@@ -218,7 +243,7 @@ async fn handle_entry_connection(
 /// and SNI to use for its outbound connection to the next hop.
 async fn build_tunnel<C>(
     chain: &ChainConfig,
-    rule: &RuleConfig,
+    dest: &str,
     connector: &C,
 ) -> Result<C::Stream, RelayError>
 where
@@ -227,7 +252,7 @@ where
 {
     if chain.nodes.is_empty() {
         // Direct connection — no relay handshake needed
-        return Ok(connector.connect(&rule.dest).await?);
+        return Ok(connector.connect(dest).await?);
     }
 
     let first_node = &chain.nodes[0];
@@ -237,7 +262,7 @@ where
     // The metadata tells B1 what transport/sni to use for its outbound connection:
     //   - If there's a B2, metadata = B2's transport/sni (how to reach B2)
     //   - If B1 is the last relay, metadata = rule's transport/sni (how to reach dest)
-    let (handshake_target, handshake_meta) = next_hop_info(chain, rule, 0);
+    let (handshake_target, handshake_meta) = next_hop_info(chain, dest, 0);
 
     let mut stream = connector.connect(&first_node.addr).await?;
 
@@ -259,7 +284,7 @@ where
     //   A → (B1→B2→B3): handshake(pw=B3, target=C, meta={how to reach C})
     for i in 1..chain.nodes.len() {
         let node = &chain.nodes[i];
-        let (target, meta) = next_hop_info(chain, rule, i);
+        let (target, meta) = next_hop_info(chain, dest, i);
 
         let password = node
             .password
@@ -278,7 +303,7 @@ where
 ///
 /// - target = where nodes[i] should connect to (next node or dest)
 /// - metadata = what transport/sni nodes[i] should use for that outbound connection
-fn next_hop_info(chain: &ChainConfig, rule: &RuleConfig, i: usize) -> (String, HandshakeMetadata) {
+fn next_hop_info(chain: &ChainConfig, dest: &str, i: usize) -> (String, HandshakeMetadata) {
     if i + 1 < chain.nodes.len() {
         // Next hop is another relay node
         let next = &chain.nodes[i + 1];
@@ -295,6 +320,6 @@ fn next_hop_info(chain: &ChainConfig, rule: &RuleConfig, i: usize) -> (String, H
             transport: Some(TransportType::Plain),
             sni: None,
         };
-        (rule.dest.clone(), meta)
+        (dest.to_string(), meta)
     }
 }
