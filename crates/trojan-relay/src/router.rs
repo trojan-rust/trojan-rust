@@ -2,6 +2,10 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
+use trojan_lb::LoadBalancer;
 
 use crate::config::{ChainConfig, EntryConfig, RuleConfig};
 use crate::error::RelayError;
@@ -15,18 +19,22 @@ pub struct Router {
     rules: Vec<RuleConfig>,
     /// Chain name → chain config
     chains: HashMap<String, ChainConfig>,
+    /// One LoadBalancer per rule, indexed same as `rules`.
+    load_balancers: Vec<Arc<LoadBalancer>>,
 }
 
-/// A resolved route: the chain config + destination.
+/// A resolved route: the chain config + destination + load balancer.
 pub struct ResolvedRoute<'a> {
     pub rule: &'a RuleConfig,
     pub chain: &'a ChainConfig,
+    pub lb: &'a Arc<LoadBalancer>,
 }
 
 impl Router {
     /// Build a router from an entry config. Validates references.
     pub fn new(config: &EntryConfig) -> Result<Self, RelayError> {
         let mut rules_by_addr = HashMap::with_capacity(config.rules.len());
+        let mut load_balancers = Vec::with_capacity(config.rules.len());
 
         for (i, rule) in config.rules.iter().enumerate() {
             // Validate: chain must exist
@@ -34,6 +42,14 @@ impl Router {
                 return Err(RelayError::ChainNotFound(format!(
                     "rule '{}' references unknown chain '{}'",
                     rule.name, rule.chain
+                )));
+            }
+
+            // Validate: dest must not be empty
+            if rule.dest.is_empty() {
+                return Err(RelayError::Config(format!(
+                    "rule '{}' has empty dest",
+                    rule.name
                 )));
             }
 
@@ -46,12 +62,20 @@ impl Router {
             }
 
             rules_by_addr.insert(rule.listen, i);
+
+            let lb = Arc::new(LoadBalancer::new(
+                rule.dest.clone(),
+                rule.strategy.clone(),
+                Duration::from_secs(rule.failover_cooldown_secs),
+            ));
+            load_balancers.push(lb);
         }
 
         Ok(Self {
             rules_by_addr,
             rules: config.rules.clone(),
             chains: config.chains.clone(),
+            load_balancers,
         })
     }
 
@@ -60,7 +84,8 @@ impl Router {
         let idx = self.rules_by_addr.get(listen_addr)?;
         let rule = &self.rules[*idx];
         let chain = self.chains.get(&rule.chain)?;
-        Some(ResolvedRoute { rule, chain })
+        let lb = &self.load_balancers[*idx];
+        Some(ResolvedRoute { rule, chain, lb })
     }
 
     /// Get all unique listen addresses.
@@ -113,9 +138,10 @@ dest = "trojan-sg:443"
         let addr: SocketAddr = "127.0.0.1:1080".parse().unwrap();
         let route = router.resolve(&addr).unwrap();
         assert_eq!(route.rule.name, "japan");
-        assert_eq!(route.rule.dest, "trojan-jp:443");
+        assert_eq!(route.rule.dest, vec!["trojan-jp:443"]);
         assert_eq!(route.chain.nodes.len(), 1);
         assert_eq!(route.chain.nodes[0].addr, "relay-hk:443");
+        assert_eq!(route.lb.backend_count(), 1);
 
         let addr: SocketAddr = "127.0.0.1:1082".parse().unwrap();
         let route = router.resolve(&addr).unwrap();
@@ -178,5 +204,28 @@ dest = "other:443"
         let router = Router::new(&config).unwrap();
         let addrs = router.listen_addrs();
         assert_eq!(addrs.len(), 2);
+    }
+
+    #[test]
+    fn test_router_multi_dest() {
+        let config: EntryConfig = toml::from_str(
+            r#"
+[chains.jp]
+nodes = []
+
+[[rules]]
+name = "ha"
+listen = "127.0.0.1:1080"
+chain = "jp"
+dest = ["a:443", "b:443", "c:443"]
+strategy = "ip_hash"
+"#,
+        )
+        .unwrap();
+
+        let router = Router::new(&config).unwrap();
+        let addr: SocketAddr = "127.0.0.1:1080".parse().unwrap();
+        let route = router.resolve(&addr).unwrap();
+        assert_eq!(route.lb.backend_count(), 3);
     }
 }

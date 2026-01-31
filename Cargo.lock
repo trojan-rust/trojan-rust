@@ -3550,6 +3550,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "trojan-lb"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "trojan-metrics"
 version = "0.3.0"
 dependencies = [
@@ -3584,6 +3593,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trojan-core",
+ "trojan-lb",
  "trojan-proto",
  "trojan-transport",
 ]

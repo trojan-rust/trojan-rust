@@ -31,6 +31,9 @@ pub enum RelayError {
 
     #[error("certificate generation failed: {0}")]
     CertGeneration(String),
+
+    #[error("load balancer: {0}")]
+    LoadBalancer(#[from] trojan_lb::LbError),
 }
 
 impl From<trojan_transport::error::TransportError> for RelayError {

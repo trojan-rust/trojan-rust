@@ -1,0 +1,20 @@
+[package]
+name = "trojan-lb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Generic load balancer for trojan-rs (round-robin, IP hash, least connections, failover)"
+keywords = ["load-balancer", "round-robin", "failover"]
+categories = ["network-programming"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["sync"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
