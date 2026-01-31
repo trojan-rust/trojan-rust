@@ -30,7 +30,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "GPL-3.0-only"
 authors = ["0x72757374 <257538187+0x72757374@users.noreply.github.com>"]
@@ -39,19 +39,19 @@ homepage = "https://github.com/trojan-rs/trojan-rs"
 documentation = "https://docs.rs/trojan"
 
 [workspace.dependencies]
-trojan = { version = "0.3.0", path = "." }
-trojan-core = { version = "0.3.0", path = "crates/trojan-core" }
-trojan-proto = { version = "0.3.0", path = "crates/trojan-proto" }
-trojan-auth = { version = "0.3.0", path = "crates/trojan-auth" }
-trojan-config = { version = "0.3.0", path = "crates/trojan-config" }
-trojan-metrics = { version = "0.3.0", path = "crates/trojan-metrics" }
-trojan-analytics = { version = "0.3.0", path = "crates/trojan-analytics" }
-trojan-server = { version = "0.3.0", path = "crates/trojan-server" }
-trojan-client = { version = "0.3.0", path = "crates/trojan-client" }
-trojan-cert = { version = "0.3.0", path = "crates/trojan-cert" }
-trojan-relay = { version = "0.3.0", path = "crates/trojan-relay" }
-trojan-transport = { version = "0.3.0", path = "crates/trojan-transport" }
-trojan-lb = { version = "0.3.0", path = "crates/trojan-lb" }
+trojan = { version = "0.4.0", path = "." }
+trojan-core = { version = "0.4.0", path = "crates/trojan-core" }
+trojan-proto = { version = "0.4.0", path = "crates/trojan-proto" }
+trojan-auth = { version = "0.4.0", path = "crates/trojan-auth" }
+trojan-config = { version = "0.4.0", path = "crates/trojan-config" }
+trojan-metrics = { version = "0.4.0", path = "crates/trojan-metrics" }
+trojan-analytics = { version = "0.4.0", path = "crates/trojan-analytics" }
+trojan-server = { version = "0.4.0", path = "crates/trojan-server" }
+trojan-client = { version = "0.4.0", path = "crates/trojan-client" }
+trojan-cert = { version = "0.4.0", path = "crates/trojan-cert" }
+trojan-relay = { version = "0.4.0", path = "crates/trojan-relay" }
+trojan-transport = { version = "0.4.0", path = "crates/trojan-transport" }
+trojan-lb = { version = "0.4.0", path = "crates/trojan-lb" }
 
 [features]
 default = ["cli", "sql-sqlite"]
