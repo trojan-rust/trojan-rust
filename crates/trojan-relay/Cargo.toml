@@ -18,7 +18,7 @@ trojan-proto = { workspace = true }
 trojan-transport = { workspace = true }
 trojan-lb = { workspace = true }
 
-tokio = { version = "1", features = [
+tokio = { workspace = true, features = [
     "rt-multi-thread",
     "net",
     "io-util",
@@ -27,18 +27,18 @@ tokio = { version = "1", features = [
     "sync",
     "signal",
 ] }
-rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "logging", "std", "tls12"] }
+rustls.workspace = true
 
-sha2 = "0.10"
-hex = "0.4"
+sha2.workspace = true
+hex.workspace = true
 
-serde = { version = "1", features = ["derive"] }
-toml = "0.8"
-thiserror = "2"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-clap = { version = "4", features = ["derive"] }
-tokio-util = { version = "0.7", features = ["compat", "rt"] }
+serde.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+clap.workspace = true
+tokio-util = { workspace = true, features = ["compat", "rt"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "net", "time"] }

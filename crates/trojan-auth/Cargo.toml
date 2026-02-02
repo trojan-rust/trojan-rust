@@ -31,11 +31,11 @@ sql-tls-native = ["sqlx/tls-native-tls"]
 cli = ["sql", "dep:clap", "dep:tabled", "tokio/rt-multi-thread"]
 
 [dependencies]
-async-trait = "0.1"
-thiserror = "2"
-sha2 = "0.10"
-hex = "0.4"
-parking_lot = "0.12"
+async-trait.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+hex.workspace = true
+parking_lot.workspace = true
 
 # Optional SQLx dependency
 sqlx = { version = "0.8", default-features = false, features = [
@@ -44,15 +44,15 @@ sqlx = { version = "0.8", default-features = false, features = [
 ], optional = true }
 
 # For batch traffic recording (optional, only with sql feature)
-tokio = { version = "1", features = ["sync", "time", "macros"], optional = true }
+tokio = { workspace = true, features = ["sync", "time", "macros"], optional = true }
 
 # CLI dependencies (optional)
-clap = { version = "4", features = ["derive", "env"], optional = true }
+clap = { workspace = true, features = ["derive", "env"], optional = true }
 tabled = { version = "0.17", optional = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-criterion = { version = "0.5", features = ["async_tokio"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+criterion = { workspace = true, features = ["async_tokio"] }
 
 [[bench]]
 name = "auth"
