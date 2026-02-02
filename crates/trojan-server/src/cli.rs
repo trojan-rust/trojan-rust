@@ -38,16 +38,6 @@ pub async fn run(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     init_tracing(&config.logging);
 
-    if let Some(listen) = &config.metrics.listen {
-        match trojan_metrics::init_metrics_server(listen) {
-            Ok(_handle) => info!(
-                "metrics server listening on {} (/metrics, /health, /ready)",
-                listen
-            ),
-            Err(e) => warn!("failed to start metrics server: {}", e),
-        }
-    }
-
     // Set up graceful shutdown on SIGTERM/SIGINT
     let shutdown = CancellationToken::new();
     let shutdown_signal = shutdown.clone();

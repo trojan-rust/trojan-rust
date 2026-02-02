@@ -120,12 +120,24 @@ where
                     };
                     debug!(peer = %peer, cmd = cmd_name, target = ?req.address, "trojan request");
 
+                    // GeoIP lookup for metrics country tagging (executed once per connection)
+                    #[cfg(feature = "geoip")]
+                    let peer_country: String = state
+                        .geoip_metrics
+                        .as_ref()
+                        .and_then(|db| db.country_code(peer.ip()))
+                        .unwrap_or_default();
+
                     // parse_request already validated hash format via is_valid_hash
                     let hash = match std::str::from_utf8(req.hash) {
                         Ok(v) => v,
                         Err(_) => {
                             debug!(peer = %peer, reason = "invalid_hash_encoding", "auth failed, fallback");
                             record_auth_failure();
+                            #[cfg(feature = "geoip")]
+                            if !peer_country.is_empty() {
+                                trojan_metrics::record_auth_failure_with_geo(&peer_country);
+                            }
                             record_fallback();
                             return handle_fallback(stream, buf.freeze(), state, peer).await;
                         }
@@ -148,12 +160,136 @@ where
                     if let Err(err) = verify_result {
                         debug!(peer = %peer, reason = %err, "auth failed, fallback");
                         record_auth_failure();
+                        #[cfg(feature = "geoip")]
+                        if !peer_country.is_empty() {
+                            trojan_metrics::record_auth_failure_with_geo(&peer_country);
+                        }
                         record_fallback();
                         return handle_fallback(stream, buf.freeze(), state, peer).await;
                     }
 
                     record_auth_success();
+                    #[cfg(feature = "geoip")]
+                    if !peer_country.is_empty() {
+                        trojan_metrics::record_connection_with_geo(&peer_country);
+                    }
                     debug!(peer = %peer, "auth success");
+
+                    // Analytics: GeoIP lookup for geo fields (city-level)
+                    #[cfg(all(feature = "geoip", feature = "analytics"))]
+                    let analytics_geo: Option<trojan_config::GeoResult> = state
+                        .geoip_analytics
+                        .as_ref()
+                        .map(|db| db.lookup_city(peer.ip()));
+
+                    // Analytics: record connection event if sampling passes.
+                    // The builder sends the event on drop with duration auto-filled.
+                    #[cfg(feature = "analytics")]
+                    #[allow(unused_mut)]
+                    let _analytics_builder = state.analytics.as_ref().and_then(|collector| {
+                        if !collector.should_sample(None) {
+                            return None;
+                        }
+                        let mut builder = collector.connection(0, peer);
+                        #[cfg(feature = "geoip")]
+                        if let Some(geo) = analytics_geo {
+                            builder = builder.geo(geo, &collector.privacy().geo_precision);
+                        }
+                        Some(builder)
+                    });
+
+                    // Rule-based routing: match target against rules
+                    #[cfg(feature = "rules")]
+                    if let Some(ref engine) = state.rule_engine {
+                        let action = {
+                            let domain = match &req.address.host {
+                                trojan_proto::HostRef::Domain(d) => {
+                                    std::str::from_utf8(d).ok()
+                                }
+                                _ => None,
+                            };
+                            let dest_ip = match &req.address.host {
+                                trojan_proto::HostRef::Ipv4(v4) => {
+                                    Some(std::net::IpAddr::from(*v4))
+                                }
+                                trojan_proto::HostRef::Ipv6(v6) => {
+                                    Some(std::net::IpAddr::from(*v6))
+                                }
+                                _ => None,
+                            };
+
+                            let ctx = trojan_rules::rule::MatchContext {
+                                domain,
+                                dest_ip,
+                                dest_port: req.address.port,
+                                src_ip: peer.ip(),
+                            };
+
+                            // Per Sukka's analysis: only resolve DNS for IP-based rules
+                            // when necessary to preserve rule order. Domain-only matches
+                            // before any IP rule should avoid DNS entirely.
+                            if ctx.dest_ip.is_none() && ctx.domain.is_some() && engine.has_ip_rules() {
+                                // Try lazy match first — returns Some(action) if a
+                                // domain rule matched before any IP rule, None if DNS
+                                // resolution is needed.
+                                if let Some(action) = engine.match_request_lazy_ip(&ctx) {
+                                    action
+                                } else {
+                                    // An IP-based rule appeared first; resolve and retry.
+                                    match crate::resolve::resolve_address(
+                                        &req.address,
+                                        state.tcp_config.prefer_ipv4,
+                                    )
+                                    .await
+                                    {
+                                        Ok(resolved) => {
+                                            debug!(peer = %peer, domain = ?domain, resolved = %resolved, "DNS resolved for IP rule matching");
+                                            let ctx = trojan_rules::rule::MatchContext {
+                                                domain,
+                                                dest_ip: Some(resolved.ip()),
+                                                dest_port: req.address.port,
+                                                src_ip: peer.ip(),
+                                            };
+                                            engine.match_request(&ctx)
+                                        }
+                                        Err(e) => {
+                                            // DNS failure should not block the request — skip IP rules
+                                            debug!(peer = %peer, domain = ?domain, error = %e, "DNS resolve failed for IP rule matching, skipping IP rules");
+                                            engine.match_request(&ctx)
+                                        }
+                                    }
+                                }
+                            } else {
+                                engine.match_request(&ctx)
+                            }
+                        };
+                        match &action {
+                            trojan_rules::Action::Reject => {
+                                debug!(peer = %peer, target = ?req.address, "rule: REJECT");
+                                return Ok(());
+                            }
+                            trojan_rules::Action::Outbound(name) => {
+                                if let Some(outbound) = state.outbounds.get(name.as_str()) {
+                                    debug!(peer = %peer, target = ?req.address, outbound = %name, "rule: outbound");
+                                    if req.command == CMD_CONNECT {
+                                        record_connect_request();
+                                        let payload = &buf[req.header_len..];
+                                        return handle_connect_via_outbound(
+                                            stream, req.address, payload, outbound.clone(), state, peer,
+                                        )
+                                        .await;
+                                    }
+                                    // UDP over outbound not supported yet; fall through to direct
+                                    debug!(peer = %peer, "outbound does not support UDP, using direct");
+                                } else {
+                                    warn!(peer = %peer, outbound = %name, "unknown outbound, using direct");
+                                }
+                            }
+                            trojan_rules::Action::Direct => {
+                                debug!(peer = %peer, target = ?req.address, "rule: DIRECT");
+                            }
+                        }
+                    }
 
                     // Use slice reference to avoid allocation
                     let payload = &buf[req.header_len..];
@@ -190,4 +326,62 @@ where
             return Ok(());
         }
     }
+}
+
+/// Handle TCP CONNECT via a named outbound connector.
+#[cfg(feature = "rules")]
+async fn handle_connect_via_outbound<S>(
+    stream: S,
+    address: trojan_proto::AddressRef<'_>,
+    payload: &[u8],
+    outbound: Arc<crate::outbound::Outbound>,
+    state: Arc<ServerState>,
+    peer: SocketAddr,
+) -> Result<(), ServerError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    use tokio::io::AsyncWriteExt;
+    use trojan_metrics::{
+        record_bytes_sent, record_target_bytes, record_target_connect_duration,
+        record_target_connection,
+    };
+
+    let target_label = crate::resolve::target_to_label(&address);
+    record_target_connection(&target_label);
+
+    let connect_start = tokio::time::Instant::now();
+    let maybe_outbound_stream = outbound
+        .connect(&address, &state.tcp_config, state.tcp_send_buffer, state.tcp_recv_buffer)
+        .await?;
+    record_target_connect_duration(connect_start.elapsed().as_secs_f64());
+
+    let mut outbound_stream = match maybe_outbound_stream {
+        Some(s) => s,
+        None => {
+            // Reject: close the connection
+            debug!(peer = %peer, target = ?address, "outbound: REJECT");
+            return Ok(());
+        }
+    };
+
+    debug!(peer = %peer, target = ?address, "outbound connected");
+
+    if !payload.is_empty() {
+        outbound_stream.write_all(payload).await?;
+        record_bytes_sent(payload.len() as u64);
+        record_target_bytes(&target_label, "sent", payload.len() as u64);
+    }
+
+    crate::relay::relay_with_idle_timeout_and_metrics_per_target(
+        stream,
+        outbound_stream,
+        state.tcp_idle_timeout,
+        state.relay_buffer_size,
+        &target_label,
+    )
+    .await?;
+
+    debug!(peer = %peer, target = ?address, "outbound relay finished");
+    Ok(())
 }

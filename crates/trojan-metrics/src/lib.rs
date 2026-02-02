@@ -16,8 +16,13 @@ use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 /// - `/health` - Liveness probe (always returns 200 OK)
 /// - `/ready` - Readiness probe (always returns 200 READY)
 ///
+/// Additional routes can be merged via the `extra_routes` parameter.
+///
 /// Returns a tokio JoinHandle for the server task.
-pub fn init_metrics_server(listen: &str) -> Result<tokio::task::JoinHandle<()>, String> {
+pub fn init_metrics_server(
+    listen: &str,
+    extra_routes: Option<Router>,
+) -> Result<tokio::task::JoinHandle<()>, String> {
     let addr: SocketAddr = listen
         .parse()
         .map_err(|e| format!("invalid metrics listen address: {}", e))?;
@@ -29,10 +34,14 @@ pub fn init_metrics_server(listen: &str) -> Result<tokio::task::JoinHandle<()>, 
         .map_err(|e| format!("failed to install prometheus recorder: {}", e))?;
 
     // Build the Axum router with metrics and health endpoints
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/metrics", get(move || metrics_handler(handle.clone())))
         .route("/health", get(health_handler))
         .route("/ready", get(ready_handler));
+
+    if let Some(extra) = extra_routes {
+        app = app.merge(extra);
+    }
 
     // Spawn the server
     let server_handle = tokio::spawn(async move {
@@ -43,7 +52,12 @@ pub fn init_metrics_server(listen: &str) -> Result<tokio::task::JoinHandle<()>, 
                 return;
             }
         };
-        if let Err(e) = axum::serve(listener, app).await {
+        if let Err(e) = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        {
             eprintln!("metrics server error: {}", e);
         }
     });
@@ -130,6 +144,16 @@ pub const FALLBACK_POOL_WARM_FAIL_TOTAL: &str = "trojan_fallback_pool_warm_fail_
 pub const DNS_RESOLVE_DURATION_SECONDS: &str = "trojan_dns_resolve_duration_seconds";
 /// Target connection establishment duration histogram (seconds).
 pub const TARGET_CONNECT_DURATION_SECONDS: &str = "trojan_target_connect_duration_seconds";
+/// Total number of successful rule engine updates (hot-reload).
+pub const RULE_UPDATES_TOTAL: &str = "trojan_rule_updates_total";
+/// Total number of failed rule engine update attempts (hot-reload).
+pub const RULE_UPDATE_ERRORS_TOTAL: &str = "trojan_rule_update_errors_total";
+/// Total connections by source country.
+pub const CONNECTIONS_BY_COUNTRY: &str = "trojan_connections_by_country_total";
+/// Total bytes by source country and direction.
+pub const BYTES_BY_COUNTRY: &str = "trojan_bytes_by_country_total";
+/// Total auth failures by source country.
+pub const AUTH_FAILURE_BY_COUNTRY: &str = "trojan_auth_failure_by_country_total";
 
 // ============================================================================
 // Metric Recording Functions
@@ -262,6 +286,38 @@ pub fn record_dns_resolve_duration(duration_secs: f64) {
 #[inline]
 pub fn record_target_connect_duration(duration_secs: f64) {
     histogram!(TARGET_CONNECT_DURATION_SECONDS).record(duration_secs);
+}
+
+/// Record a successful rule engine update (hot-reload).
+#[inline]
+pub fn record_rule_update() {
+    counter!(RULE_UPDATES_TOTAL).increment(1);
+}
+
+/// Record a failed rule engine update attempt (hot-reload).
+#[inline]
+pub fn record_rule_update_error() {
+    counter!(RULE_UPDATE_ERRORS_TOTAL).increment(1);
+}
+
+/// Record a connection with source country label.
+#[inline]
+pub fn record_connection_with_geo(country: &str) {
+    counter!(CONNECTIONS_BY_COUNTRY, "country" => country.to_owned()).increment(1);
+}
+
+/// Record bytes transferred with source country label.
+/// Direction: "sent" or "received".
+#[inline]
+pub fn record_bytes_with_geo(country: &str, direction: &'static str, bytes: u64) {
+    counter!(BYTES_BY_COUNTRY, "country" => country.to_owned(), "direction" => direction)
+        .increment(bytes);
+}
+
+/// Record an authentication failure with source country label.
+#[inline]
+pub fn record_auth_failure_with_geo(country: &str) {
+    counter!(AUTH_FAILURE_BY_COUNTRY, "country" => country.to_owned()).increment(1);
 }
 
 // ============================================================================

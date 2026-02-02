@@ -1,0 +1,32 @@
+[package]
+name = "trojan-rules"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Rule-based routing engine for trojan-rs (Surge/Clash compatible)"
+keywords = ["rules", "routing", "surge", "clash"]
+categories = ["network-programming"]
+
+[features]
+default = ["geoip", "http"]
+geoip = ["maxminddb"]
+http = ["reqwest", "tokio", "tokio-util"]
+
+[dependencies]
+aho-corasick = "1"
+arc-swap = "1"
+ipnet = "2"
+maxminddb = { version = "0.24", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+rustc-hash = "2"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "time", "sync"], optional = true }
+tokio-util = { version = "0.7", optional = true }
+tracing = "0.1"
+trojan-config.workspace = true

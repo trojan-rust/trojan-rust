@@ -25,6 +25,8 @@ pub enum ServerError {
     Resolve,
     #[error("udp payload too large")]
     UdpPayloadTooLarge,
+    #[error("rules: {0}")]
+    Rules(String),
 }
 
 impl ServerError {
@@ -34,7 +36,7 @@ impl ServerError {
             ServerError::Io(_) => ERROR_IO,
             ServerError::Tls(_) => ERROR_TLS_HANDSHAKE,
             ServerError::Auth(_) => ERROR_AUTH,
-            ServerError::Config(_) => ERROR_CONFIG,
+            ServerError::Config(_) | ServerError::Rules(_) => ERROR_CONFIG,
             ServerError::Proto(_) | ServerError::ProtoWrite(_) => ERROR_PROTOCOL,
             ServerError::Resolve => ERROR_RESOLVE,
             ServerError::UdpPayloadTooLarge => ERROR_PROTOCOL,

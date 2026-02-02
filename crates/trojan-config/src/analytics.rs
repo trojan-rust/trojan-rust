@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::GeoipConfig;
+
 /// Analytics configuration for connection event collection.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AnalyticsConfig {
@@ -28,6 +30,10 @@ pub struct AnalyticsConfig {
     /// Server identifier for multi-instance deployments.
     #[serde(default)]
     pub server_id: Option<String>,
+
+    /// GeoIP database for analytics geo fields (city-level).
+    #[serde(default)]
+    pub geoip: Option<GeoipConfig>,
 }
 
 /// ClickHouse connection configuration.
@@ -117,6 +123,7 @@ impl Default for AnalyticsSamplingConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalyticsPrivacyConfig {
     /// Whether to record client IP addresses.
+    /// When false, GeoIP fields are also left empty.
     #[serde(default = "default_true")]
     pub record_peer_ip: bool,
 
@@ -131,6 +138,13 @@ pub struct AnalyticsPrivacyConfig {
     /// Whether to record SNI.
     #[serde(default = "default_true")]
     pub record_sni: bool,
+
+    /// GeoIP precision for analytics events: "city", "country", or "none".
+    /// - "city": record all geo fields (country, region, city, ASN, org, lat/lon)
+    /// - "country": record only country code
+    /// - "none": do not record any geo information
+    #[serde(default = "default_geo_precision")]
+    pub geo_precision: String,
 }
 
 impl Default for AnalyticsPrivacyConfig {
@@ -140,8 +154,13 @@ impl Default for AnalyticsPrivacyConfig {
             full_user_id: false,
             user_id_prefix_len: default_analytics_user_id_prefix_len(),
             record_sni: true,
+            geo_precision: default_geo_precision(),
         }
     }
+}
+
+fn default_geo_precision() -> String {
+    "city".to_string()
 }
 
 // Analytics default value functions
@@ -184,4 +203,67 @@ fn default_analytics_write_timeout() -> u64 {
 
 fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn analytics_config_default() {
+        let cfg = AnalyticsConfig::default();
+        assert!(!cfg.enabled);
+        assert!(cfg.clickhouse.is_none());
+        assert!(cfg.server_id.is_none());
+        assert!(cfg.geoip.is_none());
+    }
+
+    #[test]
+    fn privacy_config_defaults() {
+        let cfg = AnalyticsPrivacyConfig::default();
+        assert!(cfg.record_peer_ip);
+        assert!(!cfg.full_user_id);
+        assert_eq!(cfg.user_id_prefix_len, 8);
+        assert!(cfg.record_sni);
+        assert_eq!(cfg.geo_precision, "city");
+    }
+
+    #[test]
+    fn privacy_config_deserialize_geo_precision() {
+        let toml_str = r#"geo_precision = "country""#;
+        let cfg: AnalyticsPrivacyConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.geo_precision, "country");
+    }
+
+    #[test]
+    fn sampling_config_defaults() {
+        let cfg = AnalyticsSamplingConfig::default();
+        assert_eq!(cfg.rate, 1.0);
+        assert!(cfg.always_record_users.is_empty());
+    }
+
+    #[test]
+    fn buffer_config_defaults() {
+        let cfg = AnalyticsBufferConfig::default();
+        assert_eq!(cfg.size, 10000);
+        assert_eq!(cfg.flush_interval_secs, 5);
+        assert_eq!(cfg.batch_size, 1000);
+        assert!(cfg.fallback_path.is_none());
+    }
+
+    #[test]
+    fn analytics_config_with_geoip() {
+        let toml_str = r#"
+enabled = true
+
+[geoip]
+source = "geolite2-city"
+cache_path = "/tmp/geoip.mmdb"
+"#;
+        let cfg: AnalyticsConfig = toml::from_str(toml_str).unwrap();
+        assert!(cfg.enabled);
+        let geoip = cfg.geoip.unwrap();
+        assert_eq!(geoip.source, "geolite2-city");
+        assert_eq!(geoip.cache_path.as_deref(), Some("/tmp/geoip.mmdb"));
+    }
 }

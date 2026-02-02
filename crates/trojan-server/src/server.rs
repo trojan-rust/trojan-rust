@@ -123,6 +123,95 @@ pub async fn run_with_shutdown(
         None
     };
 
+    // Initialize rule engine if feature enabled and rules configured
+    #[cfg(feature = "rules")]
+    let rule_engine = if !config.server.rules.is_empty() {
+        match crate::rules::build_rule_engine(&config.server) {
+            Ok(engine) => {
+                info!(
+                    rule_sets = engine.rule_set_count(),
+                    rules = engine.rule_count(),
+                    "rule engine initialized"
+                );
+                Some(Arc::new(trojan_rules::HotRuleEngine::new(engine)))
+            }
+            Err(e) => {
+                return Err(ServerError::Rules(format!("failed to init rules: {e}")));
+            }
+        }
+    } else {
+        debug!("no routing rules configured");
+        None
+    };
+
+    // Spawn background rule update task for HTTP providers
+    #[cfg(feature = "rules-http")]
+    if let Some(ref hot_engine) = rule_engine {
+        if crate::rules::has_http_providers(&config.server) {
+            let interval_secs = crate::rules::http_update_interval(&config.server)
+                .unwrap_or(3600); // default: 1 hour
+            let engine_ref = hot_engine.clone();
+            let server_cfg = config.server.clone();
+            let update_shutdown = shutdown.clone();
+            info!(interval_secs, "starting background rule update task");
+            tokio::spawn(async move {
+                rule_update_loop(engine_ref, server_cfg, interval_secs, update_shutdown).await;
+            });
+        }
+    }
+
+    // Build outbound connectors from config
+    #[cfg(feature = "rules")]
+    let outbounds = {
+        let mut map = std::collections::HashMap::new();
+        for (name, outbound_cfg) in &config.server.outbounds {
+            match crate::outbound::Outbound::from_config(name, outbound_cfg) {
+                Ok(outbound) => {
+                    info!(name = %name, "outbound connector configured");
+                    map.insert(name.clone(), Arc::new(outbound));
+                }
+                Err(e) => {
+                    return Err(ServerError::Config(format!(
+                        "outbound '{name}': {e}"
+                    )));
+                }
+            }
+        }
+        map
+    };
+
+    // Load GeoIP databases with deduplication.
+    // geoip_server is used indirectly (metrics fallback shares it).
+    #[cfg(feature = "geoip")]
+    #[allow(unused_variables)]
+    let (geoip_server, geoip_metrics, geoip_analytics) =
+        load_geoip_databases(&config, &shutdown).await;
+
+    // Start metrics server (with debug routes if rules feature is enabled)
+    if let Some(ref listen) = config.metrics.listen {
+        #[cfg(feature = "rules")]
+        let extra_routes = rule_engine
+            .as_ref()
+            .map(|engine| crate::debug_api::debug_routes(engine.clone()));
+        #[cfg(not(feature = "rules"))]
+        let extra_routes: Option<axum::Router> = None;
+
+        match trojan_metrics::init_metrics_server(listen, extra_routes) {
+            Ok(_handle) => {
+                #[cfg(feature = "rules")]
+                let endpoints = if rule_engine.is_some() {
+                    "/metrics, /health, /ready, /debug/rules/match"
+                } else {
+                    "/metrics, /health, /ready"
+                };
+                #[cfg(not(feature = "rules"))]
+                let endpoints = "/metrics, /health, /ready";
+                info!("metrics server listening on {} ({})", listen, endpoints);
+            }
+            Err(e) => warn!("failed to start metrics server: {}", e),
+        }
+    }
+
     // Log TCP options
     let tcp_cfg = &config.server.tcp;
     info!(
@@ -148,6 +237,14 @@ pub async fn run_with_shutdown(
         websocket: config.websocket.clone(),
         #[cfg(feature = "analytics")]
         analytics,
+        #[cfg(feature = "rules")]
+        rule_engine,
+        #[cfg(feature = "rules")]
+        outbounds,
+        #[cfg(feature = "geoip")]
+        geoip_metrics,
+        #[cfg(all(feature = "geoip", feature = "analytics"))]
+        geoip_analytics,
     });
     let auth = Arc::new(auth);
     let tracker = ConnectionTracker::new();
@@ -424,4 +521,248 @@ pub async fn run_with_shutdown(
 /// For backward compatibility with existing code.
 pub async fn run(config: Config, auth: impl AuthBackend + 'static) -> Result<(), ServerError> {
     run_with_shutdown(config, auth, CancellationToken::new()).await
+}
+
+/// Load GeoIP databases from config with deduplication.
+///
+/// Returns `(server_geoip, metrics_geoip, analytics_geoip)`.
+/// If multiple configs point to the same source, the same `Arc` is shared.
+///
+/// When `rules-http` feature is enabled, databases can be downloaded from
+/// CDN or custom URLs. Auto-update tasks are spawned for configs with
+/// `auto_update = true` and no local `path` set.
+#[cfg(feature = "geoip")]
+#[allow(unused_variables)]
+async fn load_geoip_databases(
+    config: &Config,
+    shutdown: &CancellationToken,
+) -> (
+    Option<Arc<trojan_rules::geoip_db::GeoipDb>>,
+    Option<Arc<trojan_rules::geoip_db::GeoipDb>>,
+    Option<Arc<trojan_rules::geoip_db::GeoipDb>>,
+) {
+    use std::collections::HashMap;
+    use trojan_rules::geoip_db::GeoipDb;
+
+    // Deduplication key: (path, url, source) tuple identifies a unique database
+    type Key = (Option<String>, Option<String>, String);
+    let mut loaded: HashMap<Key, Arc<GeoipDb>> = HashMap::new();
+
+    // Track configs that need auto-update tasks
+    #[cfg(feature = "rules-http")]
+    let mut auto_update_configs: Vec<(trojan_config::GeoipConfig, Arc<GeoipDb>)> = Vec::new();
+
+    // Load a single GeoIP config, deduplicating by key
+    #[cfg(feature = "rules-http")]
+    async fn load_or_share(
+        cfg: &trojan_config::GeoipConfig,
+        loaded: &mut HashMap<Key, Arc<GeoipDb>>,
+    ) -> Option<Arc<GeoipDb>> {
+        let key: Key = (cfg.path.clone(), cfg.url.clone(), cfg.source.clone());
+        if let Some(existing) = loaded.get(&key) {
+            return Some(existing.clone());
+        }
+        match trojan_rules::geoip_db::load_geoip(cfg).await {
+            Ok(db) => {
+                let arc = Arc::new(db);
+                loaded.insert(key, arc.clone());
+                Some(arc)
+            }
+            Err(e) => {
+                warn!(source = %cfg.source, error = %e, "failed to load GeoIP database");
+                None
+            }
+        }
+    }
+
+    #[cfg(not(feature = "rules-http"))]
+    fn load_or_share_sync(
+        cfg: &trojan_config::GeoipConfig,
+        loaded: &mut HashMap<Key, Arc<GeoipDb>>,
+    ) -> Option<Arc<GeoipDb>> {
+        let key: Key = (cfg.path.clone(), cfg.url.clone(), cfg.source.clone());
+        if let Some(existing) = loaded.get(&key) {
+            return Some(existing.clone());
+        }
+        match GeoipDb::load_from_file(cfg) {
+            Ok(db) => {
+                let arc = Arc::new(db);
+                loaded.insert(key, arc.clone());
+                Some(arc)
+            }
+            Err(e) => {
+                warn!(source = %cfg.source, error = %e, "failed to load GeoIP database");
+                None
+            }
+        }
+    }
+
+    // Server GeoIP (for rule matching — also shared by metrics/analytics)
+    let server_geoip = if let Some(cfg) = config.server.geoip.as_ref() {
+        #[cfg(feature = "rules-http")]
+        let result = load_or_share(cfg, &mut loaded).await;
+        #[cfg(not(feature = "rules-http"))]
+        let result = load_or_share_sync(cfg, &mut loaded);
+        result
+    } else {
+        None
+    };
+
+    // Metrics GeoIP
+    let metrics_geoip = if let Some(cfg) = config.metrics.geoip.as_ref() {
+        #[cfg(feature = "rules-http")]
+        let result = load_or_share(cfg, &mut loaded).await;
+        #[cfg(not(feature = "rules-http"))]
+        let result = load_or_share_sync(cfg, &mut loaded);
+        #[cfg(feature = "rules-http")]
+        if let Some(ref db) = result {
+            if cfg.auto_update && cfg.path.is_none() {
+                auto_update_configs.push((cfg.clone(), db.clone()));
+            }
+        }
+        result
+    } else {
+        server_geoip.clone() // fallback to server's GeoIP
+    };
+
+    // Analytics GeoIP
+    #[cfg(feature = "analytics")]
+    let analytics_geoip = if let Some(cfg) = config.analytics.geoip.as_ref() {
+        #[cfg(feature = "rules-http")]
+        let result = load_or_share(cfg, &mut loaded).await;
+        #[cfg(not(feature = "rules-http"))]
+        let result = load_or_share_sync(cfg, &mut loaded);
+        #[cfg(feature = "rules-http")]
+        if let Some(ref db) = result {
+            if cfg.auto_update && cfg.path.is_none() {
+                auto_update_configs.push((cfg.clone(), db.clone()));
+            }
+        }
+        result
+    } else {
+        None
+    };
+    #[cfg(not(feature = "analytics"))]
+    let analytics_geoip: Option<Arc<GeoipDb>> = None;
+
+    if !loaded.is_empty() {
+        info!(
+            databases = loaded.len(),
+            "GeoIP databases loaded (deduplicated)"
+        );
+    }
+
+    // Warn when auto_update is set but HTTP feature is unavailable
+    #[cfg(not(feature = "rules-http"))]
+    {
+        let all_cfgs: Vec<&trojan_config::GeoipConfig> = [
+            config.server.geoip.as_ref(),
+            config.metrics.geoip.as_ref(),
+            #[cfg(feature = "analytics")]
+            config.analytics.geoip.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        for cfg in all_cfgs {
+            if cfg.auto_update && cfg.path.is_none() {
+                warn!(
+                    source = %cfg.source,
+                    "GeoIP auto_update is enabled but rules-http feature is not compiled in; \
+                     database will not be downloaded or updated automatically"
+                );
+            }
+        }
+    }
+
+    // Spawn auto-update tasks for configs that need them
+    #[cfg(feature = "rules-http")]
+    {
+        // Deduplicate auto-update tasks by Arc pointer identity
+        let mut seen_ptrs = std::collections::HashSet::new();
+        for (cfg, db) in auto_update_configs {
+            let ptr = Arc::as_ptr(&db) as usize;
+            if !seen_ptrs.insert(ptr) {
+                continue; // already spawned for this database
+            }
+            let cancel = shutdown.clone();
+            let source = cfg.source.clone();
+            info!(source = %source, "spawning GeoIP auto-update task");
+            let swappable = Arc::new(arc_swap::ArcSwap::from(db));
+            tokio::spawn(trojan_rules::geoip_db::geoip_auto_update_task(
+                cfg,
+                swappable,
+                cancel,
+                move |success| {
+                    if success {
+                        trojan_metrics::record_rule_update();
+                    } else {
+                        trojan_metrics::record_rule_update_error();
+                    }
+                },
+            ));
+        }
+    }
+
+    (server_geoip, metrics_geoip, analytics_geoip)
+}
+
+/// Background task that periodically re-fetches HTTP rule-sets and hot-swaps the engine.
+#[cfg(feature = "rules-http")]
+async fn rule_update_loop(
+    engine: Arc<trojan_rules::HotRuleEngine>,
+    server_config: trojan_config::ServerConfig,
+    interval_secs: u64,
+    shutdown: CancellationToken,
+) {
+    use std::time::Duration;
+    use trojan_metrics::{record_rule_update, record_rule_update_error};
+
+    // Initial fetch (immediate) to replace any cache-only startup data
+    match crate::rules::build_rule_engine_async(&server_config).await {
+        Ok(new_engine) => {
+            info!(
+                rule_sets = new_engine.rule_set_count(),
+                rules = new_engine.rule_count(),
+                "initial rule fetch completed, engine updated"
+            );
+            engine.update(new_engine);
+            record_rule_update();
+        }
+        Err(e) => {
+            warn!(error = %e, "initial rule fetch failed, keeping startup rules");
+            record_rule_update_error();
+        }
+    }
+
+    let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+    interval.tick().await; // consume the immediate tick
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                debug!("rule update task shutting down");
+                return;
+            }
+            _ = interval.tick() => {
+                debug!("starting scheduled rule update");
+                match crate::rules::build_rule_engine_async(&server_config).await {
+                    Ok(new_engine) => {
+                        info!(
+                            rule_sets = new_engine.rule_set_count(),
+                            rules = new_engine.rule_count(),
+                            "rule update completed, engine swapped"
+                        );
+                        engine.update(new_engine);
+                        record_rule_update();
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "rule update failed, keeping current rules");
+                        record_rule_update_error();
+                    }
+                }
+            }
+        }
+    }
 }
