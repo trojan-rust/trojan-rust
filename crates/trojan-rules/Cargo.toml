@@ -30,3 +30,6 @@ tokio = { workspace = true, features = ["fs", "time", "sync"], optional = true }
 tokio-util = { workspace = true, optional = true }
 tracing.workspace = true
 trojan-config.workspace = true
+
+[lints]
+workspace = true

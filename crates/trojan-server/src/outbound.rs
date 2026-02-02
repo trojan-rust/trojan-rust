@@ -33,6 +33,7 @@ pub enum Outbound {
 }
 
 /// An established outbound connection, ready for relay.
+#[allow(clippy::large_enum_variant)]
 pub enum OutboundStream {
     /// Plain TCP stream (from direct connection).
     Tcp(TcpStream),
@@ -177,6 +178,7 @@ impl Outbound {
 }
 
 /// Connect to target with a specific local bind address.
+#[allow(clippy::cast_possible_truncation)]
 async fn connect_with_bind(
     target: SocketAddr,
     bind_ip: IpAddr,
@@ -241,7 +243,7 @@ async fn connect_trojan_outbound(
         trojan_proto::CMD_CONNECT,
         target,
     )
-    .map_err(|e| ServerError::ProtoWrite(e))?;
+    .map_err(ServerError::ProtoWrite)?;
 
     tls.write_all(&header).await?;
 
@@ -253,11 +255,10 @@ async fn connect_trojan_outbound(
 /// Handles `host:port`, `[ipv6]:port`, and bare hostnames.
 fn extract_host(addr: &str) -> &str {
     // Bracketed IPv6: [::1]:443
-    if addr.starts_with('[') {
-        if let Some(end) = addr.find(']') {
+    if addr.starts_with('[')
+        && let Some(end) = addr.find(']') {
             return &addr[..=end]; // include the brackets
         }
-    }
     // host:port — take everything before the last ':'
     if let Some((host, _port)) = addr.rsplit_once(':') {
         return host;
@@ -332,7 +333,7 @@ mod tests {
             sni: None,
             bind: None,
         };
-        assert!(Outbound::from_config("test", &cfg).is_err());
+        Outbound::from_config("test", &cfg).unwrap_err();
     }
 
     #[test]
@@ -344,7 +345,7 @@ mod tests {
             sni: None,
             bind: None,
         };
-        assert!(Outbound::from_config("test", &cfg).is_err());
+        Outbound::from_config("test", &cfg).unwrap_err();
     }
 
     #[test]
@@ -374,7 +375,7 @@ mod tests {
             sni: None,
             bind: None,
         };
-        assert!(Outbound::from_config("test", &cfg).is_err());
+        Outbound::from_config("test", &cfg).unwrap_err();
     }
 
     #[test]
@@ -387,7 +388,7 @@ mod tests {
             sni: None,
             bind: None,
         };
-        assert!(Outbound::from_config("test", &cfg).is_err());
+        Outbound::from_config("test", &cfg).unwrap_err();
     }
 
     #[test]

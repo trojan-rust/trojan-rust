@@ -139,14 +139,14 @@ payload:
     fn parse_missing_payload() {
         let yaml = "something_else: true";
         let result = parse_clash_provider(yaml, "domain");
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]
     fn parse_unknown_behavior() {
         let yaml = "payload: []";
         let result = parse_clash_provider(yaml, "unknown");
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]

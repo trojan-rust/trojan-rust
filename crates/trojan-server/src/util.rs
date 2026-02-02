@@ -84,6 +84,7 @@ impl Drop for ConnectionGuard {
 }
 
 /// Create a TCP listener with custom backlog and TCP options.
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_sign_loss, clippy::ptr_as_ptr)]
 pub fn create_listener(
     addr: SocketAddr,
     backlog: u32,
@@ -115,12 +116,13 @@ pub fn create_listener(
         // TCP_FASTOPEN = 23 on Linux
         const TCP_FASTOPEN: libc::c_int = 23;
         let qlen = tcp_cfg.fast_open_qlen as libc::c_int;
+        // SAFETY: libc FFI calls require unsafe; the socket fd and address pointers are valid.
         let ret = unsafe {
             libc::setsockopt(
                 socket.as_raw_fd(),
                 libc::IPPROTO_TCP,
                 TCP_FASTOPEN,
-                &qlen as *const libc::c_int as *const libc::c_void,
+                (&qlen as *const libc::c_int).cast::<libc::c_void>(),
                 std::mem::size_of::<libc::c_int>() as libc::socklen_t,
             )
         };
@@ -155,6 +157,7 @@ pub fn apply_tcp_options(stream: &TcpStream, tcp_cfg: &TcpConfig) -> std::io::Re
 }
 
 /// Connect to target with optional socket buffer configuration.
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 pub async fn connect_with_buffers(
     target: SocketAddr,
     send_buf: usize,

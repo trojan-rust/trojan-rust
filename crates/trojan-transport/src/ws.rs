@@ -19,7 +19,7 @@ use crate::error::TransportError;
 use crate::{TransportAcceptor, TransportConnector};
 
 /// WebSocket transport acceptor — upgrades incoming TCP to WebSocket.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct WsTransportAcceptor;
 
 impl TransportAcceptor for WsTransportAcceptor {
@@ -39,7 +39,7 @@ impl TransportAcceptor for WsTransportAcceptor {
 }
 
 /// WebSocket transport connector — connects outbound and upgrades to WebSocket.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct WsTransportConnector;
 
 impl TransportConnector for WsTransportConnector {

@@ -1,3 +1,4 @@
+#![allow(clippy::tests_outside_test_module)]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 

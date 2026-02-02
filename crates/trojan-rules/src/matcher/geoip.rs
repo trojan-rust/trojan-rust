@@ -39,17 +39,15 @@ impl GeoipMatcher {
     /// (city-level DBs like geolite2-city use City records, not Country).
     pub fn country_code(&self, ip: IpAddr) -> Option<String> {
         // Try Country record first (works for country-only DBs)
-        if let Ok(country) = self.reader.lookup::<maxminddb::geoip2::Country>(ip) {
-            if let Some(code) = country.country.and_then(|c| c.iso_code) {
+        if let Ok(country) = self.reader.lookup::<maxminddb::geoip2::Country>(ip)
+            && let Some(code) = country.country.and_then(|c| c.iso_code) {
                 return Some(code.to_uppercase());
             }
-        }
         // Fall back to City record (for city-level DBs)
-        if let Ok(city) = self.reader.lookup::<maxminddb::geoip2::City>(ip) {
-            if let Some(code) = city.country.and_then(|c| c.iso_code) {
+        if let Ok(city) = self.reader.lookup::<maxminddb::geoip2::City>(ip)
+            && let Some(code) = city.country.and_then(|c| c.iso_code) {
                 return Some(code.to_uppercase());
             }
-        }
         None
     }
 

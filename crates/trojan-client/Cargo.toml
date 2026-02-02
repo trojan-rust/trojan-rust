@@ -53,3 +53,6 @@ rcgen.workspace = true
 tempfile.workspace = true
 trojan-server = { workspace = true, features = ["rules"] }
 tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

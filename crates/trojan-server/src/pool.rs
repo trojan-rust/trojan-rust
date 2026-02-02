@@ -16,12 +16,14 @@ use tracing::debug;
 use trojan_metrics::{record_fallback_pool_warm_fail, set_fallback_pool_size};
 
 /// A pooled connection with metadata.
+#[derive(Debug)]
 struct PooledConnection {
     stream: TcpStream,
     created_at: Instant,
 }
 
 /// Connection pool for a single backend address.
+#[derive(Debug)]
 pub struct ConnectionPool {
     addr: SocketAddr,
     connections: Arc<Mutex<VecDeque<PooledConnection>>>,

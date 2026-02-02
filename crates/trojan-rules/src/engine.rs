@@ -13,6 +13,7 @@ use crate::matcher::GeoipMatcher;
 use crate::rule::{Action, EngineRule, MatchContext, ParsedRule};
 
 /// Result of a lazy match attempt that may require DNS resolution.
+#[derive(Debug)]
 pub enum MatchDecision<'a> {
     /// A rule matched without needing an IP address.
     Matched(&'a Action),
@@ -76,19 +77,17 @@ impl CompiledRuleSet {
             if self.domain_matcher.matches(domain) {
                 return true;
             }
-            if let Some(ref kw) = self.keyword_matcher {
-                if kw.matches(domain) {
+            if let Some(ref kw) = self.keyword_matcher
+                && kw.matches(domain) {
                     return true;
                 }
-            }
         }
 
         // Try IP matches
-        if let Some(ip) = ctx.dest_ip {
-            if self.cidr_matcher.contains(ip) {
+        if let Some(ip) = ctx.dest_ip
+            && self.cidr_matcher.contains(ip) {
                 return true;
             }
-        }
 
         // Try port matches
         if !self.dst_ports.is_empty() && self.dst_ports.contains(&ctx.dest_port) {
@@ -124,11 +123,10 @@ impl RuleEngine {
         for rule in &self.rules {
             match rule {
                 EngineRule::RuleSet { name, action } => {
-                    if let Some(compiled) = self.compiled_sets.get(name) {
-                        if compiled.matches(ctx) {
+                    if let Some(compiled) = self.compiled_sets.get(name)
+                        && compiled.matches(ctx) {
                             return action;
                         }
-                    }
                 }
                 EngineRule::GeoIp { code, action } => {
                     #[cfg(feature = "geoip")]
@@ -136,11 +134,10 @@ impl RuleEngine {
                         // Only match on dest_ip; skip when no resolved IP is
                         // available.  Falling back to src_ip would mis-route
                         // domain requests based on the *client's* country.
-                        if let Some(ip) = ctx.dest_ip {
-                            if geoip.matches(ip, code) {
+                        if let Some(ip) = ctx.dest_ip
+                            && geoip.matches(ip, code) {
                                 return action;
                             }
-                        }
                     }
                     #[cfg(not(feature = "geoip"))]
                     {
@@ -169,16 +166,15 @@ impl RuleEngine {
                 EngineRule::RuleSet { name, action } => {
                     if let Some(compiled) = self.compiled_sets.get(name) {
                         // Domain matchers don't need IP.
-                        if let Some(domain) = ctx.domain {
-                            if compiled.domain_matcher.matches(domain)
+                        if let Some(domain) = ctx.domain
+                            && (compiled.domain_matcher.matches(domain)
                                 || compiled
                                     .keyword_matcher
                                     .as_ref()
-                                    .is_some_and(|kw| kw.matches(domain))
+                                    .is_some_and(|kw| kw.matches(domain)))
                             {
                                 return MatchDecision::Matched(action);
                             }
-                        }
 
                         // DST-PORT and SRC-IP-CIDR don't need DNS.
                         if !compiled.dst_ports.is_empty()
@@ -194,11 +190,10 @@ impl RuleEngine {
                         if ctx.dest_ip.is_none() && !compiled.cidr_matcher.is_empty() {
                             return MatchDecision::NeedIp;
                         }
-                        if let Some(ip) = ctx.dest_ip {
-                            if compiled.cidr_matcher.contains(ip) {
+                        if let Some(ip) = ctx.dest_ip
+                            && compiled.cidr_matcher.contains(ip) {
                                 return MatchDecision::Matched(action);
                             }
-                        }
                     }
                 }
                 EngineRule::GeoIp { code, action } => {
@@ -207,11 +202,10 @@ impl RuleEngine {
                         if ctx.dest_ip.is_none() {
                             return MatchDecision::NeedIp;
                         }
-                        if let Some(ip) = ctx.dest_ip {
-                            if geoip.matches(ip, code) {
+                        if let Some(ip) = ctx.dest_ip
+                            && geoip.matches(ip, code) {
                                 return MatchDecision::Matched(action);
                             }
-                        }
                     }
                     #[cfg(not(feature = "geoip"))]
                     {
@@ -339,6 +333,7 @@ impl std::fmt::Debug for RuleEngine {
 // ── Builder ──
 
 /// Builder for constructing a `RuleEngine`.
+#[derive(Debug)]
 pub struct RuleEngineBuilder {
     rule_sets: HashMap<String, Vec<ParsedRule>>,
     rules: Vec<EngineRule>,
@@ -413,11 +408,10 @@ impl RuleEngineBuilder {
 
         // Validate that all rule-set references exist
         for rule in &self.rules {
-            if let EngineRule::RuleSet { name, .. } = rule {
-                if !self.rule_sets.contains_key(name) {
+            if let EngineRule::RuleSet { name, .. } = rule
+                && !self.rule_sets.contains_key(name) {
                     return Err(RulesError::UnknownRuleSet(name.clone()));
                 }
-            }
         }
 
         // Warn when GEOIP rules are present but cannot be evaluated
@@ -649,7 +643,7 @@ mod tests {
     #[test]
     fn no_final_rule_error() {
         let builder = RuleEngineBuilder::new();
-        assert!(builder.build().is_err());
+        builder.build().unwrap_err();
     }
 
     #[test]
@@ -657,7 +651,7 @@ mod tests {
         let mut builder = RuleEngineBuilder::new();
         builder.add_rule_set_rule("nonexistent", Action::Reject);
         builder.set_final(Action::Direct);
-        assert!(builder.build().is_err());
+        builder.build().unwrap_err();
     }
 
     #[test]

@@ -107,6 +107,7 @@ impl std::fmt::Debug for Backend {
 // ── Selection result ──
 
 /// Result of a load balancer selection.
+#[derive(Debug)]
 pub struct Selection {
     /// The selected backend address.
     pub addr: String,
@@ -238,8 +239,15 @@ impl std::fmt::Debug for LoadBalancer {
 // ── Built-in policies ──
 
 /// Round-robin policy: cycles through backends sequentially.
+#[derive(Debug)]
 pub struct RoundRobin {
     counter: AtomicUsize,
+}
+
+impl Default for RoundRobin {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RoundRobin {
@@ -261,9 +269,11 @@ impl LbPolicy for RoundRobin {
 }
 
 /// IP hash policy: deterministically maps a client IP to a backend.
+#[derive(Debug)]
 pub struct IpHash;
 
 impl LbPolicy for IpHash {
+    #[allow(clippy::cast_possible_truncation)]
     fn select(&self, backends: &[Arc<Backend>], peer_ip: IpAddr) -> Option<usize> {
         if backends.is_empty() {
             return None;
@@ -276,6 +286,7 @@ impl LbPolicy for IpHash {
 }
 
 /// Least connections policy: picks the backend with the fewest active connections.
+#[derive(Debug)]
 pub struct LeastConnections;
 
 impl LbPolicy for LeastConnections {
@@ -298,6 +309,7 @@ impl LbPolicy for LeastConnections {
 
 /// Failover policy: always picks the first healthy backend.
 /// Unhealthy backends recover after a cooldown period.
+#[derive(Debug)]
 pub struct Failover {
     pub cooldown: Duration,
 }
@@ -314,15 +326,13 @@ impl LbPolicy for Failover {
             }
 
             // Check cooldown: if enough time has passed, consider it recovered.
-            if let Ok(guard) = b.last_failure.try_read() {
-                if let Some(when) = *guard {
-                    if when.elapsed() >= self.cooldown {
+            if let Ok(guard) = b.last_failure.try_read()
+                && let Some(when) = *guard
+                    && when.elapsed() >= self.cooldown {
                         // Auto-recover
                         b.healthy.store(true, Ordering::Relaxed);
                         return Some(i);
                     }
-                }
-            }
         }
 
         // All backends unhealthy and within cooldown — return first as last resort.
@@ -490,7 +500,7 @@ mod tests {
     #[test]
     fn empty_backends_error() {
         let lb = LoadBalancer::new(vec![], LbStrategy::RoundRobin, Duration::ZERO);
-        assert!(lb.select(localhost()).is_err());
+        lb.select(localhost()).unwrap_err();
     }
 
     #[test]

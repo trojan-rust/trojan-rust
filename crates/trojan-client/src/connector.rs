@@ -14,6 +14,7 @@ use trojan_config::TcpConfig;
 use crate::error::ClientError;
 
 /// Shared client state for establishing outbound connections.
+#[allow(missing_debug_implementations)]
 pub struct ClientState {
     /// SHA-224 hex hash of the password (56 bytes).
     pub hash_hex: String,
@@ -113,11 +114,10 @@ pub fn resolve_sni(
 }
 
 fn extract_host(remote: &str) -> String {
-    if let Some(stripped) = remote.strip_prefix('[') {
-        if let Some(end) = stripped.find(']') {
+    if let Some(stripped) = remote.strip_prefix('[')
+        && let Some(end) = stripped.find(']') {
             return stripped[..end].to_string();
         }
-    }
 
     if remote.chars().filter(|&c| c == ':').count() == 1 {
         return remote
@@ -149,7 +149,7 @@ mod tests {
     fn resolve_sni_accepts_ipv6_literal() {
         let tls = crate::config::ClientTlsConfig::default();
         let sni = resolve_sni(&tls, "[::1]:443");
-        assert!(sni.is_ok());
+        sni.unwrap();
     }
 }
 

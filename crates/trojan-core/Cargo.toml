@@ -29,3 +29,6 @@ criterion = { workspace = true, features = ["async_tokio"] }
 [[bench]]
 name = "io"
 harness = false
+
+[lints]
+workspace = true

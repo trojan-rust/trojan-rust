@@ -15,7 +15,7 @@ use crate::event::{AuthResult, CloseReason, ConnectionEvent, Protocol, TargetTyp
 ///
 /// This struct is cheap to clone and can be shared across threads.
 /// Events are sent through a bounded channel to a background writer.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct EventCollector {
     sender: mpsc::Sender<ConnectionEvent>,
     config: Arc<AnalyticsConfig>,
@@ -81,6 +81,7 @@ impl EventCollector {
 ///
 /// Events are automatically sent when the builder is dropped,
 /// or can be explicitly sent with `finish()`.
+#[derive(Debug)]
 pub struct ConnectionEventBuilder {
     collector: EventCollector,
     event: ConnectionEvent,
@@ -219,6 +220,7 @@ impl ConnectionEventBuilder {
     }
 
     /// Finish and send the event with the given close reason.
+    #[allow(clippy::cast_possible_truncation)]
     pub fn finish(mut self, close_reason: CloseReason) {
         self.event.duration_ms = self.start_time.elapsed().as_millis() as u64;
         self.event.close_reason = close_reason;
@@ -242,6 +244,7 @@ impl ConnectionEventBuilder {
 }
 
 impl Drop for ConnectionEventBuilder {
+    #[allow(clippy::cast_possible_truncation)]
     fn drop(&mut self) {
         if !self.sent {
             self.event.duration_ms = self.start_time.elapsed().as_millis() as u64;

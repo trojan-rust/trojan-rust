@@ -89,3 +89,6 @@ criterion = { workspace = true, features = ["async_tokio"] }
 [[bench]]
 name = "server"
 harness = false
+
+[lints]
+workspace = true

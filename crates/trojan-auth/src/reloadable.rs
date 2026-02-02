@@ -95,14 +95,14 @@ mod tests {
         let new_hash = sha224_hex("new_password");
 
         // Old password works
-        assert!(auth.verify(&old_hash).await.is_ok());
-        assert!(auth.verify(&new_hash).await.is_err());
+        auth.verify(&old_hash).await.unwrap();
+        auth.verify(&new_hash).await.unwrap_err();
 
         // Reload with new passwords
         auth.reload(MemoryAuth::from_passwords(["new_password"]));
 
         // Now new password works, old doesn't
-        assert!(auth.verify(&old_hash).await.is_err());
-        assert!(auth.verify(&new_hash).await.is_ok());
+        auth.verify(&old_hash).await.unwrap_err();
+        auth.verify(&new_hash).await.unwrap();
     }
 }

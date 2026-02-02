@@ -13,6 +13,7 @@ use trojan_proto::{AddressRef, HostRef};
 use crate::error::Socks5Error;
 
 /// Parsed SOCKS5 UDP datagram header.
+#[derive(Debug)]
 pub struct Socks5UdpHeader<'a> {
     pub address: AddressRef<'a>,
     /// Offset to the payload data within the original buffer.
@@ -85,6 +86,7 @@ pub fn parse_socks5_udp(buf: &[u8]) -> Result<Socks5UdpHeader<'_>, Socks5Error> 
 /// Write a SOCKS5 UDP datagram header + payload into a buffer.
 ///
 /// Returns the full packet bytes.
+#[allow(clippy::cast_possible_truncation)]
 pub fn write_socks5_udp(address: &AddressRef<'_>, payload: &[u8]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(32 + payload.len());
 
@@ -145,6 +147,6 @@ mod tests {
         let payload = b"data";
         let mut packet = write_socks5_udp(&address, payload);
         packet[2] = 0x01; // FRAG != 0
-        assert!(parse_socks5_udp(&packet).is_err());
+        parse_socks5_udp(&packet).unwrap_err();
     }
 }

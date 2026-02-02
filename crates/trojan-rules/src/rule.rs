@@ -69,6 +69,7 @@ pub(crate) enum EngineRule {
 }
 
 /// Context for matching a request against rules.
+#[derive(Debug)]
 pub struct MatchContext<'a> {
     /// Target domain name (when the target is a domain).
     pub domain: Option<&'a str>,

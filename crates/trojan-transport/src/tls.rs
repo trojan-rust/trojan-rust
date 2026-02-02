@@ -21,6 +21,7 @@ use crate::{TransportAcceptor, TransportConnector};
 // ── TLS Acceptor ──
 
 /// TLS transport acceptor that wraps incoming TCP connections in TLS.
+#[allow(missing_debug_implementations)]
 #[derive(Clone)]
 pub struct TlsTransportAcceptor {
     acceptor: TlsAcceptor,
@@ -56,7 +57,7 @@ impl TransportAcceptor for TlsTransportAcceptor {
 // ── TLS Connector ──
 
 /// TLS transport connector for outbound connections.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct TlsTransportConnector {
     client_config: Arc<rustls::ClientConfig>,
     /// SNI value to send in the TLS ClientHello.
@@ -122,7 +123,7 @@ fn build_server_tls_config(
     let config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)
-        .map_err(|e| TransportError::Tls(e))?;
+        .map_err(TransportError::Tls)?;
 
     Ok(config)
 }

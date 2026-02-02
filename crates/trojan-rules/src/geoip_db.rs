@@ -72,17 +72,15 @@ mod inner {
         /// (city-level DBs like geolite2-city use City records, not Country).
         pub fn country_code(&self, ip: IpAddr) -> Option<String> {
             // Try Country record first (works for country-only DBs)
-            if let Ok(country) = self.reader.lookup::<maxminddb::geoip2::Country>(ip) {
-                if let Some(code) = country.country.and_then(|c| c.iso_code) {
+            if let Ok(country) = self.reader.lookup::<maxminddb::geoip2::Country>(ip)
+                && let Some(code) = country.country.and_then(|c| c.iso_code) {
                     return Some(code.to_uppercase());
                 }
-            }
             // Fall back to City record (for city-level DBs)
-            if let Ok(city) = self.reader.lookup::<maxminddb::geoip2::City>(ip) {
-                if let Some(code) = city.country.and_then(|c| c.iso_code) {
+            if let Ok(city) = self.reader.lookup::<maxminddb::geoip2::City>(ip)
+                && let Some(code) = city.country.and_then(|c| c.iso_code) {
                     return Some(code.to_uppercase());
                 }
-            }
             None
         }
 
@@ -101,22 +99,17 @@ mod inner {
                 if let Some(country) = city.country.and_then(|c| c.iso_code) {
                     result.country = country.to_uppercase();
                 }
-                if let Some(subdivisions) = city.subdivisions {
-                    if let Some(sub) = subdivisions.first() {
-                        if let Some(names) = &sub.names {
-                            if let Some(name) = names.get("en") {
+                if let Some(subdivisions) = city.subdivisions
+                    && let Some(sub) = subdivisions.first()
+                        && let Some(names) = &sub.names
+                            && let Some(name) = names.get("en") {
                                 result.region = (*name).to_string();
                             }
-                        }
-                    }
-                }
-                if let Some(city_record) = city.city {
-                    if let Some(names) = city_record.names {
-                        if let Some(name) = names.get("en") {
+                if let Some(city_record) = city.city
+                    && let Some(names) = city_record.names
+                        && let Some(name) = names.get("en") {
                             result.city = (*name).to_string();
                         }
-                    }
-                }
                 if let Some(location) = city.location {
                     result.longitude = location.longitude.unwrap_or(0.0);
                     result.latitude = location.latitude.unwrap_or(0.0);
@@ -132,7 +125,7 @@ mod inner {
 
             // Try ASN lookup (separate record type in MaxMind DB)
             if let Ok(asn) = self.reader.lookup::<maxminddb::geoip2::Asn>(ip) {
-                result.asn = asn.autonomous_system_number.unwrap_or(0) as u32;
+                result.asn = asn.autonomous_system_number.unwrap_or(0);
                 result.org = asn
                     .autonomous_system_organization
                     .unwrap_or("")
@@ -204,9 +197,9 @@ mod inner {
         // 2. Check cache freshness
         if let Some(ref cache_path) = config.cache_path {
             let p = Path::new(cache_path);
-            if p.exists() {
-                if let Ok(metadata) = tokio::fs::metadata(p).await {
-                    if let Ok(modified) = metadata.modified() {
+            if p.exists()
+                && let Ok(metadata) = tokio::fs::metadata(p).await
+                    && let Ok(modified) = metadata.modified() {
                         let age = modified.elapsed().unwrap_or_default();
                         if age.as_secs() < config.interval {
                             tracing::info!(
@@ -223,8 +216,6 @@ mod inner {
                             "GeoIP cache expired, attempting download"
                         );
                     }
-                }
-            }
         }
 
         // 3. Download
@@ -238,11 +229,10 @@ mod inner {
         match download_mmdb(&url).await {
             Ok(data) => {
                 // Write to cache atomically
-                if let Some(ref cache_path) = config.cache_path {
-                    if let Err(e) = write_cache(Path::new(cache_path), &data).await {
+                if let Some(ref cache_path) = config.cache_path
+                    && let Err(e) = write_cache(Path::new(cache_path), &data).await {
                         tracing::warn!(cache = %cache_path, error = %e, "failed to write GeoIP cache");
                     }
-                }
                 tracing::info!(url = %url, bytes = data.len(), "downloaded GeoIP database");
                 GeoipDb::from_bytes(data)
             }
@@ -345,11 +335,10 @@ mod inner {
             match download_mmdb(&url).await {
                 Ok(data) => {
                     // Write cache
-                    if let Some(ref cache_path) = config.cache_path {
-                        if let Err(e) = write_cache(Path::new(cache_path), &data).await {
+                    if let Some(ref cache_path) = config.cache_path
+                        && let Err(e) = write_cache(Path::new(cache_path), &data).await {
                             tracing::warn!(cache = %cache_path, error = %e, "failed to write GeoIP cache during update");
                         }
-                    }
 
                     match GeoipDb::from_bytes(data) {
                         Ok(new_db) => {
@@ -443,7 +432,7 @@ mod inner {
                 cache_path: None,
                 ..Default::default()
             };
-            assert!(GeoipDb::load_from_file(&config).is_err());
+            GeoipDb::load_from_file(&config).unwrap_err();
         }
     }
 }

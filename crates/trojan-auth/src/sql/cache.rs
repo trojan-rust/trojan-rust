@@ -27,12 +27,14 @@ pub struct CachedUser {
 }
 
 /// Cache entry with expiration.
+#[derive(Debug)]
 struct CacheEntry {
     user: CachedUser,
     expires_at: Instant,
 }
 
 /// Authentication cache with configurable TTL.
+#[derive(Debug)]
 pub struct AuthCache {
     /// Cache storage: hash -> cached user data.
     cache: RwLock<HashMap<String, CacheEntry>>,

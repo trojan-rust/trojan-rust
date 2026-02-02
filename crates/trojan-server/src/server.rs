@@ -146,8 +146,8 @@ pub async fn run_with_shutdown(
 
     // Spawn background rule update task for HTTP providers
     #[cfg(feature = "rules")]
-    if let Some(ref hot_engine) = rule_engine {
-        if crate::rules::has_http_providers(&config.server) {
+    if let Some(ref hot_engine) = rule_engine
+        && crate::rules::has_http_providers(&config.server) {
             let interval_secs = crate::rules::http_update_interval(&config.server)
                 .unwrap_or(3600); // default: 1 hour
             let engine_ref = hot_engine.clone();
@@ -158,7 +158,6 @@ pub async fn run_with_shutdown(
                 rule_update_loop(engine_ref, server_cfg, interval_secs, update_shutdown).await;
             });
         }
-    }
 
     // Build outbound connectors from config
     #[cfg(feature = "rules")]
@@ -582,11 +581,10 @@ async fn load_geoip_databases(
     // Metrics GeoIP
     let metrics_geoip = if let Some(cfg) = config.metrics.geoip.as_ref() {
         let result = load_or_share(cfg, &mut loaded).await;
-        if let Some(ref db) = result {
-            if cfg.auto_update && cfg.path.is_none() {
+        if let Some(ref db) = result
+            && cfg.auto_update && cfg.path.is_none() {
                 auto_update_configs.push((cfg.clone(), db.clone()));
             }
-        }
         result
     } else {
         server_geoip.clone() // fallback to server's GeoIP
@@ -596,11 +594,10 @@ async fn load_geoip_databases(
     #[cfg(feature = "analytics")]
     let analytics_geoip = if let Some(cfg) = config.analytics.geoip.as_ref() {
         let result = load_or_share(cfg, &mut loaded).await;
-        if let Some(ref db) = result {
-            if cfg.auto_update && cfg.path.is_none() {
+        if let Some(ref db) = result
+            && cfg.auto_update && cfg.path.is_none() {
                 auto_update_configs.push((cfg.clone(), db.clone()));
             }
-        }
         result
     } else {
         None

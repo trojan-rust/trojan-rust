@@ -35,6 +35,7 @@ use tokio_tungstenite::{
 /// // Now `io` can be used with any code expecting AsyncRead + AsyncWrite
 /// relay_bidirectional(client, io, timeout, buffer_size, &metrics).await?;
 /// ```
+#[derive(Debug)]
 pub struct WsIo<S> {
     ws: WebSocketStream<S>,
     read_buf: Bytes,

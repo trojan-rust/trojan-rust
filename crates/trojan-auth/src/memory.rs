@@ -160,10 +160,10 @@ mod tests {
         assert_eq!(auth.len(), 2);
 
         let hash = sha224_hex("test123");
-        assert!(auth.verify(&hash).await.is_ok());
+        auth.verify(&hash).await.unwrap();
 
         let wrong_hash = sha224_hex("wrong");
-        assert!(auth.verify(&wrong_hash).await.is_err());
+        auth.verify(&wrong_hash).await.unwrap_err();
     }
 
     #[tokio::test]
