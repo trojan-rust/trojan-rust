@@ -106,7 +106,6 @@ async fn test_verify_valid_password() {
     let hash = sha224_hex("test_password");
     let result = auth.verify(&hash).await;
 
-    assert!(result.is_ok());
     let auth_result = result.unwrap();
     assert_eq!(auth_result.user_id, Some("user1".to_string()));
 }
@@ -136,6 +135,7 @@ async fn test_verify_disabled_user() {
 }
 
 #[tokio::test]
+#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 async fn test_verify_expired_user() {
     let auth = setup_test_db().await;
     create_schema(&auth).await;
@@ -207,7 +207,7 @@ async fn test_verify_unlimited_traffic() {
     let hash = sha224_hex("test_password");
     let result = auth.verify(&hash).await;
 
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[tokio::test]
@@ -221,7 +221,7 @@ async fn test_verify_no_expiry() {
     let hash = sha224_hex("test_password");
     let result = auth.verify(&hash).await;
 
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[tokio::test]
@@ -379,7 +379,7 @@ async fn test_invalid_database_url() {
     let config = SqlAuthConfig::new("invalid://localhost/db");
     let result = SqlAuth::connect(config).await;
 
-    assert!(result.is_err());
+    result.unwrap_err();
 }
 
 #[tokio::test]
@@ -424,7 +424,7 @@ async fn test_cache_hit() {
 
     // First call - cache miss, queries DB
     let result1 = auth.verify(&hash).await;
-    assert!(result1.is_ok());
+    result1.unwrap();
 
     let stats = auth.cache_stats().unwrap();
     assert_eq!(stats.misses, 1);
@@ -432,7 +432,7 @@ async fn test_cache_hit() {
 
     // Second call - cache hit
     let result2 = auth.verify(&hash).await;
-    assert!(result2.is_ok());
+    result2.unwrap();
 
     let stats = auth.cache_stats().unwrap();
     assert_eq!(stats.misses, 1);

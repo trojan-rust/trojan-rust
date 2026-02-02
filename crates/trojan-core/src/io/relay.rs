@@ -331,7 +331,7 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_ok());
+        result.unwrap();
         assert!(start.elapsed() >= Duration::from_millis(50));
 
         drop(client); // cleanup

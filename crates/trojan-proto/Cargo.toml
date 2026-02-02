@@ -21,3 +21,6 @@ criterion.workspace = true
 [[bench]]
 name = "proto"
 harness = false
+
+[lints]
+workspace = true

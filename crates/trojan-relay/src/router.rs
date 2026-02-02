@@ -24,6 +24,7 @@ pub struct Router {
 }
 
 /// A resolved route: the chain config + destination + load balancer.
+#[derive(Debug)]
 pub struct ResolvedRoute<'a> {
     pub rule: &'a RuleConfig,
     pub chain: &'a ChainConfig,

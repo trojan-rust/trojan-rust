@@ -7,6 +7,7 @@ use crate::parser;
 use crate::rule::ParsedRule;
 
 /// Provider that loads rule-sets from local files.
+#[derive(Debug)]
 pub struct FileProvider;
 
 impl FileProvider {
@@ -76,13 +77,13 @@ mod tests {
     #[test]
     fn unsupported_format() {
         let result = FileProvider::parse("", "unknown", None);
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]
     fn clash_missing_behavior() {
         let result = FileProvider::parse("payload: []", "clash", None);
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]

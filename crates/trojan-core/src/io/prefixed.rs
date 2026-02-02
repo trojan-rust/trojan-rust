@@ -30,6 +30,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 /// // Now the prefixed stream will first yield the buffered bytes,
 /// // then continue reading from tcp_stream
 /// ```
+#[derive(Debug)]
 pub struct PrefixedStream<S> {
     prefix: Bytes,
     pos: usize,

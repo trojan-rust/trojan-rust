@@ -84,6 +84,7 @@ pub async fn run(config: EntryConfig, shutdown: tokio_util::sync::CancellationTo
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_listener(
     listener: TcpListener,
     listen_addr: std::net::SocketAddr,
@@ -145,6 +146,7 @@ async fn run_listener(
 }
 
 /// Handle a single client connection: build tunnel through chain, then relay.
+#[allow(clippy::too_many_arguments)]
 async fn handle_entry_connection(
     client_stream: TcpStream,
     chain: &ChainConfig,
@@ -222,12 +224,11 @@ async fn handle_entry_connection(
     // For failover: mark backend unhealthy on tunnel build failure.
     // Note: errors from relay_bidirectional (post-connection) do NOT mark unhealthy —
     // the connection was successfully established.
-    if let Err(ref e) = build_result {
-        if lb.is_failover() {
+    if let Err(ref e) = build_result
+        && lb.is_failover() {
             debug!(dest = %selected_dest, error = %e, "marking backend unhealthy");
             lb.mark_unhealthy(&selected_dest);
         }
-    }
 
     build_result?;
     Ok(())

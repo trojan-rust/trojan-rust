@@ -42,3 +42,6 @@ tokio-util = { workspace = true, features = ["compat", "rt"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "net", "time"] }
+
+[lints]
+workspace = true

@@ -12,6 +12,7 @@ use tokio::sync::Notify;
 use tracing::debug;
 
 /// Rate limiter that tracks connections per IP address.
+#[derive(Debug)]
 pub struct RateLimiter {
     /// Map of IP -> (connection count, window start time)
     entries: Arc<RwLock<HashMap<IpAddr, RateLimitEntry>>>,
@@ -24,6 +25,7 @@ pub struct RateLimiter {
 }
 
 #[derive(Clone)]
+#[derive(Debug)]
 struct RateLimitEntry {
     count: u32,
     window_start: Instant,

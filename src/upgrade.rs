@@ -119,6 +119,7 @@ fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     a_parts.len().cmp(&b_parts.len())
 }
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub async fn run(args: UpgradeArgs) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let current_version = env!("CARGO_PKG_VERSION");
     let binary_name = args.binary.as_deref().unwrap_or("trojan-server");

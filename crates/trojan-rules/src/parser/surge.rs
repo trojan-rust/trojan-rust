@@ -144,21 +144,21 @@ specific.host.com
     fn parse_invalid_rule_type() {
         let content = "UNKNOWN,example.com";
         let result = parse_surge_ruleset(content);
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]
     fn parse_invalid_cidr() {
         let content = "IP-CIDR,not-a-cidr";
         let result = parse_surge_ruleset(content);
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]
     fn parse_missing_comma() {
         let content = "DOMAIN example.com";
         let result = parse_surge_ruleset(content);
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]
@@ -172,7 +172,7 @@ specific.host.com
     #[test]
     fn parse_dst_port_invalid() {
         let content = "DST-PORT,not-a-port";
-        assert!(parse_surge_ruleset(content).is_err());
+        parse_surge_ruleset(content).unwrap_err();
     }
 
     #[test]

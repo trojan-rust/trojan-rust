@@ -296,7 +296,7 @@ mod tests {
         });
 
         let result = read_handshake(&mut server).await;
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[tokio::test]
@@ -312,7 +312,7 @@ mod tests {
         });
 
         let result = read_handshake(&mut server).await;
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]

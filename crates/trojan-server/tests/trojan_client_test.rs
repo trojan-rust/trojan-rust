@@ -4,6 +4,7 @@
 //! Requires trojan-go or trojan to be installed and available in PATH.
 //!
 //! Run with: cargo test --package trojan-server --test trojan_client_test -- --ignored --nocapture
+#![allow(clippy::tests_outside_test_module)]
 
 use std::{
     fs,

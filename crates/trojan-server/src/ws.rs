@@ -27,6 +27,7 @@ pub const INITIAL_BUFFER_SIZE: usize = 2048;
 const HTTP_HEADER_END: &[u8] = b"\r\n\r\n";
 
 /// Result of inspecting buffered bytes for WebSocket upgrade.
+#[derive(Debug)]
 pub enum WsInspect {
     /// Need more data to determine protocol.
     NeedMore,

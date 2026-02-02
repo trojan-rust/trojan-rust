@@ -442,7 +442,7 @@ mod tests {
         let err = ClientError::Io(std::io::Error::new(ErrorKind::TimedOut, "timeout"));
         assert_eq!(reply_code_for_connect_error(&err), REPLY_TTL_EXPIRED);
 
-        let err = ClientError::Io(std::io::Error::new(ErrorKind::Other, "other"));
+        let err = ClientError::Io(std::io::Error::other("other"));
         assert_eq!(reply_code_for_connect_error(&err), REPLY_GENERAL_FAILURE);
     }
 }

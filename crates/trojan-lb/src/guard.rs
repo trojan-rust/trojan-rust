@@ -9,6 +9,12 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub struct BackendCounter(pub(crate) Arc<AtomicUsize>);
 
+impl Default for BackendCounter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BackendCounter {
     pub fn new() -> Self {
         Self(Arc::new(AtomicUsize::new(0)))
@@ -22,6 +28,7 @@ impl BackendCounter {
 /// RAII guard that increments the backend's active connection count on
 /// creation and decrements it on drop. This ensures the count stays
 /// accurate even if the connection handler panics.
+#[derive(Debug)]
 pub struct ConnectionGuard {
     counter: Arc<AtomicUsize>,
 }

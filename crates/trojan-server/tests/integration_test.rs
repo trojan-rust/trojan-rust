@@ -6,6 +6,7 @@
 //! - Authentication
 //! - CONNECT relay
 //! - Fallback behavior
+#![allow(clippy::tests_outside_test_module)]
 
 use std::{
     fs,

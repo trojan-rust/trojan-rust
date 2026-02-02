@@ -12,7 +12,7 @@ use crate::error::TransportError;
 use crate::{TransportAcceptor, TransportConnector};
 
 /// Plain TCP acceptor — passes through the raw TCP stream.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PlainTransportAcceptor;
 
 impl TransportAcceptor for PlainTransportAcceptor {
@@ -27,7 +27,7 @@ impl TransportAcceptor for PlainTransportAcceptor {
 }
 
 /// Plain TCP connector — connects directly without encryption.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PlainTransportConnector;
 
 impl TransportConnector for PlainTransportConnector {

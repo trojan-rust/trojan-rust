@@ -13,6 +13,7 @@ use crate::rule::ParsedRule;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Provider that fetches rule-sets from HTTP/HTTPS URLs with local caching.
+#[derive(Debug)]
 pub struct HttpProvider {
     url: String,
     cache_path: Option<PathBuf>,
@@ -80,11 +81,10 @@ impl HttpProvider {
         tracing::debug!(url = %self.url, bytes = content.len(), "fetched remote rule-set");
 
         // Update cache if path is configured
-        if let Some(ref cache_path) = self.cache_path {
-            if let Err(e) = write_cache(cache_path, &content).await {
+        if let Some(ref cache_path) = self.cache_path
+            && let Err(e) = write_cache(cache_path, &content).await {
                 tracing::warn!(path = %cache_path.display(), error = %e, "failed to write cache");
             }
-        }
 
         Ok(content)
     }
@@ -95,8 +95,8 @@ impl HttpProvider {
             Ok(content) => self.parse(&content),
             Err(fetch_err) => {
                 // Try cache fallback
-                if let Some(ref cache_path) = self.cache_path {
-                    if cache_path.exists() {
+                if let Some(ref cache_path) = self.cache_path
+                    && cache_path.exists() {
                         tracing::warn!(
                             url = %self.url,
                             error = %fetch_err,
@@ -105,10 +105,9 @@ impl HttpProvider {
                         );
                         let content = tokio::fs::read_to_string(cache_path)
                             .await
-                            .map_err(|e| RulesError::Io(e))?;
+                            .map_err(RulesError::Io)?;
                         return self.parse(&content);
                     }
-                }
                 Err(fetch_err)
             }
         }

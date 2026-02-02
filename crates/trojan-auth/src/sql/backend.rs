@@ -124,6 +124,7 @@ impl SqlAuth {
 
     /// Get current unix timestamp.
     #[inline]
+    #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     fn now_unix() -> i64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -181,6 +182,7 @@ impl SqlAuth {
     }
 
     /// Flush batched traffic updates to database.
+    #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     async fn flush_traffic_batch(
         pool: &AnyPool,
         db_type: DatabaseType,
@@ -211,6 +213,7 @@ impl SqlAuth {
     }
 
     /// Record traffic immediately to database.
+    #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     async fn record_traffic_immediate(&self, user_id: &str, bytes: u64) -> Result<(), AuthError> {
         let query = match self.db_type {
             DatabaseType::PostgreSQL => queries::UPDATE_TRAFFIC_PG,
@@ -281,6 +284,7 @@ struct UserRowData {
 
 #[async_trait]
 impl AuthBackend for SqlAuth {
+    #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     async fn verify(&self, hash: &str) -> Result<AuthResult, AuthError> {
         // Check cache first if enabled
         if let Some(ref cache) = self.auth_cache

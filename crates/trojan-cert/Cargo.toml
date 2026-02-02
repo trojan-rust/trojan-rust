@@ -17,3 +17,6 @@ rcgen.workspace = true
 clap.workspace = true
 thiserror.workspace = true
 time.workspace = true
+
+[lints]
+workspace = true
