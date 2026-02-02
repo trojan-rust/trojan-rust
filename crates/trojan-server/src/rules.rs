@@ -46,7 +46,6 @@ pub fn build_rule_engine(config: &ServerConfig) -> Result<RuleEngine, RulesError
 /// falls back to its cache (or an empty rule-set), while successfully
 /// updated providers are swapped in. This avoids one bad URL blocking
 /// all rule updates.
-#[cfg(feature = "rules-http")]
 pub async fn build_rule_engine_async(config: &ServerConfig) -> Result<RuleEngine, RulesError> {
     let mut builder = RuleEngineBuilder::new();
 
@@ -157,44 +156,25 @@ fn load_provider_rules(
         "http" => {
             // At startup, try to load from cache synchronously.
             // The background updater will fetch the latest version asynchronously.
-            #[cfg(feature = "rules-http")]
-            {
-                let url = cfg.url.as_deref().ok_or_else(|| {
-                    RulesError::Provider(format!("rule-provider '{name}': url is required for http source"))
-                })?;
-                let cache_path = cfg.path.as_ref().map(std::path::PathBuf::from);
-                let provider = trojan_rules::provider::HttpProvider::new(
-                    url,
-                    cache_path,
-                    &cfg.format,
-                    cfg.behavior.clone(),
-                );
-                match provider.load_cached()? {
-                    Some(rules) => {
-                        tracing::info!(name = %name, rules = rules.len(), "loaded HTTP rule-set from cache");
-                        Ok(rules)
-                    }
-                    None => {
-                        tracing::warn!(name = %name, url = %url, "no cached rules available for HTTP provider; will fetch in background");
-                        Ok(Vec::new())
-                    }
+            let url = cfg.url.as_deref().ok_or_else(|| {
+                RulesError::Provider(format!("rule-provider '{name}': url is required for http source"))
+            })?;
+            let cache_path = cfg.path.as_ref().map(std::path::PathBuf::from);
+            let provider = trojan_rules::provider::HttpProvider::new(
+                url,
+                cache_path,
+                &cfg.format,
+                cfg.behavior.clone(),
+            );
+            match provider.load_cached()? {
+                Some(rules) => {
+                    tracing::info!(name = %name, rules = rules.len(), "loaded HTTP rule-set from cache");
+                    Ok(rules)
                 }
-            }
-            #[cfg(not(feature = "rules-http"))]
-            {
-                // Try cached file if available, otherwise error
-                if let Some(ref path) = cfg.path {
-                    if Path::new(path).exists() {
-                        return trojan_rules::provider::FileProvider::load(
-                            Path::new(path),
-                            &cfg.format,
-                            cfg.behavior.as_deref(),
-                        );
-                    }
+                None => {
+                    tracing::warn!(name = %name, url = %url, "no cached rules available for HTTP provider; will fetch in background");
+                    Ok(Vec::new())
                 }
-                Err(RulesError::Provider(format!(
-                    "rule-provider '{name}': http source requires the 'rules-http' feature"
-                )))
             }
         }
         other => Err(RulesError::Provider(format!(
@@ -204,7 +184,6 @@ fn load_provider_rules(
 }
 
 /// Load rules from a provider configuration (async: HTTP providers fetch remotely).
-#[cfg(feature = "rules-http")]
 async fn load_provider_rules_async(
     name: &str,
     cfg: &trojan_config::RuleProviderConfig,

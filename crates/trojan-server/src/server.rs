@@ -145,7 +145,7 @@ pub async fn run_with_shutdown(
     };
 
     // Spawn background rule update task for HTTP providers
-    #[cfg(feature = "rules-http")]
+    #[cfg(feature = "rules")]
     if let Some(ref hot_engine) = rule_engine {
         if crate::rules::has_http_providers(&config.server) {
             let interval_secs = crate::rules::http_update_interval(&config.server)
@@ -528,9 +528,8 @@ pub async fn run(config: Config, auth: impl AuthBackend + 'static) -> Result<(),
 /// Returns `(server_geoip, metrics_geoip, analytics_geoip)`.
 /// If multiple configs point to the same source, the same `Arc` is shared.
 ///
-/// When `rules-http` feature is enabled, databases can be downloaded from
-/// CDN or custom URLs. Auto-update tasks are spawned for configs with
-/// `auto_update = true` and no local `path` set.
+/// Databases can be downloaded from CDN or custom URLs. Auto-update tasks
+/// are spawned for configs with `auto_update = true` and no local `path` set.
 #[cfg(feature = "geoip")]
 #[allow(unused_variables)]
 async fn load_geoip_databases(
@@ -549,11 +548,9 @@ async fn load_geoip_databases(
     let mut loaded: HashMap<Key, Arc<GeoipDb>> = HashMap::new();
 
     // Track configs that need auto-update tasks
-    #[cfg(feature = "rules-http")]
     let mut auto_update_configs: Vec<(trojan_config::GeoipConfig, Arc<GeoipDb>)> = Vec::new();
 
     // Load a single GeoIP config, deduplicating by key
-    #[cfg(feature = "rules-http")]
     async fn load_or_share(
         cfg: &trojan_config::GeoipConfig,
         loaded: &mut HashMap<Key, Arc<GeoipDb>>,
@@ -575,46 +572,16 @@ async fn load_geoip_databases(
         }
     }
 
-    #[cfg(not(feature = "rules-http"))]
-    fn load_or_share_sync(
-        cfg: &trojan_config::GeoipConfig,
-        loaded: &mut HashMap<Key, Arc<GeoipDb>>,
-    ) -> Option<Arc<GeoipDb>> {
-        let key: Key = (cfg.path.clone(), cfg.url.clone(), cfg.source.clone());
-        if let Some(existing) = loaded.get(&key) {
-            return Some(existing.clone());
-        }
-        match GeoipDb::load_from_file(cfg) {
-            Ok(db) => {
-                let arc = Arc::new(db);
-                loaded.insert(key, arc.clone());
-                Some(arc)
-            }
-            Err(e) => {
-                warn!(source = %cfg.source, error = %e, "failed to load GeoIP database");
-                None
-            }
-        }
-    }
-
     // Server GeoIP (for rule matching — also shared by metrics/analytics)
     let server_geoip = if let Some(cfg) = config.server.geoip.as_ref() {
-        #[cfg(feature = "rules-http")]
-        let result = load_or_share(cfg, &mut loaded).await;
-        #[cfg(not(feature = "rules-http"))]
-        let result = load_or_share_sync(cfg, &mut loaded);
-        result
+        load_or_share(cfg, &mut loaded).await
     } else {
         None
     };
 
     // Metrics GeoIP
     let metrics_geoip = if let Some(cfg) = config.metrics.geoip.as_ref() {
-        #[cfg(feature = "rules-http")]
         let result = load_or_share(cfg, &mut loaded).await;
-        #[cfg(not(feature = "rules-http"))]
-        let result = load_or_share_sync(cfg, &mut loaded);
-        #[cfg(feature = "rules-http")]
         if let Some(ref db) = result {
             if cfg.auto_update && cfg.path.is_none() {
                 auto_update_configs.push((cfg.clone(), db.clone()));
@@ -628,11 +595,7 @@ async fn load_geoip_databases(
     // Analytics GeoIP
     #[cfg(feature = "analytics")]
     let analytics_geoip = if let Some(cfg) = config.analytics.geoip.as_ref() {
-        #[cfg(feature = "rules-http")]
         let result = load_or_share(cfg, &mut loaded).await;
-        #[cfg(not(feature = "rules-http"))]
-        let result = load_or_share_sync(cfg, &mut loaded);
-        #[cfg(feature = "rules-http")]
         if let Some(ref db) = result {
             if cfg.auto_update && cfg.path.is_none() {
                 auto_update_configs.push((cfg.clone(), db.clone()));
@@ -652,31 +615,7 @@ async fn load_geoip_databases(
         );
     }
 
-    // Warn when auto_update is set but HTTP feature is unavailable
-    #[cfg(not(feature = "rules-http"))]
-    {
-        let all_cfgs: Vec<&trojan_config::GeoipConfig> = [
-            config.server.geoip.as_ref(),
-            config.metrics.geoip.as_ref(),
-            #[cfg(feature = "analytics")]
-            config.analytics.geoip.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        for cfg in all_cfgs {
-            if cfg.auto_update && cfg.path.is_none() {
-                warn!(
-                    source = %cfg.source,
-                    "GeoIP auto_update is enabled but rules-http feature is not compiled in; \
-                     database will not be downloaded or updated automatically"
-                );
-            }
-        }
-    }
-
     // Spawn auto-update tasks for configs that need them
-    #[cfg(feature = "rules-http")]
     {
         // Deduplicate auto-update tasks by Arc pointer identity
         let mut seen_ptrs = std::collections::HashSet::new();
@@ -708,7 +647,7 @@ async fn load_geoip_databases(
 }
 
 /// Background task that periodically re-fetches HTTP rule-sets and hot-swaps the engine.
-#[cfg(feature = "rules-http")]
+#[cfg(feature = "rules")]
 async fn rule_update_loop(
     engine: Arc<trojan_rules::HotRuleEngine>,
     server_config: trojan_config::ServerConfig,
