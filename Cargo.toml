@@ -27,6 +27,7 @@ members = [
     "crates/trojan-relay",
     "crates/trojan-transport",
     "crates/trojan-lb",
+    "crates/trojan-rules",
 ]
 
 [workspace.package]
@@ -52,6 +53,7 @@ trojan-cert = { version = "0.4.0", path = "crates/trojan-cert" }
 trojan-relay = { version = "0.4.0", path = "crates/trojan-relay" }
 trojan-transport = { version = "0.4.0", path = "crates/trojan-transport" }
 trojan-lb = { version = "0.4.0", path = "crates/trojan-lb" }
+trojan-rules = { version = "0.4.0", path = "crates/trojan-rules" }
 
 [features]
 default = ["cli", "sql-sqlite"]

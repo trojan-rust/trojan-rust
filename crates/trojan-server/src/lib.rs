@@ -14,6 +14,12 @@ mod server;
 mod state;
 mod tls;
 mod util;
+#[cfg(feature = "rules")]
+mod debug_api;
+#[cfg(feature = "rules")]
+mod outbound;
+#[cfg(feature = "rules")]
+mod rules;
 #[cfg(feature = "ws")]
 pub mod ws;
 

@@ -208,6 +208,10 @@ impl TestServer {
                 fallback_pool: None,
                 resource_limits: None,
                 tcp: TcpConfig::default(),
+                outbounds: Default::default(),
+                rule_providers: Default::default(),
+                rules: Default::default(),
+                geoip: None,
             },
             tls: TlsConfig {
                 cert: cert_path.to_string_lossy().to_string(),
@@ -223,7 +227,7 @@ impl TestServer {
                 users: vec![],
             },
             websocket: WebSocketConfig::default(),
-            metrics: MetricsConfig { listen: None },
+            metrics: MetricsConfig { listen: None, ..Default::default() },
             analytics: AnalyticsConfig::default(),
             logging: LoggingConfig {
                 level: Some("warn".to_string()),

@@ -16,6 +16,9 @@ readme = "README.md"
 default = ["ws"]
 ws = ["tokio-tungstenite", "trojan-core/ws"]
 analytics = ["trojan-analytics"]
+rules = ["trojan-rules", "dep:webpki-roots"]
+rules-http = ["rules", "trojan-rules/http", "arc-swap"]
+geoip = ["rules", "trojan-rules/geoip"]
 
 [lib]
 name = "trojan_server"
@@ -26,6 +29,7 @@ name = "trojan-server"
 path = "src/main.rs"
 
 [dependencies]
+axum = "0.8"
 async-trait = "0.1"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
@@ -54,6 +58,7 @@ tokio-rustls = "0.26"
 tokio-tungstenite = { version = "0.24", optional = true }
 tokio-util = "0.7"
 socket2 = "0.6"
+webpki-roots = { version = "0.26", optional = true }
 toml = "0.9"
 parking_lot = "0.12"
 tracing = { version = "0.1", features = ["attributes"] }
@@ -67,6 +72,8 @@ trojan-auth.workspace = true
 trojan-config.workspace = true
 trojan-metrics.workspace = true
 trojan-analytics = { workspace = true, optional = true }
+trojan-rules = { workspace = true, optional = true }
+arc-swap = { version = "1", optional = true }
 
 # Platform-specific dependencies
 [target.'cfg(target_os = "linux")'.dependencies]

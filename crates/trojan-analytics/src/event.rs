@@ -73,6 +73,28 @@ pub struct ConnectionEvent {
     /// Whether this was a fallback connection.
     pub is_fallback: bool,
 
+    // === GeoIP information (peer_ip lookup) ===
+    /// Source country ISO 3166-1 alpha-2 code (e.g., "CN", "US").
+    pub peer_country: String,
+
+    /// Source region/state/province (e.g., "Shanghai", "California").
+    pub peer_region: String,
+
+    /// Source city (e.g., "Shanghai", "Los Angeles").
+    pub peer_city: String,
+
+    /// Source ASN number (e.g., 4134).
+    pub peer_asn: u32,
+
+    /// Source ASN organization (e.g., "China Telecom").
+    pub peer_org: String,
+
+    /// Source longitude.
+    pub peer_longitude: f64,
+
+    /// Source latitude.
+    pub peer_latitude: f64,
+
     // === Server information ===
     /// Server instance ID.
     pub server_id: String,
@@ -101,6 +123,13 @@ impl ConnectionEvent {
             transport: Transport::Direct,
             close_reason: CloseReason::Normal,
             is_fallback: false,
+            peer_country: String::new(),
+            peer_region: String::new(),
+            peer_city: String::new(),
+            peer_asn: 0,
+            peer_org: String::new(),
+            peer_longitude: 0.0,
+            peer_latitude: 0.0,
             server_id: String::new(),
         }
     }
@@ -213,5 +242,101 @@ impl From<CloseReason> for &'static str {
             CloseReason::Reset => "reset",
             CloseReason::ServerShutdown => "shutdown",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn connection_event_new_defaults() {
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+        let event = ConnectionEvent::new(42, ip, 8080);
+
+        assert_eq!(event.conn_id, 42);
+        assert_eq!(event.peer_ip, ip);
+        assert_eq!(event.peer_port, 8080);
+        assert_eq!(event.duration_ms, 0);
+        assert!(event.user_id.is_empty());
+        assert_eq!(event.auth_result, AuthResult::Skipped);
+        assert_eq!(event.target_type, TargetType::Domain);
+        assert!(event.target_host.is_empty());
+        assert_eq!(event.target_port, 0);
+        assert_eq!(event.bytes_sent, 0);
+        assert_eq!(event.bytes_recv, 0);
+        assert_eq!(event.protocol, Protocol::Tcp);
+        assert_eq!(event.transport, Transport::Direct);
+        assert_eq!(event.close_reason, CloseReason::Normal);
+        assert!(!event.is_fallback);
+        // GeoIP fields default to empty
+        assert!(event.peer_country.is_empty());
+        assert!(event.peer_region.is_empty());
+        assert!(event.peer_city.is_empty());
+        assert_eq!(event.peer_asn, 0);
+        assert!(event.peer_org.is_empty());
+        assert_eq!(event.peer_longitude, 0.0);
+        assert_eq!(event.peer_latitude, 0.0);
+        assert!(event.server_id.is_empty());
+    }
+
+    #[test]
+    fn enum_into_str() {
+        let s: &str = AuthResult::Success.into();
+        assert_eq!(s, "success");
+        let s: &str = AuthResult::Failed.into();
+        assert_eq!(s, "failed");
+        let s: &str = AuthResult::Skipped.into();
+        assert_eq!(s, "skipped");
+
+        let s: &str = TargetType::Ipv4.into();
+        assert_eq!(s, "ipv4");
+        let s: &str = TargetType::Ipv6.into();
+        assert_eq!(s, "ipv6");
+        let s: &str = TargetType::Domain.into();
+        assert_eq!(s, "domain");
+
+        let s: &str = Protocol::Tcp.into();
+        assert_eq!(s, "tcp");
+        let s: &str = Protocol::Udp.into();
+        assert_eq!(s, "udp");
+
+        let s: &str = Transport::Direct.into();
+        assert_eq!(s, "direct");
+        let s: &str = Transport::WebSocket.into();
+        assert_eq!(s, "websocket");
+
+        let s: &str = CloseReason::Normal.into();
+        assert_eq!(s, "normal");
+        let s: &str = CloseReason::Timeout.into();
+        assert_eq!(s, "timeout");
+        let s: &str = CloseReason::Error.into();
+        assert_eq!(s, "error");
+        let s: &str = CloseReason::Reset.into();
+        assert_eq!(s, "reset");
+        let s: &str = CloseReason::ServerShutdown.into();
+        assert_eq!(s, "shutdown");
+    }
+
+    #[test]
+    fn enum_serde_roundtrip() {
+        let auth = AuthResult::Failed;
+        let json = serde_json::to_string(&auth).unwrap();
+        assert_eq!(json, "\"failed\"");
+        let back: AuthResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, AuthResult::Failed);
+
+        let proto = Protocol::Udp;
+        let json = serde_json::to_string(&proto).unwrap();
+        assert_eq!(json, "\"udp\"");
+        let back: Protocol = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, Protocol::Udp);
+
+        let transport = Transport::WebSocket;
+        let json = serde_json::to_string(&transport).unwrap();
+        assert_eq!(json, "\"web_socket\"");
+        let back: Transport = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, Transport::WebSocket);
     }
 }

@@ -25,4 +25,17 @@ pub struct ServerState {
     /// Analytics event collector (only available when analytics feature is enabled).
     #[cfg(feature = "analytics")]
     pub analytics: Option<trojan_analytics::EventCollector>,
+    /// Rule engine for routing decisions (only available when rules feature is enabled).
+    /// Uses `HotRuleEngine` for lock-free hot-reload support.
+    #[cfg(feature = "rules")]
+    pub rule_engine: Option<Arc<trojan_rules::HotRuleEngine>>,
+    /// Named outbound connectors (only available when rules feature is enabled).
+    #[cfg(feature = "rules")]
+    pub outbounds: std::collections::HashMap<String, Arc<crate::outbound::Outbound>>,
+    /// Shared GeoIP database for metrics country tagging (country-level).
+    #[cfg(feature = "geoip")]
+    pub geoip_metrics: Option<Arc<trojan_rules::geoip_db::GeoipDb>>,
+    /// Shared GeoIP database for analytics geo fields (city-level).
+    #[cfg(all(feature = "geoip", feature = "analytics"))]
+    pub geoip_analytics: Option<Arc<trojan_rules::geoip_db::GeoipDb>>,
 }
