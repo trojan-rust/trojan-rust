@@ -13,11 +13,10 @@ categories = ["network-programming"]
 readme = "README.md"
 
 [features]
-default = ["ws"]
+default = ["ws", "rules"]
 ws = ["tokio-tungstenite", "trojan-core/ws"]
 analytics = ["trojan-analytics"]
-rules = ["trojan-rules", "dep:webpki-roots"]
-rules-http = ["rules", "trojan-rules/http", "arc-swap"]
+rules = ["trojan-rules", "dep:webpki-roots", "dep:arc-swap"]
 geoip = ["rules", "trojan-rules/geoip"]
 
 [lib]
@@ -80,6 +79,7 @@ arc-swap = { version = "1", optional = true }
 libc = "0.2"
 
 [dev-dependencies]
+ctor = "0.4"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 tempfile = "3"
 serde_json = "1"

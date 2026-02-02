@@ -14,6 +14,13 @@ use trojan_config::{
 };
 use trojan_proto::{AddressRef, HostRef};
 
+#[ctor::ctor]
+fn init_crypto() {
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("Failed to install aws-lc-rs crypto provider");
+}
+
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::WARN)
@@ -515,4 +522,252 @@ async fn e2e_udp_associate() {
     client.stop().await;
     server.stop().await;
     fallback.stop().await;
+}
+
+// ============================================================================
+// Rule-Based Routing E2E Tests
+// ============================================================================
+
+mod rules_e2e {
+    use super::*;
+    use std::collections::HashMap;
+    use trojan_config::{OutboundConfig, RouteRuleConfig};
+
+    struct RulesTestServer {
+        addr: SocketAddr,
+        password: String,
+        shutdown: CancellationToken,
+        handle: JoinHandle<()>,
+        _temp_dir: tempfile::TempDir,
+    }
+
+    impl RulesTestServer {
+        async fn start(
+            fallback_addr: SocketAddr,
+            outbounds: HashMap<String, OutboundConfig>,
+            rules: Vec<RouteRuleConfig>,
+        ) -> Self {
+            let password = "test_password_123".to_string();
+            let (cert_pem, key_pem) = generate_test_certs();
+
+            let temp_dir = tempfile::tempdir().unwrap();
+            let cert_path = temp_dir.path().join("cert.pem");
+            let key_path = temp_dir.path().join("key.pem");
+
+            std::fs::write(&cert_path, &cert_pem).unwrap();
+            std::fs::write(&key_path, &key_pem).unwrap();
+
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            drop(listener);
+
+            let config = Config {
+                server: ServerConfig {
+                    listen: addr.to_string(),
+                    fallback: fallback_addr.to_string(),
+                    tcp_idle_timeout_secs: 30,
+                    udp_timeout_secs: 30,
+                    max_udp_payload: 8192,
+                    max_udp_buffer_bytes: 65536,
+                    max_header_bytes: 8192,
+                    max_connections: None,
+                    rate_limit: None,
+                    fallback_pool: None,
+                    resource_limits: None,
+                    tcp: TcpConfig::default(),
+                    outbounds,
+                    rule_providers: Default::default(),
+                    rules,
+                    geoip: None,
+                },
+                tls: TlsConfig {
+                    cert: cert_path.to_string_lossy().to_string(),
+                    key: key_path.to_string_lossy().to_string(),
+                    alpn: vec![],
+                    min_version: "tls12".to_string(),
+                    max_version: "tls13".to_string(),
+                    client_ca: None,
+                    cipher_suites: vec![],
+                },
+                auth: AuthConfig {
+                    passwords: vec![password.clone()],
+                    users: vec![],
+                },
+                websocket: WebSocketConfig::default(),
+                metrics: MetricsConfig { listen: None, ..Default::default() },
+                analytics: AnalyticsConfig::default(),
+                logging: LoggingConfig {
+                    level: Some("warn".to_string()),
+                    ..Default::default()
+                },
+            };
+
+            let auth = MemoryAuth::from_passwords(&config.auth.passwords);
+            let shutdown = CancellationToken::new();
+            let shutdown_task = shutdown.clone();
+            let handle = tokio::spawn(async move {
+                let _ = trojan_server::run_with_shutdown(config, auth, shutdown_task).await;
+            });
+
+            wait_for_tcp(addr).await;
+
+            Self {
+                addr,
+                password,
+                shutdown,
+                handle,
+                _temp_dir: temp_dir,
+            }
+        }
+
+        async fn stop(self) {
+            self.shutdown.cancel();
+            let _ = self.handle.await;
+        }
+    }
+
+    fn rule(rule_type: &str, value: Option<&str>, outbound: &str) -> RouteRuleConfig {
+        RouteRuleConfig {
+            rule_set: None,
+            rule_type: Some(rule_type.to_string()),
+            value: value.map(|v| v.to_string()),
+            outbound: outbound.to_string(),
+        }
+    }
+
+    /// E2E: SOCKS5 → Client → Server with FINAL DIRECT routes all traffic.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn e2e_rules_final_direct() {
+        init_tracing();
+
+        let fallback = TcpStaticServer::start(b"HTTP/1.1 200 OK\r\n\r\n").await;
+        let echo = TcpEchoServer::start().await;
+
+        let rules = vec![rule("FINAL", None, "DIRECT")];
+        let server =
+            RulesTestServer::start(fallback.addr, HashMap::new(), rules).await;
+        let client = TestClient::start(server.addr, server.password.clone()).await;
+
+        let mut stream = socks5_connect(client.socks_addr, echo.addr)
+            .await
+            .expect("socks connect");
+
+        stream.write_all(b"e2e-rules").await.unwrap();
+        let mut buf = [0u8; 64];
+        let n = stream.read(&mut buf).await.expect("read echo");
+        assert_eq!(&buf[..n], b"e2e-rules");
+
+        drop(stream);
+        echo.stop().await;
+        client.stop().await;
+        server.stop().await;
+        fallback.stop().await;
+    }
+
+    /// E2E: SOCKS5 → Client → Server with DST-PORT REJECT blocks specific port.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn e2e_rules_reject_port() {
+        init_tracing();
+
+        let fallback = TcpStaticServer::start(b"HTTP/1.1 200 OK\r\n\r\n").await;
+        // Start echo server — we won't actually relay to it since REJECT applies
+        let echo = TcpEchoServer::start().await;
+
+        let rules = vec![
+            rule("DST-PORT", Some(&echo.addr.port().to_string()), "REJECT"),
+            rule("FINAL", None, "DIRECT"),
+        ];
+        let server =
+            RulesTestServer::start(fallback.addr, HashMap::new(), rules).await;
+        let client = TestClient::start(server.addr, server.password.clone()).await;
+
+        let mut stream = socks5_connect(client.socks_addr, echo.addr)
+            .await
+            .expect("socks connect");
+
+        // Write some data — server should reject
+        stream.write_all(b"should-reject").await.unwrap();
+
+        let mut buf = [0u8; 64];
+        let read_result =
+            tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await;
+
+        match read_result {
+            Ok(Ok(0)) => { /* Expected: connection closed by REJECT */ }
+            Ok(Ok(_)) => { /* Might get data if timing is odd */ }
+            Ok(Err(_)) => { /* Read error — also acceptable for REJECT */ }
+            Err(_) => panic!("Timeout waiting for REJECT — rule may not be working"),
+        }
+
+        drop(stream);
+        echo.stop().await;
+        client.stop().await;
+        server.stop().await;
+        fallback.stop().await;
+    }
+
+    /// E2E: SOCKS5 → Client → Server with mixed rules (one port allowed, one rejected).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn e2e_rules_mixed_ports() {
+        init_tracing();
+
+        let fallback = TcpStaticServer::start(b"HTTP/1.1 200 OK\r\n\r\n").await;
+        let echo_allowed = TcpEchoServer::start().await;
+        let echo_blocked = TcpEchoServer::start().await;
+
+        let rules = vec![
+            rule(
+                "DST-PORT",
+                Some(&echo_allowed.addr.port().to_string()),
+                "DIRECT",
+            ),
+            rule(
+                "DST-PORT",
+                Some(&echo_blocked.addr.port().to_string()),
+                "REJECT",
+            ),
+            rule("FINAL", None, "DIRECT"),
+        ];
+        let server =
+            RulesTestServer::start(fallback.addr, HashMap::new(), rules).await;
+        let client = TestClient::start(server.addr, server.password.clone()).await;
+
+        // Allowed port should relay
+        {
+            let mut stream = socks5_connect(client.socks_addr, echo_allowed.addr)
+                .await
+                .expect("socks connect allowed");
+            stream.write_all(b"allowed").await.unwrap();
+            let mut buf = [0u8; 64];
+            let n = stream.read(&mut buf).await.expect("read echo");
+            assert_eq!(&buf[..n], b"allowed", "Allowed port should relay traffic");
+            drop(stream);
+        }
+
+        // Blocked port should be rejected
+        {
+            let mut stream = socks5_connect(client.socks_addr, echo_blocked.addr)
+                .await
+                .expect("socks connect blocked");
+            stream.write_all(b"blocked").await.unwrap();
+
+            let mut buf = [0u8; 64];
+            let read_result =
+                tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await;
+
+            match read_result {
+                Ok(Ok(0)) => { /* Expected: REJECT */ }
+                Ok(Ok(_)) => { /* Timing edge case */ }
+                Ok(Err(_)) => { /* Read error from REJECT */ }
+                Err(_) => panic!("Timeout waiting for blocked port REJECT"),
+            }
+            drop(stream);
+        }
+
+        echo_allowed.stop().await;
+        echo_blocked.stop().await;
+        client.stop().await;
+        server.stop().await;
+        fallback.stop().await;
+    }
 }

@@ -48,7 +48,8 @@ trojan-auth.workspace = true
 trojan-config.workspace = true
 
 [dev-dependencies]
+ctor = "0.4"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 tempfile = "3"
-trojan-server.workspace = true
+trojan-server = { workspace = true, features = ["rules"] }
 tokio = { version = "1", features = ["test-util"] }

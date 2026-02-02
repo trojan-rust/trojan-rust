@@ -33,6 +33,22 @@ use trojan_proto::{
 };
 
 // ============================================================================
+// Crypto Provider Setup
+// ============================================================================
+
+/// Install the aws-lc-rs crypto provider once at process startup.
+///
+/// When the `rules` feature is enabled, `reqwest`'s `rustls-tls` pulls in the
+/// `ring` provider alongside `aws-lc-rs`, preventing rustls from auto-detecting
+/// which one to use.
+#[ctor::ctor]
+fn init_crypto() {
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("Failed to install aws-lc-rs crypto provider");
+}
+
+// ============================================================================
 // Test Certificates (self-signed for testing)
 // ============================================================================
 
@@ -1491,4 +1507,590 @@ async fn test_concurrent_connections() {
         success_count, num_connections,
         "Not all connections succeeded"
     );
+}
+
+// ============================================================================
+// Rule-Based Routing Tests
+// ============================================================================
+
+#[cfg(feature = "rules")]
+mod rules_tests {
+    use super::*;
+    use std::collections::HashMap;
+    use trojan_config::{OutboundConfig, RouteRuleConfig, RuleProviderConfig};
+    use trojan_server::{CancellationToken, run_with_shutdown};
+
+    /// Assert that a TLS stream is closed (REJECT behavior).
+    /// Accepts both clean EOF (n=0) and TLS close without close_notify.
+    async fn assert_connection_rejected(
+        tls_stream: &mut tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
+        msg: &str,
+    ) {
+        let mut buf = vec![0u8; 1024];
+        let result = tokio::time::timeout(Duration::from_secs(5), tls_stream.read(&mut buf))
+            .await
+            .expect("read timeout");
+        match result {
+            Ok(0) => { /* clean EOF — expected for REJECT */ }
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                /* TLS close without close_notify — also expected for REJECT */
+            }
+            Ok(n) => panic!("{msg}: expected connection closed, got {n} bytes"),
+            Err(e) => panic!("{msg}: unexpected error: {e}"),
+        }
+    }
+
+    /// Helper to start a trojan server with custom rules config.
+    struct RulesTestServer {
+        addr: SocketAddr,
+        password: String,
+        tls_connector: TlsConnector,
+        shutdown: CancellationToken,
+        _handle: tokio::task::JoinHandle<()>,
+        _temp_dir: tempfile::TempDir,
+    }
+
+    impl RulesTestServer {
+        async fn start(
+            fallback_addr: SocketAddr,
+            outbounds: HashMap<String, OutboundConfig>,
+            rules: Vec<RouteRuleConfig>,
+            rule_providers: HashMap<String, RuleProviderConfig>,
+        ) -> Self {
+            let password = "test_password_123".to_string();
+            let (cert_pem, key_pem) = generate_test_certs();
+
+            let temp_dir = tempfile::Builder::new()
+                .prefix("trojan-rules-test-")
+                .tempdir()
+                .unwrap();
+            let cert_path = temp_dir.path().join("cert.pem");
+            let key_path = temp_dir.path().join("key.pem");
+
+            fs::write(&cert_path, &cert_pem).unwrap();
+            fs::write(&key_path, &key_pem).unwrap();
+
+            let cert_der = rustls_pemfile::certs(&mut cert_pem.as_bytes())
+                .next()
+                .unwrap()
+                .unwrap()
+                .to_vec();
+
+            let mut root_store = RootCertStore::empty();
+            root_store.add(CertificateDer::from(cert_der)).unwrap();
+            let client_config = ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth();
+            let tls_connector = TlsConnector::from(Arc::new(client_config));
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            drop(listener);
+
+            let config = Config {
+                server: ServerConfig {
+                    listen: addr.to_string(),
+                    fallback: fallback_addr.to_string(),
+                    tcp_idle_timeout_secs: 30,
+                    udp_timeout_secs: 30,
+                    max_udp_payload: 8192,
+                    max_udp_buffer_bytes: 65536,
+                    max_header_bytes: 8192,
+                    max_connections: None,
+                    rate_limit: None,
+                    fallback_pool: None,
+                    resource_limits: None,
+                    tcp: TcpConfig::default(),
+                    outbounds,
+                    rule_providers,
+                    rules,
+                    geoip: None,
+                },
+                tls: TlsConfig {
+                    cert: cert_path.to_string_lossy().to_string(),
+                    key: key_path.to_string_lossy().to_string(),
+                    alpn: vec![],
+                    min_version: "tls12".to_string(),
+                    max_version: "tls13".to_string(),
+                    client_ca: None,
+                    cipher_suites: vec![],
+                },
+                auth: AuthConfig {
+                    passwords: vec![password.clone()],
+                    users: vec![],
+                },
+                websocket: WebSocketConfig::default(),
+                metrics: MetricsConfig { listen: None, ..Default::default() },
+                analytics: AnalyticsConfig::default(),
+                logging: LoggingConfig {
+                    level: Some("debug".to_string()),
+                    ..Default::default()
+                },
+            };
+
+            let auth = MemoryAuth::from_passwords(&config.auth.passwords);
+            let shutdown = CancellationToken::new();
+            let shutdown_task = shutdown.clone();
+
+            let handle = tokio::spawn(async move {
+                let _ = run_with_shutdown(config, auth, shutdown_task).await;
+            });
+
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            Self {
+                addr,
+                password,
+                tls_connector,
+                shutdown,
+                _handle: handle,
+                _temp_dir: temp_dir,
+            }
+        }
+
+        fn hash(&self) -> String {
+            sha224_hex(&self.password)
+        }
+
+        /// Connect a TLS stream and send a trojan CONNECT header targeting an IPv4 addr.
+        async fn connect_to_ipv4(
+            &self,
+            target_addr: SocketAddr,
+            payload: &[u8],
+        ) -> tokio_rustls::client::TlsStream<tokio::net::TcpStream> {
+            let tcp_stream = tokio::net::TcpStream::connect(self.addr).await.unwrap();
+            let server_name = ServerName::try_from("localhost").unwrap();
+            let mut tls_stream = self
+                .tls_connector
+                .connect(server_name, tcp_stream)
+                .await
+                .unwrap();
+
+            let hash = self.hash();
+            let ip: std::net::Ipv4Addr = match target_addr.ip() {
+                std::net::IpAddr::V4(v4) => v4,
+                _ => panic!("Expected IPv4"),
+            };
+            let addr = AddressRef {
+                host: HostRef::Ipv4(ip.octets()),
+                port: target_addr.port(),
+            };
+
+            let mut header = BytesMut::new();
+            write_request_header(&mut header, hash.as_bytes(), CMD_CONNECT, &addr).unwrap();
+            header.extend_from_slice(payload);
+
+            tls_stream.write_all(&header).await.unwrap();
+            tls_stream.flush().await.unwrap();
+            tls_stream
+        }
+
+        /// Connect a TLS stream and send a trojan CONNECT header targeting a domain.
+        async fn connect_to_domain(
+            &self,
+            domain: &str,
+            port: u16,
+            payload: &[u8],
+        ) -> tokio_rustls::client::TlsStream<tokio::net::TcpStream> {
+            let tcp_stream = tokio::net::TcpStream::connect(self.addr).await.unwrap();
+            let server_name = ServerName::try_from("localhost").unwrap();
+            let mut tls_stream = self
+                .tls_connector
+                .connect(server_name, tcp_stream)
+                .await
+                .unwrap();
+
+            let hash = self.hash();
+            let addr = AddressRef {
+                host: HostRef::Domain(domain.as_bytes()),
+                port,
+            };
+
+            let mut header = BytesMut::new();
+            write_request_header(&mut header, hash.as_bytes(), CMD_CONNECT, &addr).unwrap();
+            header.extend_from_slice(payload);
+
+            tls_stream.write_all(&header).await.unwrap();
+            tls_stream.flush().await.unwrap();
+            tls_stream
+        }
+
+        async fn stop(self) {
+            self.shutdown.cancel();
+            let _ = self._handle.await;
+        }
+    }
+
+    fn rule(rule_type: &str, value: Option<&str>, outbound: &str) -> RouteRuleConfig {
+        RouteRuleConfig {
+            rule_set: None,
+            rule_type: Some(rule_type.to_string()),
+            value: value.map(|v| v.to_string()),
+            outbound: outbound.to_string(),
+        }
+    }
+
+    fn rule_set_ref(name: &str, outbound: &str) -> RouteRuleConfig {
+        RouteRuleConfig {
+            rule_set: Some(name.to_string()),
+            rule_type: None,
+            value: None,
+            outbound: outbound.to_string(),
+        }
+    }
+
+    /// Test: REJECT rule blocks connection (domain match).
+    #[tokio::test]
+    async fn test_rules_reject_domain() {
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+
+        let rules = vec![
+            rule("DOMAIN", Some("blocked.example.com"), "REJECT"),
+            rule("FINAL", None, "DIRECT"),
+        ];
+
+        let server = RulesTestServer::start(
+            fallback.addr,
+            HashMap::new(),
+            rules,
+            HashMap::new(),
+        )
+        .await;
+
+        let mut tls_stream = server.connect_to_domain("blocked.example.com", 443, b"").await;
+
+        assert_connection_rejected(&mut tls_stream, "REJECT rule should close connection").await;
+
+        server.stop().await;
+    }
+
+    /// Test: IP-CIDR rule matches and routes to DIRECT.
+    #[tokio::test]
+    async fn test_rules_ip_cidr_direct() {
+        let echo = MockEchoServer::start();
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+
+        let rules = vec![
+            rule("IP-CIDR", Some("127.0.0.0/8"), "DIRECT"),
+            rule("FINAL", None, "REJECT"),
+        ];
+
+        let server = RulesTestServer::start(
+            fallback.addr,
+            HashMap::new(),
+            rules,
+            HashMap::new(),
+        )
+        .await;
+
+        let mut tls_stream = server.connect_to_ipv4(echo.addr, b"Hello Rules!").await;
+
+        let mut buf = vec![0u8; 1024];
+        let n = tokio::time::timeout(Duration::from_secs(5), tls_stream.read(&mut buf))
+            .await
+            .expect("read timeout")
+            .unwrap();
+
+        assert_eq!(&buf[..n], b"Hello Rules!", "IP-CIDR DIRECT should relay traffic");
+
+        server.stop().await;
+    }
+
+    /// Test: DST-PORT rule matches and routes to DIRECT.
+    #[tokio::test]
+    async fn test_rules_dst_port_direct() {
+        let echo = MockEchoServer::start();
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+
+        let rules = vec![
+            rule("DST-PORT", Some(&echo.addr.port().to_string()), "DIRECT"),
+            rule("FINAL", None, "REJECT"),
+        ];
+
+        let server = RulesTestServer::start(
+            fallback.addr,
+            HashMap::new(),
+            rules,
+            HashMap::new(),
+        )
+        .await;
+
+        let mut tls_stream = server.connect_to_ipv4(echo.addr, b"port match").await;
+
+        let mut buf = vec![0u8; 1024];
+        let n = tokio::time::timeout(Duration::from_secs(5), tls_stream.read(&mut buf))
+            .await
+            .expect("read timeout")
+            .unwrap();
+
+        assert_eq!(&buf[..n], b"port match", "DST-PORT DIRECT should relay traffic");
+
+        server.stop().await;
+    }
+
+    /// Test: FINAL rule as catch-all routes to DIRECT.
+    #[tokio::test]
+    async fn test_rules_final_catchall() {
+        let echo = MockEchoServer::start();
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+
+        let rules = vec![rule("FINAL", None, "DIRECT")];
+
+        let server = RulesTestServer::start(
+            fallback.addr,
+            HashMap::new(),
+            rules,
+            HashMap::new(),
+        )
+        .await;
+
+        let mut tls_stream = server.connect_to_ipv4(echo.addr, b"final").await;
+
+        let mut buf = vec![0u8; 1024];
+        let n = tokio::time::timeout(Duration::from_secs(5), tls_stream.read(&mut buf))
+            .await
+            .expect("read timeout")
+            .unwrap();
+
+        assert_eq!(&buf[..n], b"final", "FINAL DIRECT should relay all traffic");
+
+        server.stop().await;
+    }
+
+    /// Test: Named outbound with type "direct" routes traffic correctly.
+    #[tokio::test]
+    async fn test_rules_named_outbound_direct() {
+        let echo = MockEchoServer::start();
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+
+        let mut outbounds = HashMap::new();
+        outbounds.insert(
+            "my-direct".to_string(),
+            OutboundConfig {
+                outbound_type: "direct".to_string(),
+                addr: None,
+                password: None,
+                sni: None,
+                bind: None,
+            },
+        );
+
+        let rules = vec![
+            rule("IP-CIDR", Some("127.0.0.0/8"), "my-direct"),
+            rule("FINAL", None, "REJECT"),
+        ];
+
+        let server = RulesTestServer::start(
+            fallback.addr,
+            outbounds,
+            rules,
+            HashMap::new(),
+        )
+        .await;
+
+        let mut tls_stream = server.connect_to_ipv4(echo.addr, b"outbound").await;
+
+        let mut buf = vec![0u8; 1024];
+        let n = tokio::time::timeout(Duration::from_secs(5), tls_stream.read(&mut buf))
+            .await
+            .expect("read timeout")
+            .unwrap();
+
+        assert_eq!(
+            &buf[..n], b"outbound",
+            "Named outbound 'direct' should relay traffic"
+        );
+
+        server.stop().await;
+    }
+
+    /// Test: Named outbound with type "reject" drops connection.
+    #[tokio::test]
+    async fn test_rules_named_outbound_reject() {
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+
+        let mut outbounds = HashMap::new();
+        outbounds.insert(
+            "block".to_string(),
+            OutboundConfig {
+                outbound_type: "reject".to_string(),
+                addr: None,
+                password: None,
+                sni: None,
+                bind: None,
+            },
+        );
+
+        let rules = vec![
+            rule("IP-CIDR", Some("127.0.0.0/8"), "block"),
+            rule("FINAL", None, "DIRECT"),
+        ];
+
+        let server = RulesTestServer::start(
+            fallback.addr,
+            outbounds,
+            rules,
+            HashMap::new(),
+        )
+        .await;
+
+        let echo = MockEchoServer::start();
+        let mut tls_stream = server.connect_to_ipv4(echo.addr, b"should reject").await;
+
+        assert_connection_rejected(&mut tls_stream, "Named reject outbound should close connection").await;
+
+        server.stop().await;
+    }
+
+    /// Test: Rule-set from a file provider (Surge format).
+    #[tokio::test]
+    async fn test_rules_file_provider() {
+        let echo = MockEchoServer::start();
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+
+        // Write a temporary rule-set file in Surge format
+        let temp_dir = tempfile::tempdir().unwrap();
+        let ruleset_path = temp_dir.path().join("block-domains.txt");
+        fs::write(&ruleset_path, "DOMAIN,file-blocked.example.com\n").unwrap();
+
+        let mut rule_providers = HashMap::new();
+        rule_providers.insert(
+            "block-set".to_string(),
+            RuleProviderConfig {
+                format: "surge".to_string(),
+                behavior: Some("classical".to_string()),
+                source: "file".to_string(),
+                path: Some(ruleset_path.to_string_lossy().to_string()),
+                url: None,
+                interval: None,
+            },
+        );
+
+        let rules = vec![
+            rule_set_ref("block-set", "REJECT"),
+            rule("IP-CIDR", Some("127.0.0.0/8"), "DIRECT"),
+            rule("FINAL", None, "DIRECT"),
+        ];
+
+        let server = RulesTestServer::start(
+            fallback.addr,
+            HashMap::new(),
+            rules,
+            rule_providers,
+        )
+        .await;
+
+        // Connection to blocked domain should be rejected
+        let mut tls_stream = server
+            .connect_to_domain("file-blocked.example.com", 443, b"")
+            .await;
+
+        assert_connection_rejected(&mut tls_stream, "File provider REJECT should close connection").await;
+
+        // Connection to echo server (IP) should be relayed via DIRECT
+        let mut tls_stream2 = server.connect_to_ipv4(echo.addr, b"allowed").await;
+
+        let mut buf2 = vec![0u8; 1024];
+        let n2 = tokio::time::timeout(Duration::from_secs(5), tls_stream2.read(&mut buf2))
+            .await
+            .expect("read timeout")
+            .unwrap();
+
+        assert_eq!(&buf2[..n2], b"allowed", "Non-blocked traffic should relay");
+
+        server.stop().await;
+    }
+
+    /// Test: DOMAIN-SUFFIX rule matching.
+    #[tokio::test]
+    async fn test_rules_domain_suffix_reject() {
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+
+        let rules = vec![
+            rule("DOMAIN-SUFFIX", Some("blocked.com"), "REJECT"),
+            rule("FINAL", None, "DIRECT"),
+        ];
+
+        let server = RulesTestServer::start(
+            fallback.addr,
+            HashMap::new(),
+            rules,
+            HashMap::new(),
+        )
+        .await;
+
+        // sub.blocked.com should match DOMAIN-SUFFIX
+        let mut tls_stream = server
+            .connect_to_domain("sub.blocked.com", 443, b"")
+            .await;
+
+        assert_connection_rejected(&mut tls_stream, "DOMAIN-SUFFIX REJECT should close connection").await;
+
+        server.stop().await;
+    }
+
+    /// Test: DOMAIN-KEYWORD rule matching.
+    #[tokio::test]
+    async fn test_rules_domain_keyword_reject() {
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+
+        let rules = vec![
+            rule("DOMAIN-KEYWORD", Some("ads"), "REJECT"),
+            rule("FINAL", None, "DIRECT"),
+        ];
+
+        let server = RulesTestServer::start(
+            fallback.addr,
+            HashMap::new(),
+            rules,
+            HashMap::new(),
+        )
+        .await;
+
+        let mut tls_stream = server
+            .connect_to_domain("tracker.ads.example.com", 443, b"")
+            .await;
+
+        assert_connection_rejected(&mut tls_stream, "DOMAIN-KEYWORD REJECT should close connection").await;
+
+        server.stop().await;
+    }
+
+    /// Test: Multiple rules evaluated in order (first match wins).
+    #[tokio::test]
+    async fn test_rules_order_matters() {
+        let echo = MockEchoServer::start();
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+
+        // IP-CIDR allows 127.0.0.0/8 DIRECT, but FINAL is REJECT.
+        // The IP-CIDR rule should match first.
+        let rules = vec![
+            rule("DOMAIN", Some("should-not-match.example.com"), "REJECT"),
+            rule("IP-CIDR", Some("127.0.0.0/8"), "DIRECT"),
+            rule("FINAL", None, "REJECT"),
+        ];
+
+        let server = RulesTestServer::start(
+            fallback.addr,
+            HashMap::new(),
+            rules,
+            HashMap::new(),
+        )
+        .await;
+
+        let mut tls_stream = server.connect_to_ipv4(echo.addr, b"order").await;
+
+        let mut buf = vec![0u8; 1024];
+        let n = tokio::time::timeout(Duration::from_secs(5), tls_stream.read(&mut buf))
+            .await
+            .expect("read timeout")
+            .unwrap();
+
+        assert_eq!(
+            &buf[..n], b"order",
+            "IP-CIDR rule should match before FINAL REJECT"
+        );
+
+        server.stop().await;
+    }
 }
