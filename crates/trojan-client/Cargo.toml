@@ -16,14 +16,14 @@ name = "trojan_client"
 path = "src/lib.rs"
 
 [dependencies]
-bytes = "1"
-clap = { version = "4", features = ["derive"] }
-rustls = "0.23"
-rustls-pemfile = "2"
-rustls-pki-types = "1"
-serde = { version = "1", features = ["derive"] }
-thiserror = "2"
-tokio = { version = "1", features = [
+bytes.workspace = true
+clap.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+rustls-pki-types.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = [
     "rt-multi-thread",
     "macros",
     "net",
@@ -32,14 +32,14 @@ tokio = { version = "1", features = [
     "signal",
     "sync",
 ] }
-tokio-rustls = "0.26"
-tokio-util = "0.7"
-toml = "0.9"
-serde_json = "1"
-tracing = { version = "0.1", features = ["attributes"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
-webpki-roots = "0.26"
-socket2 = "0.6"
+tokio-rustls.workspace = true
+tokio-util.workspace = true
+toml.workspace = true
+serde_json.workspace = true
+tracing = { workspace = true, features = ["attributes"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json"] }
+webpki-roots.workspace = true
+socket2.workspace = true
 
 # workspace crates
 trojan-core.workspace = true
@@ -48,8 +48,8 @@ trojan-auth.workspace = true
 trojan-config.workspace = true
 
 [dev-dependencies]
-ctor = "0.4"
-rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
-tempfile = "3"
+ctor.workspace = true
+rcgen.workspace = true
+tempfile.workspace = true
 trojan-server = { workspace = true, features = ["rules"] }
-tokio = { version = "1", features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util"] }

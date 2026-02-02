@@ -28,23 +28,23 @@ name = "trojan-server"
 path = "src/main.rs"
 
 [dependencies]
-axum = "0.8"
-async-trait = "0.1"
-bytes = "1"
-clap = { version = "4", features = ["derive"] }
-futures-util = "0.3"
-hex = "0.4"
-metrics = "0.24"
-metrics-exporter-prometheus = "0.18"
-rustls = "0.23"
-rustls-pemfile = "2"
-rustls-pki-types = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml = "0.9"
-sha2 = "0.10"
-thiserror = "2"
-tokio = { version = "1", features = [
+axum.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+hex.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+rustls-pki-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = [
     "rt-multi-thread",
     "macros",
     "net",
@@ -53,16 +53,16 @@ tokio = { version = "1", features = [
     "signal",
     "sync",
 ] }
-tokio-rustls = "0.26"
-tokio-tungstenite = { version = "0.24", optional = true }
-tokio-util = "0.7"
-socket2 = "0.6"
-webpki-roots = { version = "0.26", optional = true }
-toml = "0.9"
-parking_lot = "0.12"
-tracing = { version = "0.1", features = ["attributes"] }
-tracing-appender = "0.2"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tokio-rustls.workspace = true
+tokio-tungstenite = { workspace = true, optional = true }
+tokio-util.workspace = true
+socket2.workspace = true
+webpki-roots = { workspace = true, optional = true }
+toml.workspace = true
+parking_lot.workspace = true
+tracing = { workspace = true, features = ["attributes"] }
+tracing-appender.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json"] }
 
 # workspace crates
 trojan-core.workspace = true
@@ -72,19 +72,19 @@ trojan-config.workspace = true
 trojan-metrics.workspace = true
 trojan-analytics = { workspace = true, optional = true }
 trojan-rules = { workspace = true, optional = true }
-arc-swap = { version = "1", optional = true }
+arc-swap = { workspace = true, optional = true }
 
 # Platform-specific dependencies
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
-ctor = "0.4"
-rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
-tempfile = "3"
-serde_json = "1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-criterion = { version = "0.5", features = ["async_tokio"] }
+ctor.workspace = true
+rcgen.workspace = true
+tempfile.workspace = true
+serde_json.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+criterion = { workspace = true, features = ["async_tokio"] }
 
 [[bench]]
 name = "server"

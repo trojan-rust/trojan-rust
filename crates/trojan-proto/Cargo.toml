@@ -13,10 +13,10 @@ categories = ["network-programming", "parser-implementations"]
 readme = "README.md"
 
 [dependencies]
-bytes = "1"
+bytes.workspace = true
 
 [dev-dependencies]
-criterion = "0.5"
+criterion.workspace = true
 
 [[bench]]
 name = "proto"

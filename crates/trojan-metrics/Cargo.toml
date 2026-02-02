@@ -14,7 +14,7 @@ readme = "README.md"
 
 [dependencies]
 trojan-core.workspace = true
-metrics = "0.24"
-metrics-exporter-prometheus = "0.18"
-axum = "0.8"
-tokio = { version = "1", features = ["rt", "net"] }
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+axum.workspace = true
+tokio = { workspace = true, features = ["rt", "net"] }
