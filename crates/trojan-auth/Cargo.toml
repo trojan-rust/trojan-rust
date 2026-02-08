@@ -48,7 +48,7 @@ tokio = { workspace = true, features = ["sync", "time", "macros"], optional = tr
 
 # CLI dependencies (optional)
 clap = { workspace = true, features = ["derive", "env"], optional = true }
-tabled = { version = "0.17", optional = true }
+tabled = { version = "0.20", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
