@@ -64,7 +64,7 @@ pub async fn connect_and_register(
     };
 
     let register_bytes = bincode::serialize(&register)?;
-    ws_sink.send(Message::Binary(register_bytes)).await?;
+    ws_sink.send(Message::Binary(register_bytes.into())).await?;
 
     // Wait for Registered response with timeout
     let registration = tokio::time::timeout(Duration::from_secs(30), async {
@@ -144,7 +144,7 @@ pub async fn connect_and_register(
                         Some(agent_msg) => {
                             match bincode::serialize(&agent_msg) {
                                 Ok(data) => {
-                                    if let Err(e) = ws_sink.send(Message::Binary(data)).await {
+                                    if let Err(e) = ws_sink.send(Message::Binary(data.into())).await {
                                         error!(error = %e, "failed to send ws message");
                                         return;
                                     }

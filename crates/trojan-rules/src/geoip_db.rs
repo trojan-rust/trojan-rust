@@ -70,14 +70,16 @@ mod inner {
         /// (city-level DBs like geolite2-city use City records, not Country).
         pub fn country_code(&self, ip: IpAddr) -> Option<String> {
             // Try Country record first (works for country-only DBs)
-            if let Ok(country) = self.reader.lookup::<maxminddb::geoip2::Country>(ip)
-                && let Some(code) = country.country.and_then(|c| c.iso_code)
+            if let Ok(result) = self.reader.lookup(ip)
+                && let Ok(Some(country)) = result.decode::<maxminddb::geoip2::Country>()
+                && let Some(code) = country.country.iso_code
             {
                 return Some(code.to_uppercase());
             }
             // Fall back to City record (for city-level DBs)
-            if let Ok(city) = self.reader.lookup::<maxminddb::geoip2::City>(ip)
-                && let Some(code) = city.country.and_then(|c| c.iso_code)
+            if let Ok(result) = self.reader.lookup(ip)
+                && let Ok(Some(city)) = result.decode::<maxminddb::geoip2::City>()
+                && let Some(code) = city.country.iso_code
             {
                 return Some(code.to_uppercase());
             }
@@ -95,36 +97,35 @@ mod inner {
             let mut result = GeoResult::default();
 
             // Try city-level lookup first
-            if let Ok(city) = self.reader.lookup::<maxminddb::geoip2::City>(ip) {
-                if let Some(country) = city.country.and_then(|c| c.iso_code) {
-                    result.country = country.to_uppercase();
+            if let Ok(lookup) = self.reader.lookup(ip)
+                && let Ok(Some(city)) = lookup.decode::<maxminddb::geoip2::City>()
+            {
+                if let Some(code) = city.country.iso_code {
+                    result.country = code.to_uppercase();
                 }
-                if let Some(subdivisions) = city.subdivisions
-                    && let Some(sub) = subdivisions.first()
-                    && let Some(names) = &sub.names
-                    && let Some(name) = names.get("en")
+                if let Some(sub) = city.subdivisions.first()
+                    && let Some(name) = sub.names.english
                 {
-                    result.region = (*name).to_string();
+                    result.region = name.to_string();
                 }
-                if let Some(city_record) = city.city
-                    && let Some(names) = city_record.names
-                    && let Some(name) = names.get("en")
-                {
-                    result.city = (*name).to_string();
+                if let Some(name) = city.city.names.english {
+                    result.city = name.to_string();
                 }
-                if let Some(location) = city.location {
-                    result.longitude = location.longitude.unwrap_or(0.0);
-                    result.latitude = location.latitude.unwrap_or(0.0);
-                }
-            } else if let Ok(country) = self.reader.lookup::<maxminddb::geoip2::Country>(ip) {
+                result.longitude = city.location.longitude.unwrap_or(0.0);
+                result.latitude = city.location.latitude.unwrap_or(0.0);
+            } else if let Ok(lookup) = self.reader.lookup(ip)
+                && let Ok(Some(country)) = lookup.decode::<maxminddb::geoip2::Country>()
+            {
                 // Fall back to country-only lookup
-                if let Some(c) = country.country.and_then(|c| c.iso_code) {
-                    result.country = c.to_uppercase();
+                if let Some(code) = country.country.iso_code {
+                    result.country = code.to_uppercase();
                 }
             }
 
             // Try ASN lookup (separate record type in MaxMind DB)
-            if let Ok(asn) = self.reader.lookup::<maxminddb::geoip2::Asn>(ip) {
+            if let Ok(lookup) = self.reader.lookup(ip)
+                && let Ok(Some(asn)) = lookup.decode::<maxminddb::geoip2::Asn>()
+            {
                 result.asn = asn.autonomous_system_number.unwrap_or(0);
                 result.org = asn.autonomous_system_organization.unwrap_or("").to_string();
             }

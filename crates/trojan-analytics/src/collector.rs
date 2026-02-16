@@ -4,7 +4,6 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Instant;
 
-use rand::Rng;
 use tokio::sync::mpsc;
 use tracing::debug;
 use trojan_config::{AnalyticsConfig, AnalyticsPrivacyConfig};
@@ -63,7 +62,7 @@ impl EventCollector {
             return false;
         }
 
-        rand::thread_rng().r#gen::<f64>() < sampling.rate
+        rand::random::<f64>() < sampling.rate
     }
 
     /// Get the privacy configuration.

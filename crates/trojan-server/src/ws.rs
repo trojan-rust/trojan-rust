@@ -141,11 +141,9 @@ where
     } else {
         Some(cfg.max_frame_bytes)
     };
-    let ws_cfg = WebSocketConfig {
-        max_frame_size: max_frame,
-        max_message_size: max_frame,
-        ..WebSocketConfig::default()
-    };
+    let mut ws_cfg = WebSocketConfig::default();
+    ws_cfg.max_frame_size = max_frame;
+    ws_cfg.max_message_size = max_frame;
     let prefixed = PrefixedStream::new(initial, stream);
     let ws = accept_hdr_async_with_config(
         prefixed,

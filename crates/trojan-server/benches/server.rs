@@ -2,7 +2,9 @@
 
 use std::net::IpAddr;
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use std::hint::black_box;
+
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use trojan_config::WebSocketConfig;
 use trojan_server::RateLimiter;
 use trojan_server::ws::inspect_mixed;

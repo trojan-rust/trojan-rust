@@ -130,7 +130,7 @@ async fn write_to_clickhouse(
     table: &str,
     events: &[ConnectionEvent],
 ) -> Result<(), ::clickhouse::error::Error> {
-    let mut insert = client.insert(table)?;
+    let mut insert = client.insert::<ConnectionEvent>(table).await?;
 
     for event in events {
         insert.write(event).await?;
