@@ -59,11 +59,10 @@ impl HttpProvider {
             .build()
             .map_err(|e| RulesError::Http(format!("failed to build HTTP client: {e}")))?;
 
-        let response = client
-            .get(&self.url)
-            .send()
-            .await
-            .map_err(|e| RulesError::Http(format!("HTTP request failed for {}: {e}", self.url)))?;
+        let response =
+            client.get(&self.url).send().await.map_err(|e| {
+                RulesError::Http(format!("HTTP request failed for {}: {e}", self.url))
+            })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -82,9 +81,10 @@ impl HttpProvider {
 
         // Update cache if path is configured
         if let Some(ref cache_path) = self.cache_path
-            && let Err(e) = write_cache(cache_path, &content).await {
-                tracing::warn!(path = %cache_path.display(), error = %e, "failed to write cache");
-            }
+            && let Err(e) = write_cache(cache_path, &content).await
+        {
+            tracing::warn!(path = %cache_path.display(), error = %e, "failed to write cache");
+        }
 
         Ok(content)
     }
@@ -96,18 +96,19 @@ impl HttpProvider {
             Err(fetch_err) => {
                 // Try cache fallback
                 if let Some(ref cache_path) = self.cache_path
-                    && cache_path.exists() {
-                        tracing::warn!(
-                            url = %self.url,
-                            error = %fetch_err,
-                            cache = %cache_path.display(),
-                            "fetch failed, using cached rules"
-                        );
-                        let content = tokio::fs::read_to_string(cache_path)
-                            .await
-                            .map_err(RulesError::Io)?;
-                        return self.parse(&content);
-                    }
+                    && cache_path.exists()
+                {
+                    tracing::warn!(
+                        url = %self.url,
+                        error = %fetch_err,
+                        cache = %cache_path.display(),
+                        "fetch failed, using cached rules"
+                    );
+                    let content = tokio::fs::read_to_string(cache_path)
+                        .await
+                        .map_err(RulesError::Io)?;
+                    return self.parse(&content);
+                }
                 Err(fetch_err)
             }
         }
@@ -172,16 +173,15 @@ mod tests {
             Some("domain-set".to_string()),
         );
         assert_eq!(p.url(), "https://example.com/rules.txt");
-        assert_eq!(
-            p.cache_path(),
-            Some(Path::new("/tmp/cache.txt"))
-        );
+        assert_eq!(p.cache_path(), Some(Path::new("/tmp/cache.txt")));
     }
 
     #[test]
     fn http_provider_parse_surge() {
         let p = HttpProvider::new("http://example.com", None, "surge", None);
-        let rules = p.parse("DOMAIN,example.com\nDOMAIN-SUFFIX,test.com").unwrap();
+        let rules = p
+            .parse("DOMAIN,example.com\nDOMAIN-SUFFIX,test.com")
+            .unwrap();
         assert_eq!(rules.len(), 2);
     }
 

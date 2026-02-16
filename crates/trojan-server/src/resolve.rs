@@ -22,10 +22,9 @@ pub async fn resolve_sockaddr(target: &str, prefer_ipv4: bool) -> Result<SocketA
         .await
         .map_err(|_| ServerError::Resolve)?
         .collect();
-    if prefer_ipv4
-        && let Some(v4) = addrs.iter().find(|a| a.is_ipv4()) {
-            return Ok(*v4);
-        }
+    if prefer_ipv4 && let Some(v4) = addrs.iter().find(|a| a.is_ipv4()) {
+        return Ok(*v4);
+    }
     addrs.into_iter().next().ok_or(ServerError::Resolve)
 }
 

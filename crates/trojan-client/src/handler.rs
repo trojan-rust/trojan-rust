@@ -356,14 +356,14 @@ fn format_address(addr: &AddressRef<'_>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{drain_trojan_udp_packets, reply_code_for_connect_error};
-    use bytes::BytesMut;
-    use trojan_proto::{AddressRef, HostRef, write_udp_packet};
     use crate::error::ClientError;
     use crate::socks5::handshake::{
         REPLY_CONNECTION_NOT_ALLOWED, REPLY_CONNECTION_REFUSED, REPLY_GENERAL_FAILURE,
         REPLY_HOST_UNREACHABLE, REPLY_TTL_EXPIRED,
     };
+    use bytes::BytesMut;
     use std::io::ErrorKind;
+    use trojan_proto::{AddressRef, HostRef, write_udp_packet};
 
     #[derive(Debug, PartialEq, Eq)]
     enum OwnedHost {
@@ -427,17 +427,14 @@ mod tests {
         let err = ClientError::Resolve("example.com".into());
         assert_eq!(reply_code_for_connect_error(&err), REPLY_HOST_UNREACHABLE);
 
-        let err = ClientError::Io(std::io::Error::new(
-            ErrorKind::ConnectionRefused,
-            "refused",
-        ));
+        let err = ClientError::Io(std::io::Error::new(ErrorKind::ConnectionRefused, "refused"));
         assert_eq!(reply_code_for_connect_error(&err), REPLY_CONNECTION_REFUSED);
 
-        let err = ClientError::Io(std::io::Error::new(
-            ErrorKind::PermissionDenied,
-            "denied",
-        ));
-        assert_eq!(reply_code_for_connect_error(&err), REPLY_CONNECTION_NOT_ALLOWED);
+        let err = ClientError::Io(std::io::Error::new(ErrorKind::PermissionDenied, "denied"));
+        assert_eq!(
+            reply_code_for_connect_error(&err),
+            REPLY_CONNECTION_NOT_ALLOWED
+        );
 
         let err = ClientError::Io(std::io::Error::new(ErrorKind::TimedOut, "timeout"));
         assert_eq!(reply_code_for_connect_error(&err), REPLY_TTL_EXPIRED);

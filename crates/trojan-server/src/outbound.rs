@@ -114,8 +114,8 @@ impl Outbound {
                         // Try to extract hostname from addr (host:port).
                         // If the host portion is an IP address, require explicit sni.
                         let host = extract_host(addr);
-                        if host.parse::<IpAddr>().is_ok()
-                            || host.starts_with('[')  // bracketed IPv6 like [::1]
+                        if host.parse::<IpAddr>().is_ok() || host.starts_with('[')
+                        // bracketed IPv6 like [::1]
                         {
                             return Err(ServerError::Config(format!(
                                 "outbound '{name}': 'sni' is required when 'addr' is an IP address"
@@ -256,9 +256,10 @@ async fn connect_trojan_outbound(
 fn extract_host(addr: &str) -> &str {
     // Bracketed IPv6: [::1]:443
     if addr.starts_with('[')
-        && let Some(end) = addr.find(']') {
-            return &addr[..=end]; // include the brackets
-        }
+        && let Some(end) = addr.find(']')
+    {
+        return &addr[..=end]; // include the brackets
+    }
     // host:port — take everything before the last ':'
     if let Some((host, _port)) = addr.rsplit_once(':') {
         return host;

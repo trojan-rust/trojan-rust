@@ -84,7 +84,12 @@ impl Drop for ConnectionGuard {
 }
 
 /// Create a TCP listener with custom backlog and TCP options.
-#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_sign_loss, clippy::ptr_as_ptr)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::ptr_as_ptr
+)]
 pub fn create_listener(
     addr: SocketAddr,
     backlog: u32,
@@ -157,7 +162,11 @@ pub fn apply_tcp_options(stream: &TcpStream, tcp_cfg: &TcpConfig) -> std::io::Re
 }
 
 /// Connect to target with optional socket buffer configuration.
-#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
 pub async fn connect_with_buffers(
     target: SocketAddr,
     send_buf: usize,

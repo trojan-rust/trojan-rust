@@ -1,7 +1,7 @@
 //! RAII connection guard for tracking active connections.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Shared active-connection counter for a single backend.
 ///

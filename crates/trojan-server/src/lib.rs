@@ -4,22 +4,22 @@
 //! and potential embedding scenarios.
 
 pub mod cli;
+#[cfg(feature = "rules")]
+mod debug_api;
 mod error;
 mod handler;
+#[cfg(feature = "rules")]
+mod outbound;
 mod pool;
 mod rate_limit;
 mod relay;
 mod resolve;
+#[cfg(feature = "rules")]
+mod rules;
 mod server;
 mod state;
 mod tls;
 mod util;
-#[cfg(feature = "rules")]
-mod debug_api;
-#[cfg(feature = "rules")]
-mod outbound;
-#[cfg(feature = "rules")]
-mod rules;
 #[cfg(feature = "ws")]
 pub mod ws;
 

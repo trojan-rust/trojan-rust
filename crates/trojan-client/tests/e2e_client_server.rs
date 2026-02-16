@@ -235,7 +235,10 @@ impl TestServer {
                 users: vec![],
             },
             websocket: WebSocketConfig::default(),
-            metrics: MetricsConfig { listen: None, ..Default::default() },
+            metrics: MetricsConfig {
+                listen: None,
+                ..Default::default()
+            },
             analytics: AnalyticsConfig::default(),
             logging: LoggingConfig {
                 level: Some("warn".to_string()),
@@ -352,9 +355,7 @@ async fn socks5_connect(socks_addr: SocketAddr, target: SocketAddr) -> std::io::
     Ok(stream)
 }
 
-async fn socks5_udp_associate(
-    socks_addr: SocketAddr,
-) -> std::io::Result<(TcpStream, SocketAddr)> {
+async fn socks5_udp_associate(socks_addr: SocketAddr) -> std::io::Result<(TcpStream, SocketAddr)> {
     let mut stream = TcpStream::connect(socks_addr).await?;
     stream.write_all(&[0x05, 0x01, 0x00]).await?;
     let mut response = [0u8; 2];
@@ -465,10 +466,7 @@ async fn e2e_tcp_connect() {
     stream.write_all(b"ping").await.unwrap();
 
     let mut buf = [0u8; 4];
-    stream
-        .read_exact(&mut buf)
-        .await
-        .expect("read echo");
+    stream.read_exact(&mut buf).await.expect("read echo");
     assert_eq!(&buf, b"ping");
 
     // Drop the stream before stopping services so in-flight relays can finish
@@ -595,7 +593,10 @@ mod rules_e2e {
                     users: vec![],
                 },
                 websocket: WebSocketConfig::default(),
-                metrics: MetricsConfig { listen: None, ..Default::default() },
+                metrics: MetricsConfig {
+                    listen: None,
+                    ..Default::default()
+                },
                 analytics: AnalyticsConfig::default(),
                 logging: LoggingConfig {
                     level: Some("warn".to_string()),
@@ -645,8 +646,7 @@ mod rules_e2e {
         let echo = TcpEchoServer::start().await;
 
         let rules = vec![rule("FINAL", None, "DIRECT")];
-        let server =
-            RulesTestServer::start(fallback.addr, HashMap::new(), rules).await;
+        let server = RulesTestServer::start(fallback.addr, HashMap::new(), rules).await;
         let client = TestClient::start(server.addr, server.password.clone()).await;
 
         let mut stream = socks5_connect(client.socks_addr, echo.addr)
@@ -678,8 +678,7 @@ mod rules_e2e {
             rule("DST-PORT", Some(&echo.addr.port().to_string()), "REJECT"),
             rule("FINAL", None, "DIRECT"),
         ];
-        let server =
-            RulesTestServer::start(fallback.addr, HashMap::new(), rules).await;
+        let server = RulesTestServer::start(fallback.addr, HashMap::new(), rules).await;
         let client = TestClient::start(server.addr, server.password.clone()).await;
 
         let mut stream = socks5_connect(client.socks_addr, echo.addr)
@@ -690,8 +689,7 @@ mod rules_e2e {
         stream.write_all(b"should-reject").await.unwrap();
 
         let mut buf = [0u8; 64];
-        let read_result =
-            tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await;
+        let read_result = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await;
 
         match read_result {
             Ok(Ok(0)) => { /* Expected: connection closed by REJECT */ }
@@ -729,8 +727,7 @@ mod rules_e2e {
             ),
             rule("FINAL", None, "DIRECT"),
         ];
-        let server =
-            RulesTestServer::start(fallback.addr, HashMap::new(), rules).await;
+        let server = RulesTestServer::start(fallback.addr, HashMap::new(), rules).await;
         let client = TestClient::start(server.addr, server.password.clone()).await;
 
         // Allowed port should relay

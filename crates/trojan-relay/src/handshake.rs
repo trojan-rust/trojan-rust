@@ -193,17 +193,17 @@ where
             if next == b'\n' {
                 break;
             }
-            return Err(RelayError::Handshake(
-                format!("expected LF after CR in {}", field),
-            ));
+            return Err(RelayError::Handshake(format!(
+                "expected LF after CR in {}",
+                field
+            )));
         }
         buf.push(byte);
         if buf.len() > max_len {
             return Err(RelayError::Handshake(format!("{} too long", field)));
         }
     }
-    String::from_utf8(buf)
-        .map_err(|_| RelayError::Handshake(format!("invalid {} encoding", field)))
+    String::from_utf8(buf).map_err(|_| RelayError::Handshake(format!("invalid {} encoding", field)))
 }
 
 /// Verify that a handshake hash matches the expected password.
@@ -244,7 +244,9 @@ mod tests {
         let meta = HandshakeMetadata::default();
 
         let write_handle = tokio::spawn(async move {
-            write_handshake(&mut client, password, target, &meta).await.unwrap();
+            write_handshake(&mut client, password, target, &meta)
+                .await
+                .unwrap();
             client
         });
 
@@ -269,7 +271,9 @@ mod tests {
         };
 
         let write_handle = tokio::spawn(async move {
-            write_handshake(&mut client, password, target, &meta).await.unwrap();
+            write_handshake(&mut client, password, target, &meta)
+                .await
+                .unwrap();
             client
         });
 

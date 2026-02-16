@@ -167,9 +167,7 @@ pub struct RelayOutboundConfig {
 
 impl Default for RelayOutboundConfig {
     fn default() -> Self {
-        Self {
-            sni: default_sni(),
-        }
+        Self { sni: default_sni() }
     }
 }
 
@@ -325,8 +323,14 @@ dest = ["trojan-jp-1:443", "trojan-jp-2:443"]
 strategy = "least_connections"
 "#;
         let config: EntryConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.rules[0].dest, vec!["trojan-jp-1:443", "trojan-jp-2:443"]);
-        assert_eq!(config.rules[0].strategy, trojan_lb::LbStrategy::LeastConnections);
+        assert_eq!(
+            config.rules[0].dest,
+            vec!["trojan-jp-1:443", "trojan-jp-2:443"]
+        );
+        assert_eq!(
+            config.rules[0].strategy,
+            trojan_lb::LbStrategy::LeastConnections
+        );
     }
 
     #[test]

@@ -22,9 +22,8 @@ pub enum ConfigError {
 
 pub fn load_config(path: impl AsRef<Path>) -> Result<Config, ConfigError> {
     let path = path.as_ref();
-    let data = fs::read_to_string(path).map_err(|e| {
-        std::io::Error::new(e.kind(), format!("{}: {}", path.display(), e))
-    })?;
+    let data = fs::read_to_string(path)
+        .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {}", path.display(), e)))?;
     match path.extension().and_then(|s| s.to_str()).unwrap_or("") {
         "json" | "jsonc" => {
             let stripped = json_comments::StripComments::new(data.as_bytes());

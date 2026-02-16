@@ -18,7 +18,10 @@ impl GeoipMatcher {
     /// Load a GeoIP database from a file path.
     pub fn from_file(path: &Path) -> Result<Self, RulesError> {
         let reader = Reader::open_readfile(path).map_err(|e| {
-            RulesError::GeoIp(format!("failed to open GeoIP database {}: {e}", path.display()))
+            RulesError::GeoIp(format!(
+                "failed to open GeoIP database {}: {e}",
+                path.display()
+            ))
         })?;
         Ok(Self { reader })
     }
@@ -40,14 +43,16 @@ impl GeoipMatcher {
     pub fn country_code(&self, ip: IpAddr) -> Option<String> {
         // Try Country record first (works for country-only DBs)
         if let Ok(country) = self.reader.lookup::<maxminddb::geoip2::Country>(ip)
-            && let Some(code) = country.country.and_then(|c| c.iso_code) {
-                return Some(code.to_uppercase());
-            }
+            && let Some(code) = country.country.and_then(|c| c.iso_code)
+        {
+            return Some(code.to_uppercase());
+        }
         // Fall back to City record (for city-level DBs)
         if let Ok(city) = self.reader.lookup::<maxminddb::geoip2::City>(ip)
-            && let Some(code) = city.country.and_then(|c| c.iso_code) {
-                return Some(code.to_uppercase());
-            }
+            && let Some(code) = city.country.and_then(|c| c.iso_code)
+        {
+            return Some(code.to_uppercase());
+        }
         None
     }
 

@@ -110,15 +110,13 @@ where
                     Poll::Pending => return Poll::Pending,
                 }
             }
-            CopyState::ShuttingDown => {
-                match Pin::new(&mut *writer).poll_shutdown(cx) {
-                    Poll::Ready(_) => {
-                        *state = CopyState::Done;
-                        return Poll::Ready(Ok(CopyPoll::Finished));
-                    }
-                    Poll::Pending => return Poll::Pending,
+            CopyState::ShuttingDown => match Pin::new(&mut *writer).poll_shutdown(cx) {
+                Poll::Ready(_) => {
+                    *state = CopyState::Done;
+                    return Poll::Ready(Ok(CopyPoll::Finished));
                 }
-            }
+                Poll::Pending => return Poll::Pending,
+            },
             CopyState::Done => return Poll::Ready(Ok(CopyPoll::Finished)),
         }
     }
@@ -180,18 +178,15 @@ where
             if !a_done {
                 match poll_copy_direction(cx, &mut in_r, &mut out_w, &mut buf_a, &mut state_a) {
                     Poll::Ready(Ok(CopyPoll::Flushed(n))) => {
-
                         metrics.record_inbound(n as u64);
                         activity = true;
                         any_ready = true;
                     }
                     Poll::Ready(Ok(CopyPoll::Finished)) => {
-
                         a_done = true;
                         any_ready = true;
                     }
                     Poll::Ready(Err(e)) => {
-
                         error = Some(e);
                         any_ready = true;
                     }
@@ -202,18 +197,15 @@ where
             if !b_done {
                 match poll_copy_direction(cx, &mut out_r, &mut in_w, &mut buf_b, &mut state_b) {
                     Poll::Ready(Ok(CopyPoll::Flushed(n))) => {
-
                         metrics.record_outbound(n as u64);
                         activity = true;
                         any_ready = true;
                     }
                     Poll::Ready(Ok(CopyPoll::Finished)) => {
-
                         b_done = true;
                         any_ready = true;
                     }
                     Poll::Ready(Err(e)) => {
-
                         error = Some(e);
                         any_ready = true;
                     }

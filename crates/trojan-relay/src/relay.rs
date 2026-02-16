@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use tokio::net::TcpListener;
-use tracing::{debug, info, warn, Instrument, info_span};
+use tracing::{Instrument, debug, info, info_span, warn};
 
 use crate::config::{RelayNodeConfig, TimeoutConfig, TransportType};
 use crate::error::RelayError;
@@ -36,7 +36,10 @@ struct OutboundConnectors {
 }
 
 /// Run the relay node server.
-pub async fn run(config: RelayNodeConfig, shutdown: tokio_util::sync::CancellationToken) -> Result<(), RelayError> {
+pub async fn run(
+    config: RelayNodeConfig,
+    shutdown: tokio_util::sync::CancellationToken,
+) -> Result<(), RelayError> {
     let relay_cfg = &config.relay;
 
     let connectors = OutboundConnectors {
@@ -147,10 +150,14 @@ where
     debug!(target = %hs.target, "relay handshake accepted");
 
     // 4. Determine outbound transport from handshake metadata or node defaults
-    let outbound_transport = hs.metadata.transport
+    let outbound_transport = hs
+        .metadata
+        .transport
         .as_ref()
         .unwrap_or(&connectors.default_transport);
-    let outbound_sni = hs.metadata.sni
+    let outbound_sni = hs
+        .metadata
+        .sni
         .as_deref()
         .unwrap_or(&connectors.default_sni);
 
@@ -171,7 +178,14 @@ where
             .await
             .map_err(|_| RelayError::ConnectTimeout(hs.target.clone()))??;
 
-            relay_bidirectional(inbound, outbound, idle_timeout, relay_buffer_size, &NoOpMetrics).await?;
+            relay_bidirectional(
+                inbound,
+                outbound,
+                idle_timeout,
+                relay_buffer_size,
+                &NoOpMetrics,
+            )
+            .await?;
         }
         TransportType::Plain => {
             let outbound = tokio::time::timeout(
@@ -181,7 +195,14 @@ where
             .await
             .map_err(|_| RelayError::ConnectTimeout(hs.target.clone()))??;
 
-            relay_bidirectional(inbound, outbound, idle_timeout, relay_buffer_size, &NoOpMetrics).await?;
+            relay_bidirectional(
+                inbound,
+                outbound,
+                idle_timeout,
+                relay_buffer_size,
+                &NoOpMetrics,
+            )
+            .await?;
         }
         TransportType::Ws => {
             let outbound = tokio::time::timeout(
@@ -191,7 +212,14 @@ where
             .await
             .map_err(|_| RelayError::ConnectTimeout(hs.target.clone()))??;
 
-            relay_bidirectional(inbound, outbound, idle_timeout, relay_buffer_size, &NoOpMetrics).await?;
+            relay_bidirectional(
+                inbound,
+                outbound,
+                idle_timeout,
+                relay_buffer_size,
+                &NoOpMetrics,
+            )
+            .await?;
         }
     }
 

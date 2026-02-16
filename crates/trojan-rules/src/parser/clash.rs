@@ -28,9 +28,7 @@ pub fn parse_clash_provider(content: &str, behavior: &str) -> Result<Vec<ParsedR
     }
 }
 
-fn parse_domain_behavior(
-    payload: &serde_yaml::Sequence,
-) -> Result<Vec<ParsedRule>, RulesError> {
+fn parse_domain_behavior(payload: &serde_yaml::Sequence) -> Result<Vec<ParsedRule>, RulesError> {
     let mut rules = Vec::with_capacity(payload.len());
 
     for item in payload {
@@ -49,9 +47,7 @@ fn parse_domain_behavior(
     Ok(rules)
 }
 
-fn parse_ipcidr_behavior(
-    payload: &serde_yaml::Sequence,
-) -> Result<Vec<ParsedRule>, RulesError> {
+fn parse_ipcidr_behavior(payload: &serde_yaml::Sequence) -> Result<Vec<ParsedRule>, RulesError> {
     let mut rules = Vec::with_capacity(payload.len());
 
     for item in payload {
@@ -68,9 +64,7 @@ fn parse_ipcidr_behavior(
     Ok(rules)
 }
 
-fn parse_classical_behavior(
-    payload: &serde_yaml::Sequence,
-) -> Result<Vec<ParsedRule>, RulesError> {
+fn parse_classical_behavior(payload: &serde_yaml::Sequence) -> Result<Vec<ParsedRule>, RulesError> {
     let mut rules = Vec::new();
 
     for item in payload {

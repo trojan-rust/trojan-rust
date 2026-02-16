@@ -48,8 +48,8 @@ pub struct RelayArgs {
 pub async fn run_entry(args: EntryArgs) -> Result<(), Box<dyn std::error::Error>> {
     let config_str = std::fs::read_to_string(&args.config)
         .map_err(|e| format!("failed to read config file {:?}: {e}", args.config))?;
-    let config: EntryConfig = toml::from_str(&config_str)
-        .map_err(|e| format!("failed to parse entry config: {e}"))?;
+    let config: EntryConfig =
+        toml::from_str(&config_str).map_err(|e| format!("failed to parse entry config: {e}"))?;
 
     init_tracing(args.log_level.as_deref());
 
@@ -62,15 +62,17 @@ pub async fn run_entry(args: EntryArgs) -> Result<(), Box<dyn std::error::Error>
         shutdown_signal.cancel();
     });
 
-    crate::entry::run(config, shutdown).await.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+    crate::entry::run(config, shutdown)
+        .await
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
 }
 
 /// Run the relay node with the given CLI arguments.
 pub async fn run_relay(args: RelayArgs) -> Result<(), Box<dyn std::error::Error>> {
     let config_str = std::fs::read_to_string(&args.config)
         .map_err(|e| format!("failed to read config file {:?}: {e}", args.config))?;
-    let config: RelayNodeConfig = toml::from_str(&config_str)
-        .map_err(|e| format!("failed to parse relay config: {e}"))?;
+    let config: RelayNodeConfig =
+        toml::from_str(&config_str).map_err(|e| format!("failed to parse relay config: {e}"))?;
 
     init_tracing(args.log_level.as_deref());
 
@@ -83,7 +85,9 @@ pub async fn run_relay(args: RelayArgs) -> Result<(), Box<dyn std::error::Error>
         shutdown_signal.cancel();
     });
 
-    crate::relay::run(config, shutdown).await.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+    crate::relay::run(config, shutdown)
+        .await
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
 }
 
 async fn shutdown_signal_handler() {

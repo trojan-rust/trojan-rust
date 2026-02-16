@@ -55,7 +55,8 @@ pub async fn run_with_shutdown(
         .parse()
         .map_err(|_| ServerError::Config("invalid listen address".into()))?;
 
-    let fallback_addr = resolve_sockaddr(&config.server.fallback, config.server.tcp.prefer_ipv4).await?;
+    let fallback_addr =
+        resolve_sockaddr(&config.server.fallback, config.server.tcp.prefer_ipv4).await?;
 
     // Initialize fallback connection pool if configured
     let fallback_pool: Option<Arc<ConnectionPool>> =
@@ -147,17 +148,17 @@ pub async fn run_with_shutdown(
     // Spawn background rule update task for HTTP providers
     #[cfg(feature = "rules")]
     if let Some(ref hot_engine) = rule_engine
-        && crate::rules::has_http_providers(&config.server) {
-            let interval_secs = crate::rules::http_update_interval(&config.server)
-                .unwrap_or(3600); // default: 1 hour
-            let engine_ref = hot_engine.clone();
-            let server_cfg = config.server.clone();
-            let update_shutdown = shutdown.clone();
-            info!(interval_secs, "starting background rule update task");
-            tokio::spawn(async move {
-                rule_update_loop(engine_ref, server_cfg, interval_secs, update_shutdown).await;
-            });
-        }
+        && crate::rules::has_http_providers(&config.server)
+    {
+        let interval_secs = crate::rules::http_update_interval(&config.server).unwrap_or(3600); // default: 1 hour
+        let engine_ref = hot_engine.clone();
+        let server_cfg = config.server.clone();
+        let update_shutdown = shutdown.clone();
+        info!(interval_secs, "starting background rule update task");
+        tokio::spawn(async move {
+            rule_update_loop(engine_ref, server_cfg, interval_secs, update_shutdown).await;
+        });
+    }
 
     // Build outbound connectors from config
     #[cfg(feature = "rules")]
@@ -170,9 +171,7 @@ pub async fn run_with_shutdown(
                     map.insert(name.clone(), Arc::new(outbound));
                 }
                 Err(e) => {
-                    return Err(ServerError::Config(format!(
-                        "outbound '{name}': {e}"
-                    )));
+                    return Err(ServerError::Config(format!("outbound '{name}': {e}")));
                 }
             }
         }
@@ -582,9 +581,11 @@ async fn load_geoip_databases(
     let metrics_geoip = if let Some(cfg) = config.metrics.geoip.as_ref() {
         let result = load_or_share(cfg, &mut loaded).await;
         if let Some(ref db) = result
-            && cfg.auto_update && cfg.path.is_none() {
-                auto_update_configs.push((cfg.clone(), db.clone()));
-            }
+            && cfg.auto_update
+            && cfg.path.is_none()
+        {
+            auto_update_configs.push((cfg.clone(), db.clone()));
+        }
         result
     } else {
         server_geoip.clone() // fallback to server's GeoIP
@@ -595,9 +596,11 @@ async fn load_geoip_databases(
     let analytics_geoip = if let Some(cfg) = config.analytics.geoip.as_ref() {
         let result = load_or_share(cfg, &mut loaded).await;
         if let Some(ref db) = result
-            && cfg.auto_update && cfg.path.is_none() {
-                auto_update_configs.push((cfg.clone(), db.clone()));
-            }
+            && cfg.auto_update
+            && cfg.path.is_none()
+        {
+            auto_update_configs.push((cfg.clone(), db.clone()));
+        }
         result
     } else {
         None

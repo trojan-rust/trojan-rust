@@ -203,9 +203,7 @@ where
                     if let Some(ref engine) = state.rule_engine {
                         let action = {
                             let domain = match &req.address.host {
-                                trojan_proto::HostRef::Domain(d) => {
-                                    std::str::from_utf8(d).ok()
-                                }
+                                trojan_proto::HostRef::Domain(d) => std::str::from_utf8(d).ok(),
                                 _ => None,
                             };
                             let dest_ip = match &req.address.host {
@@ -228,7 +226,10 @@ where
                             // Per Sukka's analysis: only resolve DNS for IP-based rules
                             // when necessary to preserve rule order. Domain-only matches
                             // before any IP rule should avoid DNS entirely.
-                            if ctx.dest_ip.is_none() && ctx.domain.is_some() && engine.has_ip_rules() {
+                            if ctx.dest_ip.is_none()
+                                && ctx.domain.is_some()
+                                && engine.has_ip_rules()
+                            {
                                 // Try lazy match first — returns Some(action) if a
                                 // domain rule matched before any IP rule, None if DNS
                                 // resolution is needed.
@@ -275,7 +276,12 @@ where
                                         record_connect_request();
                                         let payload = &buf[req.header_len..];
                                         return handle_connect_via_outbound(
-                                            stream, req.address, payload, outbound.clone(), state, peer,
+                                            stream,
+                                            req.address,
+                                            payload,
+                                            outbound.clone(),
+                                            state,
+                                            peer,
                                         )
                                         .await;
                                     }
@@ -352,7 +358,12 @@ where
 
     let connect_start = tokio::time::Instant::now();
     let maybe_outbound_stream = outbound
-        .connect(&address, &state.tcp_config, state.tcp_send_buffer, state.tcp_recv_buffer)
+        .connect(
+            &address,
+            &state.tcp_config,
+            state.tcp_send_buffer,
+            state.tcp_recv_buffer,
+        )
         .await?;
     record_target_connect_duration(connect_start.elapsed().as_secs_f64());
 

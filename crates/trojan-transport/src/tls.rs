@@ -46,10 +46,9 @@ impl TransportAcceptor for TlsTransportAcceptor {
     ) -> Pin<Box<dyn Future<Output = Result<Self::Stream, TransportError>> + Send + '_>> {
         let acceptor = self.acceptor.clone();
         Box::pin(async move {
-            acceptor
-                .accept(tcp)
-                .await
-                .map_err(|e| TransportError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+            acceptor.accept(tcp).await.map_err(|e| {
+                TransportError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            })
         })
     }
 }
@@ -137,8 +136,8 @@ fn build_insecure_client_tls_config() -> rustls::ClientConfig {
 }
 
 /// Generate a self-signed certificate in memory using rcgen.
-fn generate_self_signed() -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), TransportError>
-{
+fn generate_self_signed()
+-> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), TransportError> {
     let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
         .map_err(|e| TransportError::CertGeneration(e.to_string()))?;
 

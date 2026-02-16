@@ -120,10 +120,11 @@ fn add_routing_rules(
                 }
                 _ => {
                     // Inline rule: parse type + value
-                    let value = rule_cfg
-                        .value
-                        .as_deref()
-                        .ok_or_else(|| RulesError::Parse(format!("missing value for inline rule type: {rule_type}")))?;
+                    let value = rule_cfg.value.as_deref().ok_or_else(|| {
+                        RulesError::Parse(format!(
+                            "missing value for inline rule type: {rule_type}"
+                        ))
+                    })?;
                     let parsed = parse_inline_rule(rule_type, value)?;
                     builder.add_inline_rule(parsed, action);
                 }
@@ -145,7 +146,9 @@ fn load_provider_rules(
     match cfg.source.as_str() {
         "file" => {
             let path = cfg.path.as_deref().ok_or_else(|| {
-                RulesError::Provider(format!("rule-provider '{name}': path is required for file source"))
+                RulesError::Provider(format!(
+                    "rule-provider '{name}': path is required for file source"
+                ))
             })?;
             trojan_rules::provider::FileProvider::load(
                 Path::new(path),
@@ -157,7 +160,9 @@ fn load_provider_rules(
             // At startup, try to load from cache synchronously.
             // The background updater will fetch the latest version asynchronously.
             let url = cfg.url.as_deref().ok_or_else(|| {
-                RulesError::Provider(format!("rule-provider '{name}': url is required for http source"))
+                RulesError::Provider(format!(
+                    "rule-provider '{name}': url is required for http source"
+                ))
             })?;
             let cache_path = cfg.path.as_ref().map(std::path::PathBuf::from);
             let provider = trojan_rules::provider::HttpProvider::new(
@@ -191,7 +196,9 @@ async fn load_provider_rules_async(
     match cfg.source.as_str() {
         "file" => {
             let path = cfg.path.as_deref().ok_or_else(|| {
-                RulesError::Provider(format!("rule-provider '{name}': path is required for file source"))
+                RulesError::Provider(format!(
+                    "rule-provider '{name}': path is required for file source"
+                ))
             })?;
             trojan_rules::provider::FileProvider::load(
                 Path::new(path),
@@ -201,7 +208,9 @@ async fn load_provider_rules_async(
         }
         "http" => {
             let url = cfg.url.as_deref().ok_or_else(|| {
-                RulesError::Provider(format!("rule-provider '{name}': url is required for http source"))
+                RulesError::Provider(format!(
+                    "rule-provider '{name}': url is required for http source"
+                ))
             })?;
             let cache_path = cfg.path.as_ref().map(std::path::PathBuf::from);
             let provider = trojan_rules::provider::HttpProvider::new(
@@ -222,10 +231,7 @@ async fn load_provider_rules_async(
 
 /// Returns true if any rule provider uses HTTP source.
 pub fn has_http_providers(config: &ServerConfig) -> bool {
-    config
-        .rule_providers
-        .values()
-        .any(|p| p.source == "http")
+    config.rule_providers.values().any(|p| p.source == "http")
 }
 
 /// Get the minimum update interval from HTTP providers (in seconds).

@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{debug, error, info, Instrument, info_span};
+use tracing::{Instrument, debug, error, info, info_span};
 
 use trojan_lb::LoadBalancer;
 
@@ -26,15 +26,18 @@ use crate::config::{ChainConfig, EntryConfig, TimeoutConfig, TransportType};
 use crate::error::RelayError;
 use crate::handshake::{self, HandshakeMetadata};
 use crate::router::Router;
-use crate::transport::{TransportConnector, TransportStream};
 use crate::transport::plain::PlainTransportConnector;
 use crate::transport::tls::TlsTransportConnector;
 use crate::transport::ws::WsTransportConnector;
+use crate::transport::{TransportConnector, TransportStream};
 
 use trojan_core::io::{NoOpMetrics, relay_bidirectional};
 
 /// Run the entry node server.
-pub async fn run(config: EntryConfig, shutdown: tokio_util::sync::CancellationToken) -> Result<(), RelayError> {
+pub async fn run(
+    config: EntryConfig,
+    shutdown: tokio_util::sync::CancellationToken,
+) -> Result<(), RelayError> {
     let router = Arc::new(Router::new(&config)?);
     let timeouts = config.timeouts.clone();
 
@@ -68,9 +71,17 @@ pub async fn run(config: EntryConfig, shutdown: tokio_util::sync::CancellationTo
 
         handles.push(tokio::spawn(async move {
             run_listener(
-                listener, listen_addr, &rule_name, router,
-                base_tls_connector, plain_connector, ws_connector, timeouts, shutdown,
-            ).await
+                listener,
+                listen_addr,
+                &rule_name,
+                router,
+                base_tls_connector,
+                plain_connector,
+                ws_connector,
+                timeouts,
+                shutdown,
+            )
+            .await
         }));
     }
 
@@ -195,7 +206,14 @@ async fn handle_entry_connection(
             .map_err(|_| RelayError::ConnectTimeout(selected_dest.clone()))??;
 
             debug!("tunnel established, starting relay");
-            relay_bidirectional(client_stream, tunnel, idle_timeout, relay_buffer_size, &NoOpMetrics).await
+            relay_bidirectional(
+                client_stream,
+                tunnel,
+                idle_timeout,
+                relay_buffer_size,
+                &NoOpMetrics,
+            )
+            .await
         }
         TransportType::Plain => {
             let tunnel = tokio::time::timeout(
@@ -206,7 +224,14 @@ async fn handle_entry_connection(
             .map_err(|_| RelayError::ConnectTimeout(selected_dest.clone()))??;
 
             debug!("tunnel established, starting relay");
-            relay_bidirectional(client_stream, tunnel, idle_timeout, relay_buffer_size, &NoOpMetrics).await
+            relay_bidirectional(
+                client_stream,
+                tunnel,
+                idle_timeout,
+                relay_buffer_size,
+                &NoOpMetrics,
+            )
+            .await
         }
         TransportType::Ws => {
             let tunnel = tokio::time::timeout(
@@ -217,7 +242,14 @@ async fn handle_entry_connection(
             .map_err(|_| RelayError::ConnectTimeout(selected_dest.clone()))??;
 
             debug!("tunnel established, starting relay");
-            relay_bidirectional(client_stream, tunnel, idle_timeout, relay_buffer_size, &NoOpMetrics).await
+            relay_bidirectional(
+                client_stream,
+                tunnel,
+                idle_timeout,
+                relay_buffer_size,
+                &NoOpMetrics,
+            )
+            .await
         }
     };
 
@@ -225,10 +257,11 @@ async fn handle_entry_connection(
     // Note: errors from relay_bidirectional (post-connection) do NOT mark unhealthy —
     // the connection was successfully established.
     if let Err(ref e) = build_result
-        && lb.is_failover() {
-            debug!(dest = %selected_dest, error = %e, "marking backend unhealthy");
-            lb.mark_unhealthy(&selected_dest);
-        }
+        && lb.is_failover()
+    {
+        debug!(dest = %selected_dest, error = %e, "marking backend unhealthy");
+        lb.mark_unhealthy(&selected_dest);
+    }
 
     build_result?;
     Ok(())
@@ -287,12 +320,9 @@ where
         let node = &chain.nodes[i];
         let (target, meta) = next_hop_info(chain, dest, i);
 
-        let password = node
-            .password
-            .as_deref()
-            .ok_or_else(|| {
-                RelayError::Config(format!("chain node {} missing password", node.addr))
-            })?;
+        let password = node.password.as_deref().ok_or_else(|| {
+            RelayError::Config(format!("chain node {} missing password", node.addr))
+        })?;
 
         handshake::write_handshake(&mut stream, password, &target, &meta).await?;
     }

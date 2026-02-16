@@ -214,10 +214,18 @@ mod tests {
 
         // Both should match the same domains
         for domain in &["apple.com", "store.apple.com", "cdn.store.apple.com"] {
-            assert_eq!(m1.matches(domain), m2.matches(domain), "mismatch for {domain}");
+            assert_eq!(
+                m1.matches(domain),
+                m2.matches(domain),
+                "mismatch for {domain}"
+            );
         }
         for domain in &["notapple.com", "com"] {
-            assert_eq!(m1.matches(domain), m2.matches(domain), "mismatch for {domain}");
+            assert_eq!(
+                m1.matches(domain),
+                m2.matches(domain),
+                "mismatch for {domain}"
+            );
         }
     }
 }

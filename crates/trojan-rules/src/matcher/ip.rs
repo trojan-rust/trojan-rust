@@ -95,16 +95,9 @@ mod tests {
 
     #[test]
     fn cidr_v6_contains() {
-        let m = CidrMatcher::new(
-            vec![],
-            vec!["2001:db8::/32".parse().unwrap()],
-        );
-        assert!(m.contains(IpAddr::V6(Ipv6Addr::new(
-            0x2001, 0xdb8, 0, 0, 0, 0, 0, 1
-        ))));
-        assert!(!m.contains(IpAddr::V6(Ipv6Addr::new(
-            0x2001, 0xdb9, 0, 0, 0, 0, 0, 1
-        ))));
+        let m = CidrMatcher::new(vec![], vec!["2001:db8::/32".parse().unwrap()]);
+        assert!(m.contains(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1))));
+        assert!(!m.contains(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb9, 0, 0, 0, 0, 0, 1))));
     }
 
     #[test]

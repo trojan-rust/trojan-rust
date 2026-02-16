@@ -11,8 +11,8 @@ pub mod guard;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -129,16 +129,14 @@ pub struct LoadBalancer {
 
 impl LoadBalancer {
     /// Create a new load balancer with the given addresses and strategy.
-    pub fn new(
-        addrs: Vec<String>,
-        strategy: LbStrategy,
-        failover_cooldown: Duration,
-    ) -> Self {
+    pub fn new(addrs: Vec<String>, strategy: LbStrategy, failover_cooldown: Duration) -> Self {
         let policy: Box<dyn LbPolicy> = match &strategy {
             LbStrategy::RoundRobin => Box::new(RoundRobin::new()),
             LbStrategy::IpHash => Box::new(IpHash),
             LbStrategy::LeastConnections => Box::new(LeastConnections),
-            LbStrategy::Failover => Box::new(Failover { cooldown: failover_cooldown }),
+            LbStrategy::Failover => Box::new(Failover {
+                cooldown: failover_cooldown,
+            }),
         };
         Self::with_policy(addrs, policy, strategy, failover_cooldown)
     }
@@ -150,7 +148,10 @@ impl LoadBalancer {
         strategy: LbStrategy,
         failover_cooldown: Duration,
     ) -> Self {
-        let backends = addrs.into_iter().map(|a| Arc::new(Backend::new(a))).collect();
+        let backends = addrs
+            .into_iter()
+            .map(|a| Arc::new(Backend::new(a)))
+            .collect();
         Self {
             backends,
             policy,
@@ -165,7 +166,9 @@ impl LoadBalancer {
             return Err(LbError::NoBackends);
         }
 
-        let idx = self.policy.select(&self.backends, peer_ip)
+        let idx = self
+            .policy
+            .select(&self.backends, peer_ip)
             .ok_or(LbError::NoHealthyBackend)?;
 
         let backend = &self.backends[idx];
@@ -328,11 +331,12 @@ impl LbPolicy for Failover {
             // Check cooldown: if enough time has passed, consider it recovered.
             if let Ok(guard) = b.last_failure.try_read()
                 && let Some(when) = *guard
-                    && when.elapsed() >= self.cooldown {
-                        // Auto-recover
-                        b.healthy.store(true, Ordering::Relaxed);
-                        return Some(i);
-                    }
+                && when.elapsed() >= self.cooldown
+            {
+                // Auto-recover
+                b.healthy.store(true, Ordering::Relaxed);
+                return Some(i);
+            }
         }
 
         // All backends unhealthy and within cooldown — return first as last resort.
@@ -363,10 +367,17 @@ mod tests {
         let results: Vec<String> = (0..6)
             .map(|_| lb.select(localhost()).unwrap().addr)
             .collect();
-        assert_eq!(results, vec![
-            "backend-0:443", "backend-1:443", "backend-2:443",
-            "backend-0:443", "backend-1:443", "backend-2:443",
-        ]);
+        assert_eq!(
+            results,
+            vec![
+                "backend-0:443",
+                "backend-1:443",
+                "backend-2:443",
+                "backend-0:443",
+                "backend-1:443",
+                "backend-2:443",
+            ]
+        );
     }
 
     #[test]

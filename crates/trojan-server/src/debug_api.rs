@@ -96,8 +96,10 @@ async fn handle_match(
     // Warn when the result may differ from live routing: live traffic
     // resolves DNS lazily, so domain-only queries here may skip IP rules.
     let note = if q.domain.is_some() && q.dest_ip.is_none() {
-        Some("domain-only query: IP-CIDR and GEOIP rules are not evaluated; \
-              provide dest_ip for accurate results")
+        Some(
+            "domain-only query: IP-CIDR and GEOIP rules are not evaluated; \
+              provide dest_ip for accurate results",
+        )
     } else {
         None
     };

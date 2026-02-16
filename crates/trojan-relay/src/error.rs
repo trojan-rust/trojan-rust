@@ -42,7 +42,9 @@ impl From<trojan_transport::error::TransportError> for RelayError {
             trojan_transport::error::TransportError::Io(e) => RelayError::Io(e),
             trojan_transport::error::TransportError::Tls(e) => RelayError::Tls(e),
             trojan_transport::error::TransportError::Config(s) => RelayError::Config(s),
-            trojan_transport::error::TransportError::CertGeneration(s) => RelayError::CertGeneration(s),
+            trojan_transport::error::TransportError::CertGeneration(s) => {
+                RelayError::CertGeneration(s)
+            }
         }
     }
 }

@@ -48,24 +48,13 @@ impl Action {
 #[derive(Debug)]
 pub(crate) enum EngineRule {
     /// Match against a named rule-set.
-    RuleSet {
-        name: String,
-        action: Action,
-    },
+    RuleSet { name: String, action: Action },
     /// Match against a GEOIP country code.
-    GeoIp {
-        code: String,
-        action: Action,
-    },
+    GeoIp { code: String, action: Action },
     /// Inline single rule (type + value).
-    Inline {
-        rule: ParsedRule,
-        action: Action,
-    },
+    Inline { rule: ParsedRule, action: Action },
     /// Final catch-all rule.
-    Final {
-        action: Action,
-    },
+    Final { action: Action },
 }
 
 /// Context for matching a request against rules.

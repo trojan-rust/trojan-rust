@@ -294,7 +294,11 @@ async fn init_database(url: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Parse traffic size string (e.g., "10GB", "500MB") to bytes.
-#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation
+)]
 fn parse_traffic(s: &str) -> Result<i64, Box<dyn std::error::Error>> {
     let s = s.trim().to_uppercase();
     if s == "0" || s.is_empty() {
@@ -321,7 +325,11 @@ fn parse_traffic(s: &str) -> Result<i64, Box<dyn std::error::Error>> {
 }
 
 /// Parse expiration string to unix timestamp.
-#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation
+)]
 fn parse_expires(s: &str) -> Result<i64, Box<dyn std::error::Error>> {
     let s = s.trim();
     if s == "0" || s.is_empty() {
@@ -367,7 +375,11 @@ fn parse_expires(s: &str) -> Result<i64, Box<dyn std::error::Error>> {
 }
 
 /// Simple date parsing (YYYY-MM-DD) without chrono dependency.
-#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation
+)]
 fn chrono_parse_date(s: &str) -> Result<i64, Box<dyn std::error::Error>> {
     let parts: Vec<&str> = s.split('-').collect();
     if parts.len() != 3 {

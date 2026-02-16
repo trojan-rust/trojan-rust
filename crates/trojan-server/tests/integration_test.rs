@@ -229,7 +229,10 @@ impl TestServer {
                 users: vec![],
             },
             websocket: WebSocketConfig::default(),
-            metrics: MetricsConfig { listen: None, ..Default::default() },
+            metrics: MetricsConfig {
+                listen: None,
+                ..Default::default()
+            },
             analytics: AnalyticsConfig::default(),
             logging: LoggingConfig {
                 level: Some("warn".to_string()),
@@ -480,7 +483,10 @@ async fn test_graceful_shutdown() {
             users: vec![],
         },
         websocket: WebSocketConfig::default(),
-        metrics: MetricsConfig { listen: None, ..Default::default() },
+        metrics: MetricsConfig {
+            listen: None,
+            ..Default::default()
+        },
         analytics: AnalyticsConfig::default(),
         logging: LoggingConfig {
             level: Some("warn".to_string()),
@@ -640,7 +646,10 @@ async fn test_max_connections_limit() {
             users: vec![],
         },
         websocket: WebSocketConfig::default(),
-        metrics: MetricsConfig { listen: None, ..Default::default() },
+        metrics: MetricsConfig {
+            listen: None,
+            ..Default::default()
+        },
         analytics: AnalyticsConfig::default(),
         logging: LoggingConfig {
             level: Some("warn".to_string()),
@@ -788,7 +797,10 @@ async fn test_rate_limiting() {
             users: vec![],
         },
         websocket: WebSocketConfig::default(),
-        metrics: MetricsConfig { listen: None, ..Default::default() },
+        metrics: MetricsConfig {
+            listen: None,
+            ..Default::default()
+        },
         analytics: AnalyticsConfig::default(),
         logging: LoggingConfig {
             level: Some("warn".to_string()),
@@ -919,7 +931,10 @@ async fn test_tls13_only() {
             users: vec![],
         },
         websocket: WebSocketConfig::default(),
-        metrics: MetricsConfig { listen: None, ..Default::default() },
+        metrics: MetricsConfig {
+            listen: None,
+            ..Default::default()
+        },
         analytics: AnalyticsConfig::default(),
         logging: LoggingConfig {
             level: Some("warn".to_string()),
@@ -1114,7 +1129,10 @@ async fn test_udp_idle_timeout() {
             users: vec![],
         },
         websocket: WebSocketConfig::default(),
-        metrics: MetricsConfig { listen: None, ..Default::default() },
+        metrics: MetricsConfig {
+            listen: None,
+            ..Default::default()
+        },
         analytics: AnalyticsConfig::default(),
         logging: LoggingConfig {
             level: Some("warn".to_string()),
@@ -1354,7 +1372,10 @@ async fn test_tcp_idle_timeout() {
             users: vec![],
         },
         websocket: WebSocketConfig::default(),
-        metrics: MetricsConfig { listen: None, ..Default::default() },
+        metrics: MetricsConfig {
+            listen: None,
+            ..Default::default()
+        },
         analytics: AnalyticsConfig::default(),
         logging: LoggingConfig {
             level: Some("warn".to_string()),
@@ -1621,7 +1642,10 @@ mod rules_tests {
                     users: vec![],
                 },
                 websocket: WebSocketConfig::default(),
-                metrics: MetricsConfig { listen: None, ..Default::default() },
+                metrics: MetricsConfig {
+                    listen: None,
+                    ..Default::default()
+                },
                 analytics: AnalyticsConfig::default(),
                 logging: LoggingConfig {
                     level: Some("debug".to_string()),
@@ -1750,15 +1774,12 @@ mod rules_tests {
             rule("FINAL", None, "DIRECT"),
         ];
 
-        let server = RulesTestServer::start(
-            fallback.addr,
-            HashMap::new(),
-            rules,
-            HashMap::new(),
-        )
-        .await;
+        let server =
+            RulesTestServer::start(fallback.addr, HashMap::new(), rules, HashMap::new()).await;
 
-        let mut tls_stream = server.connect_to_domain("blocked.example.com", 443, b"").await;
+        let mut tls_stream = server
+            .connect_to_domain("blocked.example.com", 443, b"")
+            .await;
 
         assert_connection_rejected(&mut tls_stream, "REJECT rule should close connection").await;
 
@@ -1776,13 +1797,8 @@ mod rules_tests {
             rule("FINAL", None, "REJECT"),
         ];
 
-        let server = RulesTestServer::start(
-            fallback.addr,
-            HashMap::new(),
-            rules,
-            HashMap::new(),
-        )
-        .await;
+        let server =
+            RulesTestServer::start(fallback.addr, HashMap::new(), rules, HashMap::new()).await;
 
         let mut tls_stream = server.connect_to_ipv4(echo.addr, b"Hello Rules!").await;
 
@@ -1792,7 +1808,11 @@ mod rules_tests {
             .expect("read timeout")
             .unwrap();
 
-        assert_eq!(&buf[..n], b"Hello Rules!", "IP-CIDR DIRECT should relay traffic");
+        assert_eq!(
+            &buf[..n],
+            b"Hello Rules!",
+            "IP-CIDR DIRECT should relay traffic"
+        );
 
         server.stop().await;
     }
@@ -1808,13 +1828,8 @@ mod rules_tests {
             rule("FINAL", None, "REJECT"),
         ];
 
-        let server = RulesTestServer::start(
-            fallback.addr,
-            HashMap::new(),
-            rules,
-            HashMap::new(),
-        )
-        .await;
+        let server =
+            RulesTestServer::start(fallback.addr, HashMap::new(), rules, HashMap::new()).await;
 
         let mut tls_stream = server.connect_to_ipv4(echo.addr, b"port match").await;
 
@@ -1824,7 +1839,11 @@ mod rules_tests {
             .expect("read timeout")
             .unwrap();
 
-        assert_eq!(&buf[..n], b"port match", "DST-PORT DIRECT should relay traffic");
+        assert_eq!(
+            &buf[..n],
+            b"port match",
+            "DST-PORT DIRECT should relay traffic"
+        );
 
         server.stop().await;
     }
@@ -1837,13 +1856,8 @@ mod rules_tests {
 
         let rules = vec![rule("FINAL", None, "DIRECT")];
 
-        let server = RulesTestServer::start(
-            fallback.addr,
-            HashMap::new(),
-            rules,
-            HashMap::new(),
-        )
-        .await;
+        let server =
+            RulesTestServer::start(fallback.addr, HashMap::new(), rules, HashMap::new()).await;
 
         let mut tls_stream = server.connect_to_ipv4(echo.addr, b"final").await;
 
@@ -1881,13 +1895,7 @@ mod rules_tests {
             rule("FINAL", None, "REJECT"),
         ];
 
-        let server = RulesTestServer::start(
-            fallback.addr,
-            outbounds,
-            rules,
-            HashMap::new(),
-        )
-        .await;
+        let server = RulesTestServer::start(fallback.addr, outbounds, rules, HashMap::new()).await;
 
         let mut tls_stream = server.connect_to_ipv4(echo.addr, b"outbound").await;
 
@@ -1898,7 +1906,8 @@ mod rules_tests {
             .unwrap();
 
         assert_eq!(
-            &buf[..n], b"outbound",
+            &buf[..n],
+            b"outbound",
             "Named outbound 'direct' should relay traffic"
         );
 
@@ -1927,18 +1936,16 @@ mod rules_tests {
             rule("FINAL", None, "DIRECT"),
         ];
 
-        let server = RulesTestServer::start(
-            fallback.addr,
-            outbounds,
-            rules,
-            HashMap::new(),
-        )
-        .await;
+        let server = RulesTestServer::start(fallback.addr, outbounds, rules, HashMap::new()).await;
 
         let echo = MockEchoServer::start();
         let mut tls_stream = server.connect_to_ipv4(echo.addr, b"should reject").await;
 
-        assert_connection_rejected(&mut tls_stream, "Named reject outbound should close connection").await;
+        assert_connection_rejected(
+            &mut tls_stream,
+            "Named reject outbound should close connection",
+        )
+        .await;
 
         server.stop().await;
     }
@@ -1973,20 +1980,19 @@ mod rules_tests {
             rule("FINAL", None, "DIRECT"),
         ];
 
-        let server = RulesTestServer::start(
-            fallback.addr,
-            HashMap::new(),
-            rules,
-            rule_providers,
-        )
-        .await;
+        let server =
+            RulesTestServer::start(fallback.addr, HashMap::new(), rules, rule_providers).await;
 
         // Connection to blocked domain should be rejected
         let mut tls_stream = server
             .connect_to_domain("file-blocked.example.com", 443, b"")
             .await;
 
-        assert_connection_rejected(&mut tls_stream, "File provider REJECT should close connection").await;
+        assert_connection_rejected(
+            &mut tls_stream,
+            "File provider REJECT should close connection",
+        )
+        .await;
 
         // Connection to echo server (IP) should be relayed via DIRECT
         let mut tls_stream2 = server.connect_to_ipv4(echo.addr, b"allowed").await;
@@ -2012,20 +2018,17 @@ mod rules_tests {
             rule("FINAL", None, "DIRECT"),
         ];
 
-        let server = RulesTestServer::start(
-            fallback.addr,
-            HashMap::new(),
-            rules,
-            HashMap::new(),
-        )
-        .await;
+        let server =
+            RulesTestServer::start(fallback.addr, HashMap::new(), rules, HashMap::new()).await;
 
         // sub.blocked.com should match DOMAIN-SUFFIX
-        let mut tls_stream = server
-            .connect_to_domain("sub.blocked.com", 443, b"")
-            .await;
+        let mut tls_stream = server.connect_to_domain("sub.blocked.com", 443, b"").await;
 
-        assert_connection_rejected(&mut tls_stream, "DOMAIN-SUFFIX REJECT should close connection").await;
+        assert_connection_rejected(
+            &mut tls_stream,
+            "DOMAIN-SUFFIX REJECT should close connection",
+        )
+        .await;
 
         server.stop().await;
     }
@@ -2040,19 +2043,18 @@ mod rules_tests {
             rule("FINAL", None, "DIRECT"),
         ];
 
-        let server = RulesTestServer::start(
-            fallback.addr,
-            HashMap::new(),
-            rules,
-            HashMap::new(),
-        )
-        .await;
+        let server =
+            RulesTestServer::start(fallback.addr, HashMap::new(), rules, HashMap::new()).await;
 
         let mut tls_stream = server
             .connect_to_domain("tracker.ads.example.com", 443, b"")
             .await;
 
-        assert_connection_rejected(&mut tls_stream, "DOMAIN-KEYWORD REJECT should close connection").await;
+        assert_connection_rejected(
+            &mut tls_stream,
+            "DOMAIN-KEYWORD REJECT should close connection",
+        )
+        .await;
 
         server.stop().await;
     }
@@ -2071,13 +2073,8 @@ mod rules_tests {
             rule("FINAL", None, "REJECT"),
         ];
 
-        let server = RulesTestServer::start(
-            fallback.addr,
-            HashMap::new(),
-            rules,
-            HashMap::new(),
-        )
-        .await;
+        let server =
+            RulesTestServer::start(fallback.addr, HashMap::new(), rules, HashMap::new()).await;
 
         let mut tls_stream = server.connect_to_ipv4(echo.addr, b"order").await;
 
@@ -2088,7 +2085,8 @@ mod rules_tests {
             .unwrap();
 
         assert_eq!(
-            &buf[..n], b"order",
+            &buf[..n],
+            b"order",
             "IP-CIDR rule should match before FINAL REJECT"
         );
 

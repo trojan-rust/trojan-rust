@@ -174,7 +174,10 @@ impl TestServer {
                 users: vec![],
             },
             websocket: WebSocketConfig::default(),
-            metrics: MetricsConfig { listen: None, ..Default::default() },
+            metrics: MetricsConfig {
+                listen: None,
+                ..Default::default()
+            },
             analytics: AnalyticsConfig::default(),
             logging: LoggingConfig {
                 level: Some("debug".to_string()),

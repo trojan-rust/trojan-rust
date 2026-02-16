@@ -24,8 +24,7 @@ pub struct RateLimiter {
     shutdown: Arc<Notify>,
 }
 
-#[derive(Clone)]
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct RateLimitEntry {
     count: u32,
     window_start: Instant,

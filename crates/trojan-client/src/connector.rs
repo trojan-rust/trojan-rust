@@ -115,9 +115,10 @@ pub fn resolve_sni(
 
 fn extract_host(remote: &str) -> String {
     if let Some(stripped) = remote.strip_prefix('[')
-        && let Some(end) = stripped.find(']') {
-            return stripped[..end].to_string();
-        }
+        && let Some(end) = stripped.find(']')
+    {
+        return stripped[..end].to_string();
+    }
 
     if remote.chars().filter(|&c| c == ':').count() == 1 {
         return remote
@@ -203,7 +204,11 @@ impl rustls::client::danger::ServerCertVerifier for NoVerifier {
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
         rustls::crypto::CryptoProvider::get_default()
-            .map(|provider| provider.signature_verification_algorithms.supported_schemes())
+            .map(|provider| {
+                provider
+                    .signature_verification_algorithms
+                    .supported_schemes()
+            })
             .unwrap_or_default()
     }
 }

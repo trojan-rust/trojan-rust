@@ -7,9 +7,9 @@ use arc_swap::ArcSwap;
 use tracing::debug;
 
 use crate::error::RulesError;
-use crate::matcher::{CidrMatcher, DomainMatcher, KeywordMatcher};
 #[cfg(feature = "geoip")]
 use crate::matcher::GeoipMatcher;
+use crate::matcher::{CidrMatcher, DomainMatcher, KeywordMatcher};
 use crate::rule::{Action, EngineRule, MatchContext, ParsedRule};
 
 /// Result of a lazy match attempt that may require DNS resolution.
@@ -78,16 +78,18 @@ impl CompiledRuleSet {
                 return true;
             }
             if let Some(ref kw) = self.keyword_matcher
-                && kw.matches(domain) {
-                    return true;
-                }
+                && kw.matches(domain)
+            {
+                return true;
+            }
         }
 
         // Try IP matches
         if let Some(ip) = ctx.dest_ip
-            && self.cidr_matcher.contains(ip) {
-                return true;
-            }
+            && self.cidr_matcher.contains(ip)
+        {
+            return true;
+        }
 
         // Try port matches
         if !self.dst_ports.is_empty() && self.dst_ports.contains(&ctx.dest_port) {
@@ -124,9 +126,10 @@ impl RuleEngine {
             match rule {
                 EngineRule::RuleSet { name, action } => {
                     if let Some(compiled) = self.compiled_sets.get(name)
-                        && compiled.matches(ctx) {
-                            return action;
-                        }
+                        && compiled.matches(ctx)
+                    {
+                        return action;
+                    }
                 }
                 EngineRule::GeoIp { code, action } => {
                     #[cfg(feature = "geoip")]
@@ -135,9 +138,10 @@ impl RuleEngine {
                         // available.  Falling back to src_ip would mis-route
                         // domain requests based on the *client's* country.
                         if let Some(ip) = ctx.dest_ip
-                            && geoip.matches(ip, code) {
-                                return action;
-                            }
+                            && geoip.matches(ip, code)
+                        {
+                            return action;
+                        }
                     }
                     #[cfg(not(feature = "geoip"))]
                     {
@@ -172,9 +176,9 @@ impl RuleEngine {
                                     .keyword_matcher
                                     .as_ref()
                                     .is_some_and(|kw| kw.matches(domain)))
-                            {
-                                return MatchDecision::Matched(action);
-                            }
+                        {
+                            return MatchDecision::Matched(action);
+                        }
 
                         // DST-PORT and SRC-IP-CIDR don't need DNS.
                         if !compiled.dst_ports.is_empty()
@@ -191,9 +195,10 @@ impl RuleEngine {
                             return MatchDecision::NeedIp;
                         }
                         if let Some(ip) = ctx.dest_ip
-                            && compiled.cidr_matcher.contains(ip) {
-                                return MatchDecision::Matched(action);
-                            }
+                            && compiled.cidr_matcher.contains(ip)
+                        {
+                            return MatchDecision::Matched(action);
+                        }
                     }
                 }
                 EngineRule::GeoIp { code, action } => {
@@ -203,9 +208,10 @@ impl RuleEngine {
                             return MatchDecision::NeedIp;
                         }
                         if let Some(ip) = ctx.dest_ip
-                            && geoip.matches(ip, code) {
-                                return MatchDecision::Matched(action);
-                            }
+                            && geoip.matches(ip, code)
+                        {
+                            return MatchDecision::Matched(action);
+                        }
                     }
                     #[cfg(not(feature = "geoip"))]
                     {
@@ -215,7 +221,10 @@ impl RuleEngine {
                 }
                 EngineRule::Inline { rule, action } => match rule {
                     ParsedRule::Domain(d) => {
-                        if ctx.domain.is_some_and(|domain| domain.eq_ignore_ascii_case(d)) {
+                        if ctx
+                            .domain
+                            .is_some_and(|domain| domain.eq_ignore_ascii_case(d))
+                        {
                             return MatchDecision::Matched(action);
                         }
                     }
@@ -409,21 +418,29 @@ impl RuleEngineBuilder {
         // Validate that all rule-set references exist
         for rule in &self.rules {
             if let EngineRule::RuleSet { name, .. } = rule
-                && !self.rule_sets.contains_key(name) {
-                    return Err(RulesError::UnknownRuleSet(name.clone()));
-                }
+                && !self.rule_sets.contains_key(name)
+            {
+                return Err(RulesError::UnknownRuleSet(name.clone()));
+            }
         }
 
         // Warn when GEOIP rules are present but cannot be evaluated
         {
-            let has_geoip_rules = self.rules.iter().any(|r| matches!(r, EngineRule::GeoIp { .. }));
+            let has_geoip_rules = self
+                .rules
+                .iter()
+                .any(|r| matches!(r, EngineRule::GeoIp { .. }));
             if has_geoip_rules {
                 #[cfg(feature = "geoip")]
                 if self.geoip.is_none() {
-                    tracing::warn!("GEOIP rules are configured but no GeoIP database is loaded; they will never match");
+                    tracing::warn!(
+                        "GEOIP rules are configured but no GeoIP database is loaded; they will never match"
+                    );
                 }
                 #[cfg(not(feature = "geoip"))]
-                tracing::warn!("GEOIP rules are configured but the 'geoip' feature is not enabled; they will never match");
+                tracing::warn!(
+                    "GEOIP rules are configured but the 'geoip' feature is not enabled; they will never match"
+                );
             }
         }
 
@@ -609,7 +626,10 @@ mod tests {
     fn rule_order_matters() {
         let mut builder = RuleEngineBuilder::new();
         builder.add_rule_set("block", vec![ParsedRule::Domain("example.com".into())]);
-        builder.add_rule_set("allow", vec![ParsedRule::DomainSuffix("example.com".into())]);
+        builder.add_rule_set(
+            "allow",
+            vec![ParsedRule::DomainSuffix("example.com".into())],
+        );
         builder.add_rule_set_rule("block", Action::Reject);
         builder.add_rule_set_rule("allow", Action::Direct);
         builder.set_final(Action::Outbound("proxy".into()));
@@ -916,7 +936,9 @@ mod tests {
             src_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         };
         match engine.match_request_lazy_ip(&ctx_miss) {
-            MatchDecision::Matched(_) => panic!("should return NeedIp for unmatched port with CIDR"),
+            MatchDecision::Matched(_) => {
+                panic!("should return NeedIp for unmatched port with CIDR")
+            }
             MatchDecision::NeedIp => {}
         }
     }
