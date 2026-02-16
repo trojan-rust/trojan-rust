@@ -78,7 +78,7 @@ where
             match Pin::new(&mut self.ws).poll_next(cx) {
                 Poll::Ready(Some(Ok(msg))) => match msg {
                     Message::Binary(data) => {
-                        self.read_buf = Bytes::from(data);
+                        self.read_buf = data;
                         let to_copy = self.read_buf.len().min(buf.remaining());
                         buf.put_slice(&self.read_buf[..to_copy]);
                         self.read_buf = self.read_buf.slice(to_copy..);
@@ -86,7 +86,7 @@ where
                     }
                     Message::Text(text) => {
                         // Treat text frames as binary data
-                        self.read_buf = Bytes::from(text.into_bytes());
+                        self.read_buf = Bytes::from(text.as_bytes().to_vec());
                         let to_copy = self.read_buf.len().min(buf.remaining());
                         buf.put_slice(&self.read_buf[..to_copy]);
                         self.read_buf = self.read_buf.slice(to_copy..);
@@ -133,7 +133,7 @@ where
         let mut ws = Pin::new(&mut self.ws);
         match ws.as_mut().poll_ready(cx) {
             Poll::Ready(Ok(())) => {
-                if let Err(err) = ws.start_send(Message::Binary(data.to_vec())) {
+                if let Err(err) = ws.start_send(Message::Binary(Bytes::copy_from_slice(data))) {
                     return Poll::Ready(Err(ws_err(err)));
                 }
                 Poll::Ready(Ok(data.len()))
