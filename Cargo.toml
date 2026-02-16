@@ -196,7 +196,7 @@ tempfile = { workspace = true, optional = true }
 
 # Windows-only dependencies for upgrade feature
 [target.'cfg(windows)'.dependencies]
-zip = { version = "2", default-features = false, features = [
+zip = { version = "8", default-features = false, features = [
     "deflate",
 ], optional = true }
 
