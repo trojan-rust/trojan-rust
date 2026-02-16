@@ -61,7 +61,7 @@ trojan-protocol = { version = "0.5.1", path = "crates/trojan-protocol" }
 
 # External dependencies (shared across crates)
 arc-swap = "1"
-bincode = "1"
+bincode = "3"
 async-trait = "0.1"
 axum = "0.8"
 bytes = "1"
@@ -91,7 +91,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
 socket2 = "0.6"
-sysinfo = "0.33"
+sysinfo = "0.38"
 tempfile = "3"
 thiserror = "2"
 time = "0.3"
