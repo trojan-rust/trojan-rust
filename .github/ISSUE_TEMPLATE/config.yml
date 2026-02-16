@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Documentation
-    url: https://github.com/trojan-rs/trojan-rs#readme
+    url: https://github.com/trojan-rust/trojan-rust#readme
     about: Please read the documentation before opening an issue
   - name: Discussions
-    url: https://github.com/trojan-rs/trojan-rs/discussions
+    url: https://github.com/trojan-rust/trojan-rust/discussions
     about: Ask questions and discuss ideas

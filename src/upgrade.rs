@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use tar::Archive;
 use tokio::io::AsyncWriteExt;
 
-const GITHUB_API: &str = "https://api.github.com/repos/trojan-rs/trojan-rs/releases/latest";
+const GITHUB_API: &str = "https://api.github.com/repos/trojan-rust/trojan-rust/releases/latest";
 const USER_AGENT: &str = concat!("trojan/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Debug, Deserialize)]
@@ -137,7 +137,7 @@ pub async fn run(args: UpgradeArgs) -> Result<(), Box<dyn std::error::Error + Se
         };
         println!("Fetching release {}...", version);
         let url = format!(
-            "https://api.github.com/repos/trojan-rs/trojan-rs/releases/tags/{}",
+            "https://api.github.com/repos/trojan-rust/trojan-rust/releases/tags/{}",
             version
         );
         let response = client.get(&url).send().await?;

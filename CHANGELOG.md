@@ -3,7 +3,7 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
-## [0.1.8](https://github.com/trojan-rs/trojan-rs/compare/v0.1.4...v0.1.8) - 2026-01-28
+## [0.1.8](https://github.com/trojan-rust/trojan-rust/compare/v0.1.4...v0.1.8) - 2026-01-28
 
 ### Bug Fixes
 
@@ -25,7 +25,7 @@ All notable changes to this project will be documented in this file.
 
 - adopt release-plz
 
-- release v0.1.7 ([#4](https://github.com/trojan-rs/trojan-rs/pull/4))
+- release v0.1.7 ([#4](https://github.com/trojan-rust/trojan-rust/pull/4))
 
 
 ### Documentation
@@ -39,7 +39,7 @@ All notable changes to this project will be documented in this file.
 
 - add TCP socket configuration options
 
-## [0.1.7](https://github.com/trojan-rs/trojan-rs/compare/v0.1.4...v0.1.7) - 2026-01-28
+## [0.1.7](https://github.com/trojan-rust/trojan-rust/compare/v0.1.4...v0.1.7) - 2026-01-28
 
 ### Bug Fixes
 

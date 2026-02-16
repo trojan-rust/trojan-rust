@@ -4,7 +4,7 @@
 //!
 //! For documentation and usage, please refer to the main crate:
 //! - Documentation: <https://docs.rs/trojan>
-//! - Repository: <https://github.com/trojan-rs/trojan-rs>
+//! - Repository: <https://github.com/trojan-rust/trojan-rust>
 //!
 //! ## Installation
 //!
