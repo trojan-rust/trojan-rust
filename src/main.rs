@@ -53,6 +53,11 @@ enum Commands {
     #[command(name = "auth")]
     Auth(trojan_auth::AuthArgs),
 
+    /// Run the panel agent (managed mode).
+    #[cfg(feature = "agent")]
+    #[command(name = "agent")]
+    Agent(trojan_agent::AgentArgs),
+
     /// Generate and manage TLS certificates.
     #[cfg(feature = "cert")]
     #[command(name = "cert")]
@@ -82,6 +87,10 @@ async fn main() -> ExitCode {
             .await
             .map_err(|e| e.to_string()),
         Commands::Auth(args) => trojan_auth::cli::run(args).await.map_err(|e| e.to_string()),
+        #[cfg(feature = "agent")]
+        Commands::Agent(args) => trojan_agent::cli::run(args)
+            .await
+            .map_err(|e| e.to_string()),
         #[cfg(feature = "cert")]
         Commands::Cert(args) => trojan_cert::run(args).map_err(|e| e.to_string()),
         #[cfg(feature = "upgrade")]
