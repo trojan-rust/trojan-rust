@@ -125,7 +125,7 @@ mod tests {
         let msg = AgentMessage::Register {
             protocol_version: PROTOCOL_VERSION,
             token: "test-token".to_string(),
-            version: "0.5.0".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
             hostname: "node-01".to_string(),
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
@@ -141,7 +141,7 @@ mod tests {
             } => {
                 assert_eq!(protocol_version, PROTOCOL_VERSION);
                 assert_eq!(token, "test-token");
-                assert_eq!(version, "0.5.0");
+                assert_eq!(version, env!("CARGO_PKG_VERSION"));
             }
             _ => panic!("expected Register"),
         }
