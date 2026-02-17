@@ -216,9 +216,9 @@ impl SqlAuth {
 
             let flush_fn: FlushFn = Arc::new(move |batch| {
                 let pool = pool_clone.clone();
-                Box::pin(async move {
-                    SqlStore::flush_traffic_batch(&pool, db_type_clone, batch).await
-                })
+                Box::pin(
+                    async move { SqlStore::flush_traffic_batch(&pool, db_type_clone, batch).await },
+                )
             });
 
             let recorder = TrafficRecorder::new(

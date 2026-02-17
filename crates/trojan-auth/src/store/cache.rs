@@ -136,9 +136,7 @@ impl AuthCache {
     /// Remove expired entries from positive and negative caches.
     pub fn cleanup_expired(&self) {
         let now = Instant::now();
-        self.cache
-            .write()
-            .retain(|_, entry| entry.expires_at > now);
+        self.cache.write().retain(|_, entry| entry.expires_at > now);
         self.neg_cache.write().retain(|_, &mut exp| exp > now);
     }
 

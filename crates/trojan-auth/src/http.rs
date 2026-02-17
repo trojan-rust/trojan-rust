@@ -47,11 +47,7 @@ impl HttpAuth {
     ///
     /// `base_url` is the worker URL (e.g. `https://auth.example.workers.dev`).
     /// `node_token` is the Bearer token for node authentication (from admin dashboard).
-    pub fn new(
-        base_url: impl Into<String>,
-        codec: Codec,
-        node_token: Option<String>,
-    ) -> Self {
+    pub fn new(base_url: impl Into<String>, codec: Codec, node_token: Option<String>) -> Self {
         let base = base_url.into();
         let base = base.trim_end_matches('/');
         Self {
@@ -141,8 +137,7 @@ impl AuthBackend for HttpAuth {
             user_id: user_id.to_owned(),
             bytes,
         };
-        let result: Result<(), wire::AuthError> =
-            self.request(&self.traffic_url, &req).await?;
+        let result: Result<(), wire::AuthError> = self.request(&self.traffic_url, &req).await?;
         result.map_err(Into::into)
     }
 }
