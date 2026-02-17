@@ -47,7 +47,7 @@ pub struct UpgradeArgs {
     #[arg(long)]
     no_verify: bool,
 
-    /// Binary to upgrade: "trojan" or "trojan-server" (default: current binary).
+    /// Binary name to upgrade (default: "trojan").
     #[arg(long, short = 'b')]
     binary: Option<String>,
 }
@@ -122,7 +122,7 @@ fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub async fn run(args: UpgradeArgs) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let current_version = env!("CARGO_PKG_VERSION");
-    let binary_name = args.binary.as_deref().unwrap_or("trojan-server");
+    let binary_name = args.binary.as_deref().unwrap_or("trojan");
 
     println!("Current version: v{}", current_version);
 

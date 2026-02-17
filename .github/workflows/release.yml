@@ -96,16 +96,7 @@ jobs:
         if: matrix.use_cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
-      - name: Build trojan-server
-        run: |
-          if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }} -p trojan-server
-          else
-            cargo build --release --target ${{ matrix.target }} -p trojan-server
-          fi
-        shell: bash
-
-      - name: Build trojan CLI (with upgrade feature)
+      - name: Build trojan
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
             cross build --release --target ${{ matrix.target }} -p trojan --features upgrade
@@ -118,7 +109,6 @@ jobs:
         if: matrix.os != 'windows-latest'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czvf ../../../trojan-server-${{ matrix.target }}.tar.gz trojan-server
           tar czvf ../../../trojan-${{ matrix.target }}.tar.gz trojan
           cd ../../..
 
@@ -126,18 +116,11 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: |
           cd target/${{ matrix.target }}/release
-          7z a ../../../trojan-server-${{ matrix.target }}.zip trojan-server.exe
           7z a ../../../trojan-${{ matrix.target }}.zip trojan.exe
           cd ../../..
         shell: bash
 
-      - name: Upload trojan-server artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: trojan-server-${{ matrix.target }}
-          path: trojan-server-${{ matrix.target }}.*
-
-      - name: Upload trojan artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
           name: trojan-${{ matrix.target }}
