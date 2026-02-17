@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use crate::store::{StoreAuthConfig, TrafficRecordingMode};
+
 /// Configuration for SQL authentication backend.
 #[derive(Debug, Clone)]
 pub struct SqlAuthConfig {
@@ -42,22 +44,13 @@ pub struct SqlAuthConfig {
 
     /// Cache TTL (time-to-live) for authenticated users.
     pub cache_ttl: Duration,
-}
 
-/// How traffic is recorded to the database.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TrafficRecordingMode {
-    /// Immediate database update on each record_traffic call.
-    /// Most accurate but highest database load.
-    Immediate,
-
-    /// Batch updates at regular intervals.
-    /// Better performance, slight delay in traffic accounting.
-    #[default]
-    Batched,
-
-    /// Disabled - do not record traffic to database.
-    Disabled,
+    /// Negative cache TTL for invalid hashes.
+    ///
+    /// Hashes that produce no DB row are cached for this duration,
+    /// preventing repeated SELECT storms from invalid/attack traffic.
+    /// Set to `Duration::ZERO` to disable.
+    pub neg_cache_ttl: Duration,
 }
 
 impl Default for SqlAuthConfig {
@@ -74,6 +67,7 @@ impl Default for SqlAuthConfig {
             batch_max_pending: 1000,
             cache_enabled: false,
             cache_ttl: Duration::from_secs(60), // 1 minute default
+            neg_cache_ttl: Duration::from_secs(5),
         }
     }
 }
@@ -133,5 +127,23 @@ impl SqlAuthConfig {
     pub fn cache_ttl(mut self, ttl: Duration) -> Self {
         self.cache_ttl = ttl;
         self
+    }
+
+    /// Builder: set negative cache TTL.
+    pub fn neg_cache_ttl(mut self, ttl: Duration) -> Self {
+        self.neg_cache_ttl = ttl;
+        self
+    }
+
+    /// Extract the generic [`StoreAuthConfig`] portion.
+    pub(crate) fn store_auth_config(&self) -> StoreAuthConfig {
+        StoreAuthConfig {
+            traffic_mode: self.traffic_mode,
+            batch_flush_interval: self.batch_flush_interval,
+            batch_max_pending: self.batch_max_pending,
+            cache_enabled: self.cache_enabled,
+            cache_ttl: self.cache_ttl,
+            neg_cache_ttl: self.neg_cache_ttl,
+        }
     }
 }

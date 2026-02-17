@@ -390,8 +390,8 @@ async fn test_debug_impl_hides_credentials() {
     // Should not contain the connection string
     assert!(!debug_str.contains("memory"));
     // Should contain struct name and fields
-    assert!(debug_str.contains("SqlAuth"));
-    assert!(debug_str.contains("db_type"));
+    assert!(debug_str.contains("StoreAuth"));
+    assert!(debug_str.contains("SqlStore"));
 }
 
 /// Create a test SqlAuth with caching enabled.

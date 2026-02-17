@@ -3633,10 +3633,14 @@ name = "trojan-auth"
 version = "0.5.6"
 dependencies = [
  "async-trait",
+ "bincode",
  "clap",
  "criterion",
  "hex",
  "parking_lot",
+ "reqwest",
+ "serde",
+ "serde_json",
  "sha2",
  "sqlx",
  "tabled",

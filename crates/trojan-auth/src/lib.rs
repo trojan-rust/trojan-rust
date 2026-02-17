@@ -37,9 +37,16 @@ mod reloadable;
 mod result;
 mod traits;
 
+// Generic store-based auth (always compiled; only depends on parking_lot + std)
+pub mod store;
+
 // SQL backend (optional feature)
 #[cfg(feature = "sql")]
 pub mod sql;
+
+// HTTP backend (optional feature)
+#[cfg(feature = "http")]
+pub mod http;
 
 // CLI module (optional feature)
 #[cfg(feature = "cli")]

@@ -55,14 +55,14 @@
 //! ```
 
 mod backend;
-mod cache;
 mod config;
 mod queries;
-mod traffic;
 
 #[cfg(test)]
 mod tests;
 
-pub use backend::{DatabaseType, SqlAuth};
-pub use cache::{AuthCache, CacheStats, CachedUser};
-pub use config::{SqlAuthConfig, TrafficRecordingMode};
+pub use backend::{DatabaseType, SqlAuth, SqlStore};
+pub use config::SqlAuthConfig;
+
+// Re-export store types for backward compatibility
+pub use crate::store::{AuthCache, CacheStats, CachedUser, TrafficRecordingMode};

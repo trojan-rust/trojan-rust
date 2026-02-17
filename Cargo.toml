@@ -13,6 +13,7 @@ categories = ["network-programming"]
 
 [workspace]
 resolver = "2"
+exclude = ["auth-worker"]
 members = [
     "crates/trojan-core",
     "crates/trojan-proto",

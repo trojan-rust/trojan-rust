@@ -1,4 +1,6 @@
 //! Async traffic recording with batching support.
+//!
+//! This module is only compiled when the `batched-traffic` feature is enabled.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -23,6 +25,7 @@ pub type FlushFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), AuthError>> + Send + 'static>>;
 
 /// Traffic recorder that batches updates.
+#[derive(Debug)]
 pub struct TrafficRecorder {
     sender: mpsc::UnboundedSender<TrafficUpdate>,
     #[allow(dead_code)]

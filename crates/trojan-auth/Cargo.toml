@@ -15,8 +15,11 @@ readme = "README.md"
 [features]
 default = []
 
+# Batched traffic recording (tokio MPSC)
+batched-traffic = ["dep:tokio"]
+
 # SQL backend with SQLx
-sql = ["dep:sqlx", "dep:tokio"]
+sql = ["dep:sqlx", "batched-traffic"]
 
 # Database drivers (user picks one or more)
 sql-postgres = ["sql", "sqlx/postgres"]
@@ -26,6 +29,9 @@ sql-sqlite = ["sql", "sqlx/sqlite"]
 # TLS options for SQL connections
 sql-tls-rustls = ["sqlx/tls-rustls-ring"]
 sql-tls-native = ["sqlx/tls-native-tls"]
+
+# HTTP backend (calls remote auth-worker)
+http = ["dep:reqwest", "dep:bincode", "dep:serde", "dep:serde_json"]
 
 # CLI tool for auth management
 cli = ["sql", "dep:clap", "dep:tabled", "tokio/rt-multi-thread"]
@@ -44,7 +50,16 @@ sqlx = { version = "0.8", default-features = false, features = [
 ], optional = true }
 
 # For batch traffic recording (optional, only with sql feature)
-tokio = { workspace = true, features = ["sync", "time", "macros"], optional = true }
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt"], optional = true }
+
+# HTTP backend dependencies (optional)
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+], optional = true }
+bincode = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 # CLI dependencies (optional)
 clap = { workspace = true, features = ["derive", "env"], optional = true }
