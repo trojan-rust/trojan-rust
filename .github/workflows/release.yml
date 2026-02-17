@@ -73,7 +73,7 @@ jobs:
 
       # Install cross-compilation tools for Linux targets
       - name: Install cross-compilation tools
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: |
           case "${{ matrix.target }}" in
             aarch64-unknown-linux-gnu)
