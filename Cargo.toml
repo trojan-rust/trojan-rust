@@ -125,7 +125,15 @@ or_fun_call = "warn"
 workspace = true
 
 [features]
-default = ["cli", "sql-sqlite", "sql-mysql", "sql-postgres", "sql-tls-rustls", "agent"]
+default = [
+    "cli",
+    "cert",
+    "sql-sqlite",
+    "sql-mysql",
+    "sql-postgres",
+    "sql-tls-rustls",
+    "agent",
+]
 cli = ["trojan-auth/cli", "dep:clap", "dep:tokio"]
 
 # Self-upgrade from GitHub releases (disabled by default, enabled in CI builds)
