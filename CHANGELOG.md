@@ -3,6 +3,21 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+## [0.5.4](https://github.com/trojan-rust/trojan-rust/compare/v0.5.2...v0.5.4) - 2026-02-17
+
+### Bug Fixes
+
+- use ubuntu-22.04 for Linux release builds
+
+
+### Chores
+
+- update Cargo.lock dependencies
+
+- use plain version tag as GitHub release name
+
+- release v0.5.3 ([#8](https://github.com/trojan-rust/trojan-rust/pull/8))
+
 ## [0.5.3](https://github.com/trojan-rust/trojan-rust/compare/v0.5.1...v0.5.3) - 2026-02-17
 
 ### Bug Fixes
