@@ -3,6 +3,38 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+## [0.6.1](https://github.com/trojan-rust/trojan-rust/compare/v0.5.6...v0.6.1) - 2026-02-17
+
+### Bug Fixes
+
+- resolve broken intra-doc link in AuthCache::remove_negative
+
+
+### Chores
+
+- update Cargo.lock dependencies
+
+- add auth-worker to monorepo, gitignore wrangler.toml
+
+- slim down README, apply cargo fmt
+
+- release v0.6.0 ([#14](https://github.com/trojan-rust/trojan-rust/pull/14))
+
+
+### Features
+
+- add node management, per-node traffic tracking, and admin panel
+
+
+### Refactoring
+
+- extract UserStore trait + StoreAuth<S> with cache-integrated traffic tracking
+
+
+### deps
+
+- upgrade sysinfo 0.33→0.38, rand 0.9→0.10, zip/clap/webpki-roots
+
 ## [0.6.0](https://github.com/trojan-rust/trojan-rust/compare/v0.5.6...v0.6.0) - 2026-02-17
 
 ### Chores
