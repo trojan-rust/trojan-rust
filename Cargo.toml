@@ -172,6 +172,8 @@ trojan-relay.workspace = true
 trojan-cert = { workspace = true, optional = true }
 trojan-agent = { workspace = true, optional = true }
 
+rustls.workspace = true
+
 # CLI dependencies
 clap = { workspace = true, optional = true }
 tokio = { workspace = true, features = [

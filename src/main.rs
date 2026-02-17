@@ -71,6 +71,10 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("failed to install default CryptoProvider");
+
     let cli = Cli::parse();
 
     let result: Result<(), String> = match cli.command {
