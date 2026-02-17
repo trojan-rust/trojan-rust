@@ -38,6 +38,12 @@ Thumbs.db
 
 # Cloudflare Workers
 wrangler.toml
+.dev.vars
 .wrangler/
 node_modules/
 build/
+dist/
+
+# wasm-pack output
+pkg/
+auth-worker/panel/dist/

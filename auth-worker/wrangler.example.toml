@@ -3,7 +3,13 @@ main = "build/worker/shim.mjs"
 compatibility_date = "2024-09-23"
 
 [build]
-command = "cargo install -q worker-build && worker-build --release"
+command = "cd web && npm install && npm run build && cd .. && cargo install -q worker-build && worker-build --release"
+
+# Admin dashboard static assets
+[assets]
+directory = "./web/dist"
+not_found_handling = "single-page-application"
+run_worker_first = ["/health", "/verify", "/traffic", "/admin/*"]
 
 # D1 database (source of truth)
 # Create with: npx wrangler d1 create auth-db
