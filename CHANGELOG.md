@@ -3,6 +3,29 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+## [0.5.6](https://github.com/trojan-rust/trojan-rust/compare/v0.5.4...v0.5.6) - 2026-02-17
+
+### Bug Fixes
+
+- match Linux runner for cross-compilation tools install
+
+
+### Chores
+
+- update Cargo.lock dependencies
+
+- release v0.5.5 ([#11](https://github.com/trojan-rust/trojan-rust/pull/11))
+
+
+### Features
+
+- enable all SQL drivers and TLS by default
+
+
+### Refactoring
+
+- remove trojan-server from release, only ship unified CLI
+
 ## [0.5.5](https://github.com/trojan-rust/trojan-rust/compare/v0.5.3...v0.5.5) - 2026-02-17
 
 ### Chores
