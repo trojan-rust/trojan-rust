@@ -208,7 +208,7 @@ impl AuthCache {
 
     /// Remove a hash from the negative cache.
     ///
-    /// Called by [`cache_invalidate`] so that a newly-added user
+    /// Called after cache invalidation so that a newly-added user
     /// is not blocked by a stale negative entry.
     pub fn remove_negative(&self, hash: &str) {
         self.neg_cache.write().remove(hash);
