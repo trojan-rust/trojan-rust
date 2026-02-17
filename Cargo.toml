@@ -124,7 +124,7 @@ or_fun_call = "warn"
 workspace = true
 
 [features]
-default = ["cli", "sql-sqlite", "agent"]
+default = ["cli", "sql-sqlite", "sql-mysql", "sql-postgres", "sql-tls-rustls", "agent"]
 cli = ["trojan-auth/cli", "dep:clap", "dep:tokio"]
 
 # Self-upgrade from GitHub releases (disabled by default, enabled in CI builds)
@@ -154,6 +154,8 @@ cert = ["cli", "dep:trojan-cert"]
 sql-sqlite = ["trojan-auth/sql-sqlite"]
 sql-postgres = ["trojan-auth/sql-postgres"]
 sql-mysql = ["trojan-auth/sql-mysql"]
+sql-tls-rustls = ["trojan-auth/sql-tls-rustls"]
+sql-tls-native = ["trojan-auth/sql-tls-native"]
 
 [[bin]]
 name = "trojan"
