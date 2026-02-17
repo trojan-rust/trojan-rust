@@ -227,6 +227,7 @@ impl TestServer {
             auth: AuthConfig {
                 passwords: vec![password.clone()],
                 users: vec![],
+                ..Default::default()
             },
             websocket: WebSocketConfig::default(),
             metrics: MetricsConfig {
@@ -481,6 +482,7 @@ async fn test_graceful_shutdown() {
         auth: AuthConfig {
             passwords: vec![password.clone()],
             users: vec![],
+            ..Default::default()
         },
         websocket: WebSocketConfig::default(),
         metrics: MetricsConfig {
@@ -644,6 +646,7 @@ async fn test_max_connections_limit() {
         auth: AuthConfig {
             passwords: vec![password.clone()],
             users: vec![],
+            ..Default::default()
         },
         websocket: WebSocketConfig::default(),
         metrics: MetricsConfig {
@@ -795,6 +798,7 @@ async fn test_rate_limiting() {
         auth: AuthConfig {
             passwords: vec![password.clone()],
             users: vec![],
+            ..Default::default()
         },
         websocket: WebSocketConfig::default(),
         metrics: MetricsConfig {
@@ -929,6 +933,7 @@ async fn test_tls13_only() {
         auth: AuthConfig {
             passwords: vec![password.clone()],
             users: vec![],
+            ..Default::default()
         },
         websocket: WebSocketConfig::default(),
         metrics: MetricsConfig {
@@ -1127,6 +1132,7 @@ async fn test_udp_idle_timeout() {
         auth: AuthConfig {
             passwords: vec![password.to_string()],
             users: vec![],
+            ..Default::default()
         },
         websocket: WebSocketConfig::default(),
         metrics: MetricsConfig {
@@ -1370,6 +1376,7 @@ async fn test_tcp_idle_timeout() {
         auth: AuthConfig {
             passwords: vec![password.to_string()],
             users: vec![],
+            ..Default::default()
         },
         websocket: WebSocketConfig::default(),
         metrics: MetricsConfig {
@@ -1640,6 +1647,7 @@ mod rules_tests {
                 auth: AuthConfig {
                     passwords: vec![password.clone()],
                     users: vec![],
+                    ..Default::default()
                 },
                 websocket: WebSocketConfig::default(),
                 metrics: MetricsConfig {

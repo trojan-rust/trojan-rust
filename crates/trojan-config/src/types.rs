@@ -263,7 +263,7 @@ impl Default for WebSocketConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AuthConfig {
     /// Simple password list (no user IDs).
     /// ```toml
@@ -280,6 +280,21 @@ pub struct AuthConfig {
     /// ```
     #[serde(default)]
     pub users: Vec<UserEntry>,
+
+    /// HTTP remote auth-worker URL.
+    /// ```toml
+    /// http_url = "https://auth.example.workers.dev"
+    /// ```
+    #[serde(default)]
+    pub http_url: Option<String>,
+
+    /// Bearer token for node authentication with the auth-worker.
+    #[serde(default)]
+    pub http_node_token: Option<String>,
+
+    /// Serialization codec for HTTP auth: "bincode" (default) or "json".
+    #[serde(default)]
+    pub http_codec: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

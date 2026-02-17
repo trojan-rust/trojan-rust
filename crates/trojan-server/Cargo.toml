@@ -67,7 +67,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json"
 # workspace crates
 trojan-core.workspace = true
 trojan-proto.workspace = true
-trojan-auth.workspace = true
+trojan-auth = { workspace = true, features = ["http"] }
 trojan-config.workspace = true
 trojan-metrics.workspace = true
 trojan-analytics = { workspace = true, optional = true }

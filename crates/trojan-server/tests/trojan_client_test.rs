@@ -172,6 +172,7 @@ impl TestServer {
             auth: AuthConfig {
                 passwords: vec![password.clone()],
                 users: vec![],
+                ..Default::default()
             },
             websocket: WebSocketConfig::default(),
             metrics: MetricsConfig {

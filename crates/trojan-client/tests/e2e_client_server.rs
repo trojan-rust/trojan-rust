@@ -233,6 +233,7 @@ impl TestServer {
             auth: AuthConfig {
                 passwords: vec![password.clone()],
                 users: vec![],
+                ..Default::default()
             },
             websocket: WebSocketConfig::default(),
             metrics: MetricsConfig {
@@ -591,6 +592,7 @@ mod rules_e2e {
                 auth: AuthConfig {
                     passwords: vec![password.clone()],
                     users: vec![],
+                    ..Default::default()
                 },
                 websocket: WebSocketConfig::default(),
                 metrics: MetricsConfig {

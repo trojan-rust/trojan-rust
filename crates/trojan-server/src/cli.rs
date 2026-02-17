@@ -10,7 +10,10 @@ use std::sync::Arc;
 use clap::Parser;
 use tracing::{info, warn};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
-use trojan_auth::{MemoryAuth, ReloadableAuth};
+use trojan_auth::{
+    AuthBackend, MemoryAuth, ReloadableAuth,
+    http::{Codec, HttpAuth},
+};
 use trojan_config::{CliOverrides, LoggingConfig, apply_overrides, load_config, validate_config};
 
 use crate::{CancellationToken, run_with_shutdown};
@@ -49,7 +52,7 @@ pub async fn run(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Create reloadable auth backend
-    let auth = Arc::new(ReloadableAuth::new(build_memory_auth(&config.auth)));
+    let auth = Arc::new(ReloadableAuth::new(build_auth(&config.auth)));
 
     // Set up SIGHUP handler for config reload
     #[cfg(unix)]
@@ -141,12 +144,13 @@ fn reload_config(
     apply_overrides(&mut config, overrides);
     validate_config(&config)?;
 
-    // Reload auth passwords + users
-    let new_auth = build_memory_auth(&config.auth);
+    // Reload auth backend
+    let new_auth = build_auth(&config.auth);
     auth.reload(new_auth);
     info!(
         password_count = config.auth.passwords.len(),
         user_count = config.auth.users.len(),
+        http = config.auth.http_url.is_some(),
         "auth reloaded"
     );
 
@@ -156,16 +160,32 @@ fn reload_config(
     Ok(())
 }
 
-/// Build a `MemoryAuth` from both `passwords` and `users` in the config.
-fn build_memory_auth(auth: &trojan_config::AuthConfig) -> MemoryAuth {
-    let mut mem = MemoryAuth::new();
-    for pw in &auth.passwords {
-        mem.add_password(pw, None);
+/// Build an auth backend from config.
+///
+/// If `http_url` is set, creates an [`HttpAuth`] backend that delegates to a
+/// remote auth-worker. Otherwise falls back to in-memory password auth.
+fn build_auth(auth: &trojan_config::AuthConfig) -> Box<dyn AuthBackend> {
+    if let Some(ref url) = auth.http_url {
+        let codec = match auth.http_codec.as_deref() {
+            Some("json") => Codec::Json,
+            _ => Codec::Bincode,
+        };
+        info!(url = %url, codec = ?codec, "using HTTP auth backend");
+        Box::new(HttpAuth::new(
+            url.clone(),
+            codec,
+            auth.http_node_token.clone(),
+        ))
+    } else {
+        let mut mem = MemoryAuth::new();
+        for pw in &auth.passwords {
+            mem.add_password(pw, None);
+        }
+        for u in &auth.users {
+            mem.add_password(&u.password, Some(u.id.clone()));
+        }
+        Box::new(mem)
     }
-    for u in &auth.users {
-        mem.add_password(&u.password, Some(u.id.clone()));
-    }
-    mem
 }
 
 /// Initialize tracing subscriber with the given logging configuration.
