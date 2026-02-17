@@ -33,7 +33,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.5"
+version = "0.5.6"
 edition = "2024"
 license = "GPL-3.0-only"
 authors = ["trojan-rust <164051043+trojan-rust@users.noreply.github.com>"]
@@ -42,22 +42,22 @@ homepage = "https://github.com/trojan-rust/trojan-rust"
 documentation = "https://docs.rs/trojan"
 
 [workspace.dependencies]
-trojan = { version = "0.5.5", path = "." }
-trojan-core = { version = "0.5.5", path = "crates/trojan-core" }
-trojan-proto = { version = "0.5.5", path = "crates/trojan-proto" }
-trojan-auth = { version = "0.5.5", path = "crates/trojan-auth" }
-trojan-config = { version = "0.5.5", path = "crates/trojan-config" }
-trojan-metrics = { version = "0.5.5", path = "crates/trojan-metrics" }
-trojan-analytics = { version = "0.5.5", path = "crates/trojan-analytics" }
-trojan-server = { version = "0.5.5", path = "crates/trojan-server" }
-trojan-client = { version = "0.5.5", path = "crates/trojan-client" }
-trojan-cert = { version = "0.5.5", path = "crates/trojan-cert" }
-trojan-relay = { version = "0.5.5", path = "crates/trojan-relay" }
-trojan-transport = { version = "0.5.5", path = "crates/trojan-transport" }
-trojan-lb = { version = "0.5.5", path = "crates/trojan-lb" }
-trojan-rules = { version = "0.5.5", path = "crates/trojan-rules" }
-trojan-agent = { version = "0.5.5", path = "crates/trojan-agent" }
-trojan-protocol = { version = "0.5.5", path = "crates/trojan-protocol" }
+trojan = { version = "0.5.6", path = "." }
+trojan-core = { version = "0.5.6", path = "crates/trojan-core" }
+trojan-proto = { version = "0.5.6", path = "crates/trojan-proto" }
+trojan-auth = { version = "0.5.6", path = "crates/trojan-auth" }
+trojan-config = { version = "0.5.6", path = "crates/trojan-config" }
+trojan-metrics = { version = "0.5.6", path = "crates/trojan-metrics" }
+trojan-analytics = { version = "0.5.6", path = "crates/trojan-analytics" }
+trojan-server = { version = "0.5.6", path = "crates/trojan-server" }
+trojan-client = { version = "0.5.6", path = "crates/trojan-client" }
+trojan-cert = { version = "0.5.6", path = "crates/trojan-cert" }
+trojan-relay = { version = "0.5.6", path = "crates/trojan-relay" }
+trojan-transport = { version = "0.5.6", path = "crates/trojan-transport" }
+trojan-lb = { version = "0.5.6", path = "crates/trojan-lb" }
+trojan-rules = { version = "0.5.6", path = "crates/trojan-rules" }
+trojan-agent = { version = "0.5.6", path = "crates/trojan-agent" }
+trojan-protocol = { version = "0.5.6", path = "crates/trojan-protocol" }
 
 # External dependencies (shared across crates)
 arc-swap = "1"
