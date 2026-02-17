@@ -3,6 +3,12 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+## [0.7.0](https://github.com/trojan-rust/trojan-rust/compare/v0.6.1...v0.7.0) - 2026-02-17
+
+### Features
+
+- wire up HttpAuth backend via config
+
 ## [0.6.1](https://github.com/trojan-rust/trojan-rust/compare/v0.5.6...v0.6.1) - 2026-02-17
 
 ### Bug Fixes
