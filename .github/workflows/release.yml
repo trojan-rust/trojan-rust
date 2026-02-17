@@ -27,27 +27,27 @@ jobs:
         include:
           # Linux x86_64
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
           - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-22.04
           # Linux aarch64
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
           - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-22.04
             use_cross: true
           # Linux armv7
           - target: armv7-unknown-linux-gnueabihf
-            os: ubuntu-latest
+            os: ubuntu-22.04
             use_cross: true
           - target: armv7-unknown-linux-musleabihf
-            os: ubuntu-latest
+            os: ubuntu-22.04
             use_cross: true
           # Linux i686
           - target: i686-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
           - target: i686-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-22.04
             use_cross: true
           # macOS
           - target: x86_64-apple-darwin
