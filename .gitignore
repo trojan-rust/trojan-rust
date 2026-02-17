@@ -1,4 +1,4 @@
-/target
+target/
 out
 
 # Environment and secrets
@@ -35,3 +35,9 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Cloudflare Workers
+wrangler.toml
+.wrangler/
+node_modules/
+build/

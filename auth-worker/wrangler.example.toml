@@ -1,0 +1,23 @@
+name = "auth-worker"
+main = "build/worker/shim.mjs"
+compatibility_date = "2024-09-23"
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+
+# D1 database (source of truth)
+# Create with: npx wrangler d1 create auth-db
+# Then replace database_id below
+[[d1_databases]]
+binding = "DB"
+database_name = "auth-db"
+database_id = "YOUR_D1_DATABASE_ID"
+
+# KV namespace (verify cache)
+# Create with: npx wrangler kv namespace create CACHE
+# Then replace id below
+[[kv_namespaces]]
+binding = "CACHE"
+id = "YOUR_KV_NAMESPACE_ID"
+
+# Set admin token: npx wrangler secret put ADMIN_TOKEN
