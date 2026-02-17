@@ -3,6 +3,19 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+## [0.5.3](https://github.com/trojan-rust/trojan-rust/compare/v0.5.1...v0.5.3) - 2026-02-17
+
+### Bug Fixes
+
+- install rustls CryptoProvider at startup
+
+
+### Chores
+
+- update Cargo.lock dependencies
+
+- release v0.5.2 ([#7](https://github.com/trojan-rust/trojan-rust/pull/7))
+
 ## [0.5.2](https://github.com/trojan-rust/trojan-rust/compare/v0.5.1...v0.5.2) - 2026-02-17
 
 ### Bug Fixes
