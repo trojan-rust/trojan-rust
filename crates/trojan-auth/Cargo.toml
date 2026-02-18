@@ -15,8 +15,11 @@ readme = "README.md"
 [features]
 default = []
 
+# Internal: tokio runtime available for background tasks (SWR revalidation, traffic batching)
+tokio-runtime = ["dep:tokio", "dep:tracing"]
+
 # Batched traffic recording (tokio MPSC)
-batched-traffic = ["dep:tokio"]
+batched-traffic = ["tokio-runtime"]
 
 # SQL backend with SQLx
 sql = ["dep:sqlx", "batched-traffic"]
@@ -31,7 +34,7 @@ sql-tls-rustls = ["sqlx/tls-rustls-ring"]
 sql-tls-native = ["sqlx/tls-native-tls"]
 
 # HTTP backend (calls remote auth-worker)
-http = ["dep:reqwest", "dep:bincode", "dep:serde", "dep:serde_json"]
+http = ["dep:reqwest", "dep:bincode", "dep:serde", "dep:serde_json", "tokio-runtime"]
 
 # CLI tool for auth management
 cli = ["sql", "dep:clap", "dep:tabled", "tokio/rt-multi-thread"]
@@ -60,6 +63,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 bincode = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 
 # CLI dependencies (optional)
 clap = { workspace = true, features = ["derive", "env"], optional = true }

@@ -144,6 +144,7 @@ impl SqlAuthConfig {
             cache_enabled: self.cache_enabled,
             cache_ttl: self.cache_ttl,
             neg_cache_ttl: self.neg_cache_ttl,
+            stale_ttl: Duration::ZERO, // SQL backend uses synchronous DB queries; SWR not needed
         }
     }
 }

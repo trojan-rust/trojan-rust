@@ -6,13 +6,15 @@
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
 use tracing::{info, warn};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
 use trojan_auth::{
     AuthBackend, MemoryAuth, ReloadableAuth,
-    http::{Codec, HttpAuth},
+    http::{Codec, HttpAuth, HttpAuthConfig},
 };
 use trojan_config::{CliOverrides, LoggingConfig, apply_overrides, load_config, validate_config};
 
@@ -170,12 +172,23 @@ fn build_auth(auth: &trojan_config::AuthConfig) -> Box<dyn AuthBackend> {
             Some("json") => Codec::Json,
             _ => Codec::Bincode,
         };
-        info!(url = %url, codec = ?codec, "using HTTP auth backend");
-        Box::new(HttpAuth::new(
-            url.clone(),
+        info!(
+            url = %url,
+            codec = ?codec,
+            cache_ttl = auth.http_cache_ttl_secs,
+            stale_ttl = auth.http_cache_stale_ttl_secs,
+            neg_cache_ttl = auth.http_cache_neg_ttl_secs,
+            "using HTTP auth backend"
+        );
+        let config = HttpAuthConfig {
+            base_url: url.clone(),
             codec,
-            auth.http_node_token.clone(),
-        ))
+            node_token: auth.http_node_token.clone(),
+            cache_ttl: Duration::from_secs(auth.http_cache_ttl_secs),
+            stale_ttl: Duration::from_secs(auth.http_cache_stale_ttl_secs),
+            neg_cache_ttl: Duration::from_secs(auth.http_cache_neg_ttl_secs),
+        };
+        Box::new(HttpAuth::new(config))
     } else {
         let mut mem = MemoryAuth::new();
         for pw in &auth.passwords {

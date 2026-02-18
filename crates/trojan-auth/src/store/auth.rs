@@ -3,9 +3,12 @@
 //! [`StoreAuth<S>`] wraps any [`UserStore`] implementation and provides:
 //! - Validation logic (enabled → expired → traffic check)
 //! - Optional result caching via [`AuthCache`], with in-memory traffic deltas
+//! - Stale-while-revalidate: stale cache entries are served immediately
+//!   while being revalidated in the background
 //! - Negative caching for invalid hashes (prevents DB flooding)
 //! - Optional batched traffic recording via [`TrafficRecorder`]
 
+use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -14,7 +17,7 @@ use crate::error::AuthError;
 use crate::result::{AuthMetadata, AuthResult};
 use crate::traits::AuthBackend;
 
-use super::cache::{AuthCache, CacheStats, CachedUser};
+use super::cache::{AuthCache, CacheLookup, CacheStats, CachedUser};
 use super::config::{StoreAuthConfig, TrafficRecordingMode};
 use super::record::UserRecord;
 use super::traits::UserStore;
@@ -31,8 +34,8 @@ use super::traffic::TrafficRecorder;
 ///
 /// - `S` — the underlying data store (e.g. `SqlStore`)
 pub struct StoreAuth<S: UserStore> {
-    store: S,
-    auth_cache: Option<AuthCache>,
+    store: Arc<S>,
+    auth_cache: Option<Arc<AuthCache>>,
     #[cfg(feature = "batched-traffic")]
     traffic_recorder: Option<TrafficRecorder>,
     traffic_mode: TrafficRecordingMode,
@@ -45,13 +48,17 @@ impl<S: UserStore> StoreAuth<S> {
     /// [`with_traffic_recorder`](Self::with_traffic_recorder) after construction.
     pub fn new(store: S, config: &StoreAuthConfig) -> Self {
         let auth_cache = if config.cache_enabled {
-            Some(AuthCache::new(config.cache_ttl, config.neg_cache_ttl))
+            Some(Arc::new(AuthCache::new(
+                config.cache_ttl,
+                config.stale_ttl,
+                config.neg_cache_ttl,
+            )))
         } else {
             None
         };
 
         Self {
-            store,
+            store: Arc::new(store),
             auth_cache,
             #[cfg(feature = "batched-traffic")]
             traffic_recorder: None,
@@ -140,6 +147,34 @@ impl<S: UserStore> StoreAuth<S> {
         Ok(())
     }
 
+    /// Validate a cached entry with delta-adjusted traffic.
+    ///
+    /// Returns `Ok(AuthResult)` if valid, removes stale entries from cache
+    /// and returns an error otherwise.
+    fn validate_cached(
+        cache: &AuthCache,
+        hash: &str,
+        cached: CachedUser,
+    ) -> Result<AuthResult, AuthError> {
+        let delta = cached
+            .user_id
+            .as_deref()
+            .map(|uid| cache.get_traffic_delta(uid))
+            .unwrap_or(0);
+
+        let mut record = UserRecord::from(cached);
+        record.traffic_used += delta;
+
+        if let Err(e) = Self::validate_record(&record) {
+            if matches!(e, AuthError::Expired) {
+                cache.remove(hash);
+            }
+            return Err(e);
+        }
+
+        Ok(Self::record_to_result(&record))
+    }
+
     /// Build an [`AuthResult`] from a validated [`UserRecord`].
     #[allow(
         clippy::cast_possible_wrap,
@@ -161,35 +196,72 @@ impl<S: UserStore> StoreAuth<S> {
     }
 }
 
+/// Background revalidation for stale cache entries (requires tokio runtime).
+#[cfg(feature = "tokio-runtime")]
+impl<S: UserStore + 'static> StoreAuth<S> {
+    /// Spawn a background task to revalidate a stale cache entry.
+    fn spawn_revalidation(&self, cache: &Arc<AuthCache>, hash: &str) {
+        let store = Arc::clone(&self.store);
+        let cache = Arc::clone(cache);
+        let hash = hash.to_string();
+        tokio::spawn(async move {
+            Self::revalidate(store, cache, hash).await;
+        });
+    }
+
+    /// Re-fetch a user from the store and update the cache.
+    async fn revalidate(store: Arc<S>, cache: Arc<AuthCache>, hash: String) {
+        match store.find_by_hash(&hash).await {
+            Ok(Some(record)) => {
+                if let Some(ref uid) = record.user_id {
+                    cache.clear_traffic_delta(uid);
+                }
+                let cached_user = CachedUser {
+                    user_id: record.user_id.clone(),
+                    traffic_limit: record.traffic_limit,
+                    traffic_used: record.traffic_used,
+                    expires_at: record.expires_at,
+                    enabled: record.enabled,
+                    cached_at: Instant::now(),
+                };
+                cache.insert(hash, cached_user);
+            }
+            Ok(None) => {
+                cache.remove(&hash);
+                cache.insert_negative(&hash);
+            }
+            Err(e) => {
+                tracing::warn!(hash = %hash, error = %e, "background revalidation failed");
+                cache.remove(&hash);
+            }
+        }
+    }
+}
+
 #[async_trait]
-impl<S: UserStore> AuthBackend for StoreAuth<S> {
+impl<S: UserStore + 'static> AuthBackend for StoreAuth<S> {
     async fn verify(&self, hash: &str) -> Result<AuthResult, AuthError> {
         if let Some(ref cache) = self.auth_cache {
-            // 1. Negative cache — reject known-invalid hashes without DB query
+            // 1. Negative cache — reject known-invalid hashes without store query
             if cache.is_negative(hash) {
                 return Err(AuthError::Invalid);
             }
 
-            // 2. Positive cache hit — validate with delta-adjusted traffic
-            if let Some(cached) = cache.get(hash) {
-                let delta = cached
-                    .user_id
-                    .as_deref()
-                    .map(|uid| cache.get_traffic_delta(uid))
-                    .unwrap_or(0);
-
-                let mut record = UserRecord::from(cached);
-                record.traffic_used += delta;
-
-                if let Err(e) = Self::validate_record(&record) {
-                    // Remove expired entries from positive cache
-                    if matches!(e, AuthError::Expired) {
-                        cache.remove(hash);
-                    }
-                    return Err(e);
+            // 2. Cache lookup with stale-while-revalidate support
+            match cache.lookup(hash) {
+                CacheLookup::Fresh(cached) => {
+                    return Self::validate_cached(cache, hash, cached);
                 }
-
-                return Ok(Self::record_to_result(&record));
+                CacheLookup::Stale(cached) => {
+                    let result = Self::validate_cached(cache, hash, cached);
+                    // Spawn background revalidation for successful stale hits
+                    #[cfg(feature = "tokio-runtime")]
+                    if result.is_ok() {
+                        self.spawn_revalidation(cache, hash);
+                    }
+                    return result;
+                }
+                CacheLookup::Miss => { /* fall through to store query */ }
             }
         }
 

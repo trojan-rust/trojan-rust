@@ -52,6 +52,10 @@ default_fns! {
     default_tcp_fast_open         => DEFAULT_TCP_FAST_OPEN: bool,
     default_tcp_fast_open_qlen    => DEFAULT_TCP_FAST_OPEN_QLEN: u32,
     default_tcp_prefer_ipv4       => DEFAULT_TCP_PREFER_IPV4: bool,
+    // Auth cache defaults
+    default_http_cache_ttl_secs       => DEFAULT_AUTH_CACHE_TTL_SECS: u64,
+    default_http_cache_stale_ttl_secs => DEFAULT_AUTH_CACHE_STALE_TTL_SECS: u64,
+    default_http_cache_neg_ttl_secs   => DEFAULT_AUTH_CACHE_NEG_TTL_SECS: u64,
 }
 
 default_string_fns! {

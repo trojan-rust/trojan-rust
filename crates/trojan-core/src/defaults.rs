@@ -103,6 +103,17 @@ pub const DEFAULT_WS_PATH: &str = "/";
 pub const DEFAULT_WS_MAX_FRAME_BYTES: usize = 1 << 20;
 
 // ============================================================================
+// Auth Cache Defaults
+// ============================================================================
+
+/// Default auth cache TTL in seconds (positive cache).
+pub const DEFAULT_AUTH_CACHE_TTL_SECS: u64 = 300;
+/// Default auth cache stale-while-revalidate window in seconds.
+pub const DEFAULT_AUTH_CACHE_STALE_TTL_SECS: u64 = 600;
+/// Default auth negative cache TTL in seconds.
+pub const DEFAULT_AUTH_CACHE_NEG_TTL_SECS: u64 = 10;
+
+// ============================================================================
 // Protocol Constants
 // ============================================================================
 

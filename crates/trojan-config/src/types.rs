@@ -295,6 +295,21 @@ pub struct AuthConfig {
     /// Serialization codec for HTTP auth: "bincode" (default) or "json".
     #[serde(default)]
     pub http_codec: Option<String>,
+
+    /// HTTP auth cache TTL in seconds (default: 300 = 5 min).
+    /// Only applies when `http_url` is set.
+    #[serde(default = "default_http_cache_ttl_secs")]
+    pub http_cache_ttl_secs: u64,
+
+    /// HTTP auth stale-while-revalidate window in seconds (default: 600 = 10 min).
+    /// Stale cache entries are served immediately while revalidated in the background.
+    #[serde(default = "default_http_cache_stale_ttl_secs")]
+    pub http_cache_stale_ttl_secs: u64,
+
+    /// HTTP auth negative cache TTL in seconds (default: 10).
+    /// Invalid hashes are cached for this duration to prevent request flooding.
+    #[serde(default = "default_http_cache_neg_ttl_secs")]
+    pub http_cache_neg_ttl_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -35,7 +35,7 @@ mod traits;
 mod traffic;
 
 pub use auth::StoreAuth;
-pub use cache::{AuthCache, CacheStats, CachedUser};
+pub use cache::{AuthCache, CacheLookup, CacheStats, CachedUser};
 pub use config::{StoreAuthConfig, TrafficRecordingMode};
 pub use record::UserRecord;
 pub use traits::UserStore;

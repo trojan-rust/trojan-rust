@@ -11,6 +11,17 @@ use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
 
+/// Result of a cache lookup with stale-while-revalidate support.
+#[derive(Debug)]
+pub enum CacheLookup {
+    /// Entry is within TTL — use directly.
+    Fresh(CachedUser),
+    /// Entry past TTL but within stale window — use but revalidate in background.
+    Stale(CachedUser),
+    /// No entry or fully expired.
+    Miss,
+}
+
 /// Cached user data.
 #[derive(Clone, Debug)]
 pub struct CachedUser {
@@ -50,6 +61,12 @@ pub struct AuthCache {
     cache: RwLock<HashMap<String, CacheEntry>>,
     /// TTL for positive cache entries.
     ttl: Duration,
+    /// Stale-while-revalidate window beyond TTL.
+    ///
+    /// When an entry is past `ttl` but within `ttl + stale_ttl`, it is
+    /// considered stale: still usable, but should be revalidated in the
+    /// background. `Duration::ZERO` disables SWR.
+    stale_ttl: Duration,
 
     /// Accumulated traffic bytes since last DB fetch, keyed by user_id.
     traffic_deltas: RwLock<HashMap<String, i64>>,
@@ -69,11 +86,13 @@ impl AuthCache {
     /// Create a new auth cache.
     ///
     /// - `ttl` — positive cache entry lifetime
+    /// - `stale_ttl` — stale-while-revalidate window (`Duration::ZERO` to disable)
     /// - `neg_ttl` — negative cache entry lifetime (`Duration::ZERO` to disable)
-    pub fn new(ttl: Duration, neg_ttl: Duration) -> Self {
+    pub fn new(ttl: Duration, stale_ttl: Duration, neg_ttl: Duration) -> Self {
         Self {
             cache: RwLock::new(HashMap::new()),
             ttl,
+            stale_ttl,
             traffic_deltas: RwLock::new(HashMap::new()),
             neg_cache: RwLock::new(HashMap::new()),
             neg_ttl,
@@ -86,7 +105,9 @@ impl AuthCache {
 
     /// Get a cached user by password hash.
     ///
-    /// Returns `Some(CachedUser)` if found and not expired, `None` otherwise.
+    /// Returns `Some(CachedUser)` if found and **fresh** (within TTL),
+    /// `None` otherwise. Stale entries are not returned — use
+    /// [`lookup`](Self::lookup) for stale-while-revalidate semantics.
     pub fn get(&self, hash: &str) -> Option<CachedUser> {
         let cache = self.cache.read();
         if let Some(entry) = cache.get(hash)
@@ -99,6 +120,33 @@ impl AuthCache {
 
         self.misses.fetch_add(1, Ordering::Relaxed);
         None
+    }
+
+    /// Look up a cached user with stale-while-revalidate support.
+    ///
+    /// Returns:
+    /// - [`CacheLookup::Fresh`] — entry is within TTL, use directly
+    /// - [`CacheLookup::Stale`] — entry past TTL but within stale window,
+    ///   use but revalidate in background
+    /// - [`CacheLookup::Miss`] — no entry or fully expired
+    pub fn lookup(&self, hash: &str) -> CacheLookup {
+        let cache = self.cache.read();
+        if let Some(entry) = cache.get(hash) {
+            let now = Instant::now();
+            if now < entry.expires_at {
+                self.hits.fetch_add(1, Ordering::Relaxed);
+                return CacheLookup::Fresh(entry.user.clone());
+            }
+            // Past TTL — check stale window
+            if self.stale_ttl > Duration::ZERO && now < entry.expires_at + self.stale_ttl {
+                self.hits.fetch_add(1, Ordering::Relaxed);
+                return CacheLookup::Stale(entry.user.clone());
+            }
+        }
+        drop(cache);
+
+        self.misses.fetch_add(1, Ordering::Relaxed);
+        CacheLookup::Miss
     }
 
     /// Insert a user into the cache.
@@ -134,9 +182,15 @@ impl AuthCache {
     }
 
     /// Remove expired entries from positive and negative caches.
+    ///
+    /// Positive cache entries are kept until their stale window also expires
+    /// (i.e. `expires_at + stale_ttl`).
     pub fn cleanup_expired(&self) {
         let now = Instant::now();
-        self.cache.write().retain(|_, entry| entry.expires_at > now);
+        let stale = self.stale_ttl;
+        self.cache
+            .write()
+            .retain(|_, entry| entry.expires_at + stale > now);
         self.neg_cache.write().retain(|_, &mut exp| exp > now);
     }
 
@@ -261,7 +315,11 @@ mod tests {
     use super::*;
 
     fn make_cache() -> AuthCache {
-        AuthCache::new(Duration::from_secs(60), Duration::from_secs(5))
+        AuthCache::new(
+            Duration::from_secs(60),
+            Duration::ZERO,
+            Duration::from_secs(5),
+        )
     }
 
     fn make_user(user_id: &str, traffic_limit: i64, traffic_used: i64) -> CachedUser {
@@ -290,7 +348,7 @@ mod tests {
 
     #[test]
     fn test_cache_expiration() {
-        let cache = AuthCache::new(Duration::from_millis(10), Duration::ZERO);
+        let cache = AuthCache::new(Duration::from_millis(10), Duration::ZERO, Duration::ZERO);
         let user = make_user("user1", 0, 0);
 
         cache.insert("hash1".to_string(), user);
@@ -398,7 +456,11 @@ mod tests {
 
     #[test]
     fn test_negative_cache_expiration() {
-        let cache = AuthCache::new(Duration::from_secs(60), Duration::from_millis(10));
+        let cache = AuthCache::new(
+            Duration::from_secs(60),
+            Duration::ZERO,
+            Duration::from_millis(10),
+        );
 
         cache.insert_negative("bad_hash");
         assert!(cache.is_negative("bad_hash"));
@@ -409,7 +471,7 @@ mod tests {
 
     #[test]
     fn test_negative_cache_disabled_when_zero_ttl() {
-        let cache = AuthCache::new(Duration::from_secs(60), Duration::ZERO);
+        let cache = AuthCache::new(Duration::from_secs(60), Duration::ZERO, Duration::ZERO);
 
         cache.insert_negative("bad_hash");
         assert!(!cache.is_negative("bad_hash"));
@@ -439,7 +501,11 @@ mod tests {
 
     #[test]
     fn test_cleanup_expired_cleans_both() {
-        let cache = AuthCache::new(Duration::from_millis(10), Duration::from_millis(10));
+        let cache = AuthCache::new(
+            Duration::from_millis(10),
+            Duration::ZERO,
+            Duration::from_millis(10),
+        );
 
         cache.insert("hash1".to_string(), make_user("user1", 0, 0));
         cache.insert_negative("bad_hash");
@@ -450,5 +516,67 @@ mod tests {
         let stats = cache.stats();
         assert_eq!(stats.size, 0);
         assert_eq!(stats.neg_size, 0);
+    }
+
+    // ── Stale-while-revalidate tests ────────────────────────────
+
+    #[test]
+    fn test_cache_stale_lookup() {
+        let cache = AuthCache::new(
+            Duration::from_millis(10), // TTL
+            Duration::from_millis(50), // stale window
+            Duration::ZERO,            // neg TTL
+        );
+        let user = make_user("user1", 1000, 100);
+        cache.insert("hash1".to_string(), user);
+
+        // Should be Fresh
+        assert!(matches!(cache.lookup("hash1"), CacheLookup::Fresh(_)));
+
+        // Wait past TTL
+        std::thread::sleep(Duration::from_millis(15));
+
+        // Should be Stale (past TTL but within stale window)
+        assert!(matches!(cache.lookup("hash1"), CacheLookup::Stale(_)));
+
+        // get() should return None for stale entries
+        assert!(cache.get("hash1").is_none());
+
+        // Wait past stale window
+        std::thread::sleep(Duration::from_millis(50));
+
+        // Should be Miss
+        assert!(matches!(cache.lookup("hash1"), CacheLookup::Miss));
+    }
+
+    #[test]
+    fn test_cache_stale_disabled_when_zero() {
+        // When stale_ttl is ZERO, stale lookup should be Miss
+        let cache = AuthCache::new(Duration::from_millis(10), Duration::ZERO, Duration::ZERO);
+        let user = make_user("user1", 0, 0);
+        cache.insert("hash1".to_string(), user);
+
+        std::thread::sleep(Duration::from_millis(15));
+        assert!(matches!(cache.lookup("hash1"), CacheLookup::Miss));
+    }
+
+    #[test]
+    fn test_cleanup_respects_stale_window() {
+        let cache = AuthCache::new(
+            Duration::from_millis(10), // TTL
+            Duration::from_millis(50), // stale window
+            Duration::ZERO,
+        );
+        cache.insert("hash1".to_string(), make_user("user1", 0, 0));
+
+        // Past TTL but within stale window — should NOT be cleaned up
+        std::thread::sleep(Duration::from_millis(15));
+        cache.cleanup_expired();
+        assert_eq!(cache.stats().size, 1);
+
+        // Past stale window — should be cleaned up
+        std::thread::sleep(Duration::from_millis(50));
+        cache.cleanup_expired();
+        assert_eq!(cache.stats().size, 0);
     }
 }

@@ -38,6 +38,12 @@ pub struct StoreAuthConfig {
     ///
     /// Set to `Duration::ZERO` to disable negative caching.
     pub neg_cache_ttl: Duration,
+    /// Stale-while-revalidate window beyond the positive cache TTL.
+    ///
+    /// When a cache entry is past `cache_ttl` but within `cache_ttl + stale_ttl`,
+    /// the cached result is returned immediately while a background revalidation
+    /// is spawned. Set to `Duration::ZERO` to disable (default).
+    pub stale_ttl: Duration,
 }
 
 impl Default for StoreAuthConfig {
@@ -49,6 +55,7 @@ impl Default for StoreAuthConfig {
             cache_enabled: false,
             cache_ttl: Duration::from_secs(60),
             neg_cache_ttl: Duration::from_secs(5),
+            stale_ttl: Duration::ZERO,
         }
     }
 }
