@@ -8,23 +8,28 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::UdpSocket;
 use tokio::time::Instant;
 use tracing::{debug, warn};
+use trojan_auth::AuthBackend;
 use trojan_metrics::{record_bytes_received, record_bytes_sent, record_udp_packet};
 use trojan_proto::{ParseResult, parse_udp_packet, write_udp_packet};
 
 use crate::error::ServerError;
+use crate::handler::tcp::record_traffic_for_user;
 use crate::resolve::{address_from_socket, resolve_address};
 use crate::state::ServerState;
 
 /// Handle UDP ASSOCIATE command.
 #[inline]
-pub async fn handle_udp_associate<S>(
+pub async fn handle_udp_associate<S, A>(
     mut stream: S,
     initial: &[u8],
     state: Arc<ServerState>,
+    auth: Arc<A>,
+    user_id: Option<&str>,
     peer: SocketAddr,
 ) -> Result<(), ServerError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    A: AuthBackend + ?Sized,
 {
     debug!(peer = %peer, "starting UDP associate");
 
@@ -43,20 +48,24 @@ where
 
     let mut packets_out: u64 = 0;
     let mut packets_in: u64 = 0;
+    let mut total_bytes: u64 = 0;
 
-    loop {
+    let result = loop {
         tokio::select! {
             res = stream.read_buf(&mut tcp_buf) => {
                 let n = res?;
                 if n == 0 {
                     debug!(peer = %peer, packets_out, packets_in, "UDP associate ended (client closed)");
-                    return Ok(());
+                    break Ok(());
                 }
                 if tcp_buf.len() > state.max_udp_buffer_bytes {
                     warn!(peer = %peer, bytes = tcp_buf.len(), max = state.max_udp_buffer_bytes, "UDP buffer too large");
+                    record_traffic_for_user(&*auth, user_id, total_bytes, peer).await;
                     return Err(ServerError::Config("udp buffer too large".into()));
                 }
-                record_bytes_received(n as u64);
+                let received = n as u64;
+                record_bytes_received(received);
+                total_bytes += received;
                 idle_sleep.as_mut().reset(Instant::now() + state.udp_idle_timeout);
 
                 // Process all complete UDP packets in buffer
@@ -65,6 +74,7 @@ where
                         ParseResult::Complete(pkt) => {
                             if pkt.length > state.max_udp_payload {
                                 warn!(peer = %peer, size = pkt.length, max = state.max_udp_payload, "UDP payload too large");
+                                record_traffic_for_user(&*auth, user_id, total_bytes, peer).await;
                                 return Err(ServerError::UdpPayloadTooLarge);
                             }
                             let target = resolve_address(&pkt.address, &state.dns_resolver).await?;
@@ -95,7 +105,10 @@ where
                             tcp_buf.advance(pkt.packet_len);
                         }
                         ParseResult::Incomplete(_) => break,
-                        ParseResult::Invalid(err) => return Err(ServerError::Proto(err)),
+                        ParseResult::Invalid(err) => {
+                            record_traffic_for_user(&*auth, user_id, total_bytes, peer).await;
+                            return Err(ServerError::Proto(err));
+                        }
                     }
                 }
             }
@@ -113,6 +126,7 @@ where
                     send_udp_response(&mut stream, udp_peer, &udp_buf_v4[..size], &mut response_buf).await?;
                     record_udp_packet("inbound");
                     packets_in += 1;
+                    total_bytes += response_buf.len() as u64;
                 }
             }
 
@@ -129,15 +143,20 @@ where
                     send_udp_response(&mut stream, udp_peer, &udp_buf_v6[..size], &mut response_buf).await?;
                     record_udp_packet("inbound");
                     packets_in += 1;
+                    total_bytes += response_buf.len() as u64;
                 }
             }
 
             _ = &mut idle_sleep => {
                 debug!(peer = %peer, packets_out, packets_in, "UDP associate ended (idle timeout)");
-                return Ok(());
+                break Ok(());
             }
         }
-    }
+    };
+
+    record_traffic_for_user(&*auth, user_id, total_bytes, peer).await;
+
+    result
 }
 
 /// Send a UDP response back to the client using a reusable buffer.

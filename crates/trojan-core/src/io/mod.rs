@@ -7,4 +7,4 @@ mod prefixed;
 mod relay;
 
 pub use prefixed::PrefixedStream;
-pub use relay::{NoOpMetrics, RelayMetrics, relay_bidirectional};
+pub use relay::{NoOpMetrics, RelayMetrics, RelayStats, relay_bidirectional};

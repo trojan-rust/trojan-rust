@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite};
-use trojan_core::io::{RelayMetrics, relay_bidirectional};
+use trojan_core::io::{RelayMetrics, RelayStats, relay_bidirectional};
 use trojan_metrics::{record_bytes_received, record_bytes_sent, record_target_bytes};
 
 use crate::error::ServerError;
@@ -52,7 +52,7 @@ pub async fn relay_with_idle_timeout_and_metrics<A, B>(
     outbound: B,
     idle_timeout: Duration,
     buffer_size: usize,
-) -> Result<(), ServerError>
+) -> Result<RelayStats, ServerError>
 where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
@@ -69,7 +69,7 @@ pub async fn relay_with_idle_timeout_and_metrics_per_target<A, B>(
     idle_timeout: Duration,
     buffer_size: usize,
     target_label: &str,
-) -> Result<(), ServerError>
+) -> Result<RelayStats, ServerError>
 where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,

@@ -157,16 +157,20 @@ where
                     } else {
                         auth.verify(hash).await
                     };
-                    if let Err(err) = verify_result {
-                        debug!(peer = %peer, reason = %err, "auth failed, fallback");
-                        record_auth_failure();
-                        #[cfg(feature = "geoip")]
-                        if !peer_country.is_empty() {
-                            trojan_metrics::record_auth_failure_with_geo(&peer_country);
+                    let auth_result = match verify_result {
+                        Ok(result) => result,
+                        Err(err) => {
+                            debug!(peer = %peer, reason = %err, "auth failed, fallback");
+                            record_auth_failure();
+                            #[cfg(feature = "geoip")]
+                            if !peer_country.is_empty() {
+                                trojan_metrics::record_auth_failure_with_geo(&peer_country);
+                            }
+                            record_fallback();
+                            return handle_fallback(stream, buf.freeze(), state, peer).await;
                         }
-                        record_fallback();
-                        return handle_fallback(stream, buf.freeze(), state, peer).await;
-                    }
+                    };
+                    let user_id = auth_result.user_id;
 
                     record_auth_success();
                     #[cfg(feature = "geoip")]
@@ -281,6 +285,8 @@ where
                                             payload,
                                             outbound.clone(),
                                             state,
+                                            auth,
+                                            user_id.as_deref(),
                                             peer,
                                         )
                                         .await;
@@ -303,11 +309,28 @@ where
                     return match req.command {
                         CMD_CONNECT => {
                             record_connect_request();
-                            handle_connect(stream, req.address, payload, state, peer).await
+                            handle_connect(
+                                stream,
+                                req.address,
+                                payload,
+                                state,
+                                auth,
+                                user_id.as_deref(),
+                                peer,
+                            )
+                            .await
                         }
                         CMD_UDP_ASSOCIATE => {
                             record_udp_associate_request();
-                            handle_udp_associate(stream, payload, state, peer).await
+                            handle_udp_associate(
+                                stream,
+                                payload,
+                                state,
+                                auth,
+                                user_id.as_deref(),
+                                peer,
+                            )
+                            .await
                         }
                         _ => Err(ServerError::Proto(ParseError::InvalidCommand)),
                     };
@@ -336,16 +359,20 @@ where
 
 /// Handle TCP CONNECT via a named outbound connector.
 #[cfg(feature = "rules")]
-async fn handle_connect_via_outbound<S>(
+#[allow(clippy::too_many_arguments)]
+async fn handle_connect_via_outbound<S, A>(
     stream: S,
     address: trojan_proto::AddressRef<'_>,
     payload: &[u8],
     outbound: Arc<crate::outbound::Outbound>,
     state: Arc<ServerState>,
+    auth: Arc<A>,
+    user_id: Option<&str>,
     peer: SocketAddr,
 ) -> Result<(), ServerError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    A: AuthBackend + ?Sized,
 {
     use tokio::io::AsyncWriteExt;
     use trojan_metrics::{
@@ -379,13 +406,14 @@ where
 
     debug!(peer = %peer, target = ?address, "outbound connected");
 
+    let payload_bytes = payload.len() as u64;
     if !payload.is_empty() {
         outbound_stream.write_all(payload).await?;
-        record_bytes_sent(payload.len() as u64);
-        record_target_bytes(&target_label, "sent", payload.len() as u64);
+        record_bytes_sent(payload_bytes);
+        record_target_bytes(&target_label, "sent", payload_bytes);
     }
 
-    crate::relay::relay_with_idle_timeout_and_metrics_per_target(
+    let stats = crate::relay::relay_with_idle_timeout_and_metrics_per_target(
         stream,
         outbound_stream,
         state.tcp_idle_timeout,
@@ -395,5 +423,8 @@ where
     .await?;
 
     debug!(peer = %peer, target = ?address, "outbound relay finished");
+
+    tcp::record_traffic_for_user(&*auth, user_id, payload_bytes + stats.total(), peer).await;
+
     Ok(())
 }

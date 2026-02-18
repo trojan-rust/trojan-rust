@@ -154,6 +154,23 @@ where
     }
 }
 
+/// Bytes transferred in each direction during a relay session.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RelayStats {
+    /// Bytes from inbound to outbound (client → target).
+    pub inbound: u64,
+    /// Bytes from outbound to inbound (target → client).
+    pub outbound: u64,
+}
+
+impl RelayStats {
+    /// Total bytes transferred in both directions.
+    #[inline]
+    pub fn total(self) -> u64 {
+        self.inbound + self.outbound
+    }
+}
+
 /// Bidirectional relay with proper half-close handling.
 ///
 /// Both directions run concurrently within a single task using poll-based
@@ -174,7 +191,7 @@ pub async fn relay_bidirectional<A, B, M>(
     idle_timeout: Duration,
     buffer_size: usize,
     metrics: &M,
-) -> io::Result<()>
+) -> io::Result<RelayStats>
 where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
@@ -193,10 +210,15 @@ where
 
     let mut a_done = false;
     let mut b_done = false;
+    let mut total_inbound: u64 = 0;
+    let mut total_outbound: u64 = 0;
 
     loop {
         if a_done && b_done {
-            return Ok(());
+            return Ok(RelayStats {
+                inbound: total_inbound,
+                outbound: total_outbound,
+            });
         }
 
         // Build a future that polls both directions concurrently.
@@ -210,7 +232,9 @@ where
             if !a_done {
                 match poll_copy_direction(cx, &mut in_r, &mut out_w, &mut buf_a, &mut state_a) {
                     Poll::Ready(Ok(CopyPoll::Flushed(n))) => {
-                        metrics.record_inbound(n as u64);
+                        let bytes = n as u64;
+                        metrics.record_inbound(bytes);
+                        total_inbound += bytes;
                         activity = true;
                         any_ready = true;
                     }
@@ -229,7 +253,9 @@ where
             if !b_done {
                 match poll_copy_direction(cx, &mut out_r, &mut in_w, &mut buf_b, &mut state_b) {
                     Poll::Ready(Ok(CopyPoll::Flushed(n))) => {
-                        metrics.record_outbound(n as u64);
+                        let bytes = n as u64;
+                        metrics.record_outbound(bytes);
+                        total_outbound += bytes;
                         activity = true;
                         any_ready = true;
                     }
@@ -264,7 +290,10 @@ where
                 }
             }
             _ = &mut idle_sleep => {
-                return Ok(());
+                return Ok(RelayStats {
+                    inbound: total_inbound,
+                    outbound: total_outbound,
+                });
             }
         }
     }
