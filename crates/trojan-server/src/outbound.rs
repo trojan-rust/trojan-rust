@@ -5,10 +5,12 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
+use tokio_rustls::TlsConnector;
 use tracing::debug;
 use trojan_config::{OutboundConfig, TcpConfig};
 use trojan_proto::AddressRef;
@@ -19,7 +21,9 @@ use crate::util::connect_with_buffers;
 use trojan_dns::DnsResolver;
 
 /// A configured outbound connector.
-#[derive(Debug)]
+///
+/// For `Trojan` outbounds, the TLS `ClientConfig` is created once and shared
+/// across all connections via `Arc`, enabling TLS session resumption.
 pub enum Outbound {
     /// Direct connection, optionally bound to a local IP.
     Direct { bind: Option<IpAddr> },
@@ -28,9 +32,24 @@ pub enum Outbound {
         addr: String,
         password_hash: String,
         sni: String,
+        tls_connector: TlsConnector,
     },
     /// Reject the connection (close immediately).
     Reject,
+}
+
+impl std::fmt::Debug for Outbound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Outbound::Direct { bind } => f.debug_struct("Direct").field("bind", bind).finish(),
+            Outbound::Trojan { addr, sni, .. } => f
+                .debug_struct("Trojan")
+                .field("addr", addr)
+                .field("sni", sni)
+                .finish_non_exhaustive(),
+            Outbound::Reject => write!(f, "Reject"),
+        }
+    }
 }
 
 /// An established outbound connection, ready for relay.
@@ -130,10 +149,16 @@ impl Outbound {
                 use sha2::{Digest, Sha224};
                 let hash = hex::encode(Sha224::digest(password.as_bytes()));
 
+                // Build TLS config once — shared across all connections so
+                // rustls's default in-memory session cache (256 entries) can
+                // enable TLS session resumption.
+                let tls_connector = build_trojan_tls_connector();
+
                 Ok(Outbound::Trojan {
                     addr: addr.to_string(),
                     password_hash: hash,
                     sni,
+                    tls_connector,
                 })
             }
             "reject" => Ok(Outbound::Reject),
@@ -169,11 +194,13 @@ impl Outbound {
                 addr,
                 password_hash,
                 sni,
+                tls_connector,
             } => {
                 let stream = connect_trojan_outbound(
                     addr,
                     password_hash,
                     sni,
+                    tls_connector,
                     address,
                     tcp_config,
                     resolver,
@@ -213,30 +240,41 @@ async fn connect_with_bind(
     Ok(stream)
 }
 
+/// Build a `TlsConnector` for trojan outbound connections.
+///
+/// The returned connector trusts system root certificates and uses rustls's
+/// default in-memory session cache (256 entries), enabling TLS session
+/// resumption for repeated connections to the same server.
+fn build_trojan_tls_connector() -> TlsConnector {
+    let provider = rustls::crypto::CryptoProvider::get_default()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(rustls::crypto::aws_lc_rs::default_provider()));
+
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let tls_config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("TLS protocol versions")
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    TlsConnector::from(Arc::new(tls_config))
+}
+
 /// Connect to a remote trojan server and send the trojan request header.
 async fn connect_trojan_outbound(
     addr: &str,
     password_hash: &str,
     sni: &str,
+    connector: &TlsConnector,
     target: &AddressRef<'_>,
     tcp_config: &TcpConfig,
     resolver: &DnsResolver,
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, ServerError> {
     use rustls::pki_types::ServerName;
-    use std::sync::Arc;
-    use tokio_rustls::TlsConnector;
 
     // Resolve the trojan server address
     let server_addr = resolve_sockaddr(addr, resolver).await?;
     debug!(server = %addr, resolved = %server_addr, "connecting to trojan outbound");
-
-    // Create TLS config for outbound (trust system roots)
-    let mut root_store = rustls::RootCertStore::empty();
-    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let tls_config = rustls::ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-    let connector = TlsConnector::from(Arc::new(tls_config));
 
     let tcp = TcpStream::connect(server_addr).await?;
     tcp.set_nodelay(tcp_config.no_delay)?;
@@ -432,5 +470,45 @@ mod tests {
     #[test]
     fn extract_host_bare() {
         assert_eq!(extract_host("example.com"), "example.com");
+    }
+
+    #[test]
+    fn trojan_outbound_has_tls_connector() {
+        // Verify that from_config creates a Trojan variant with a TLS connector.
+        let cfg = OutboundConfig {
+            outbound_type: "trojan".to_string(),
+            addr: Some("server.example.com:443".to_string()),
+            password: Some("secret".to_string()),
+            sni: Some("example.com".to_string()),
+            bind: None,
+        };
+        let outbound = Outbound::from_config("test", &cfg).unwrap();
+        match &outbound {
+            Outbound::Trojan {
+                tls_connector, sni, ..
+            } => {
+                assert_eq!(sni, "example.com");
+                // TlsConnector is Clone (via Arc<ClientConfig>); verify it's usable.
+                let _cloned = tls_connector.clone();
+            }
+            _ => panic!("expected Trojan variant"),
+        }
+    }
+
+    #[test]
+    fn trojan_outbound_debug_format() {
+        let cfg = OutboundConfig {
+            outbound_type: "trojan".to_string(),
+            addr: Some("server.example.com:443".to_string()),
+            password: Some("secret".to_string()),
+            sni: Some("example.com".to_string()),
+            bind: None,
+        };
+        let outbound = Outbound::from_config("test", &cfg).unwrap();
+        let debug = format!("{:?}", outbound);
+        assert!(debug.contains("Trojan"));
+        assert!(debug.contains("example.com"));
+        // password_hash and tls_connector should not appear in debug output
+        assert!(!debug.contains("tls_connector"));
     }
 }

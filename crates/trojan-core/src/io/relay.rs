@@ -40,11 +40,17 @@ impl RelayMetrics for NoOpMetrics {
     fn record_outbound(&self, _bytes: u64) {}
 }
 
-/// State machine for one-directional copy with flush.
+/// State machine for one-directional copy with deferred flush.
+///
+/// Unlike a naive read→write→flush loop, this batches multiple read/write
+/// cycles before flushing. A flush only happens when the reader returns
+/// `Pending` (no more data immediately available) or on EOF. This mirrors
+/// the strategy used by `tokio::io::copy` and avoids excessive flush
+/// syscalls on buffered writers like TLS streams.
 enum CopyState {
-    Reading,
-    Writing(usize, usize), // (pos, len)
-    Flushing(usize),       // bytes flushing
+    Reading(usize),               // accumulated bytes since last flush
+    Writing(usize, usize, usize), // (pos, len, accumulated)
+    Flushing(usize, bool),        // (total bytes to report, is_eof)
     ShuttingDown,
     Done,
 }
@@ -57,7 +63,12 @@ enum CopyPoll {
     Finished,
 }
 
-/// Poll-driven one-directional copy: read → write → flush.
+/// Poll-driven one-directional copy with deferred flush.
+///
+/// Reads and writes in a loop, only flushing when the reader has no more
+/// data immediately available (`Pending`) or at EOF. This batches multiple
+/// read/write cycles into a single flush, reducing syscall overhead on
+/// buffered writers (e.g. TLS streams).
 fn poll_copy_direction<R, W>(
     cx: &mut Context<'_>,
     reader: &mut R,
@@ -71,39 +82,60 @@ where
 {
     loop {
         match state {
-            CopyState::Reading => {
+            CopyState::Reading(flushed) => {
                 let mut read_buf = ReadBuf::new(buf);
                 match Pin::new(&mut *reader).poll_read(cx, &mut read_buf) {
                     Poll::Ready(Ok(())) => {
                         let n = read_buf.filled().len();
                         if n == 0 {
-                            *state = CopyState::ShuttingDown;
+                            // EOF — flush any accumulated bytes, then shut down.
+                            if *flushed > 0 {
+                                let total = *flushed;
+                                *state = CopyState::Flushing(total, true);
+                            } else {
+                                *state = CopyState::ShuttingDown;
+                            }
                         } else {
-                            *state = CopyState::Writing(0, n);
+                            let acc = *flushed;
+                            *state = CopyState::Writing(0, n, acc);
                         }
                     }
                     Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                    Poll::Pending => return Poll::Pending,
+                    Poll::Pending => {
+                        // Reader has no more data — flush accumulated bytes.
+                        if *flushed > 0 {
+                            let total = *flushed;
+                            *state = CopyState::Flushing(total, false);
+                        } else {
+                            return Poll::Pending;
+                        }
+                    }
                 }
             }
-            CopyState::Writing(pos, len) => {
+            CopyState::Writing(pos, len, acc) => {
                 match Pin::new(&mut *writer).poll_write(cx, &buf[*pos..*len]) {
                     Poll::Ready(Ok(n)) => {
                         *pos += n;
                         if *pos >= *len {
-                            let total = *len;
-                            *state = CopyState::Flushing(total);
+                            let total = *acc + *len;
+                            // Don't flush yet — try to read more data first.
+                            *state = CopyState::Reading(total);
                         }
                     }
                     Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                     Poll::Pending => return Poll::Pending,
                 }
             }
-            CopyState::Flushing(bytes) => {
+            CopyState::Flushing(bytes, is_eof) => {
                 let bytes = *bytes;
+                let eof = *is_eof;
                 match Pin::new(&mut *writer).poll_flush(cx) {
                     Poll::Ready(Ok(())) => {
-                        *state = CopyState::Reading;
+                        if eof {
+                            *state = CopyState::ShuttingDown;
+                        } else {
+                            *state = CopyState::Reading(0);
+                        }
                         return Poll::Ready(Ok(CopyPoll::Flushed(bytes)));
                     }
                     Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
@@ -153,8 +185,8 @@ where
 
     let mut buf_a = vec![0u8; buffer_size];
     let mut buf_b = vec![0u8; buffer_size];
-    let mut state_a = CopyState::Reading;
-    let mut state_b = CopyState::Reading;
+    let mut state_a = CopyState::Reading(0);
+    let mut state_b = CopyState::Reading(0);
 
     let idle_sleep = tokio::time::sleep(idle_timeout);
     tokio::pin!(idle_sleep);
@@ -241,6 +273,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
     use std::sync::atomic::{AtomicU64, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
@@ -327,5 +360,205 @@ mod tests {
         assert!(start.elapsed() >= Duration::from_millis(50));
 
         drop(client); // cleanup
+    }
+
+    // ── Flush-batching tests ──
+
+    /// A mock reader that yields chunks from a queue.
+    /// Returns `Pending` (with waker notification) between groups separated
+    /// by `None` entries, simulating data arriving in bursts.
+    struct MockReader {
+        /// `Some(data)` = a read returning data, `None` = return Pending once.
+        chunks: VecDeque<Option<Vec<u8>>>,
+        pending_waker: Option<std::task::Waker>,
+    }
+
+    impl MockReader {
+        fn new(chunks: Vec<Option<Vec<u8>>>) -> Self {
+            Self {
+                chunks: chunks.into(),
+                pending_waker: None,
+            }
+        }
+    }
+
+    impl AsyncRead for MockReader {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            match self.chunks.front() {
+                Some(Some(_)) => {
+                    let data = self.chunks.pop_front().unwrap().unwrap();
+                    buf.put_slice(&data);
+                    Poll::Ready(Ok(()))
+                }
+                Some(None) => {
+                    // Consume the Pending marker, wake immediately so the
+                    // next poll will return the next chunk.
+                    self.chunks.pop_front();
+                    self.pending_waker = Some(cx.waker().clone());
+                    // Schedule a wake so the state machine advances.
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+                None => {
+                    // EOF
+                    Poll::Ready(Ok(()))
+                }
+            }
+        }
+    }
+
+    /// A writer that counts flush calls and records written data.
+    struct FlushCountingWriter {
+        written: Vec<u8>,
+        flush_count: usize,
+    }
+
+    impl FlushCountingWriter {
+        fn new() -> Self {
+            Self {
+                written: Vec::new(),
+                flush_count: 0,
+            }
+        }
+    }
+
+    impl AsyncWrite for FlushCountingWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            self.written.extend_from_slice(buf);
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            self.flush_count += 1;
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_flush_batching_consecutive_reads() {
+        // Simulate 3 chunks arriving in a burst (no Pending between them),
+        // followed by EOF. The state machine should batch all 3 writes into
+        // a single flush (the EOF flush).
+        let mut reader = MockReader::new(vec![
+            Some(b"aaa".to_vec()),
+            Some(b"bbb".to_vec()),
+            Some(b"ccc".to_vec()),
+            // EOF follows (empty queue)
+        ]);
+        let mut writer = FlushCountingWriter::new();
+        let mut buf = vec![0u8; 64];
+        let mut state = CopyState::Reading(0);
+
+        let mut total_bytes = 0;
+        loop {
+            let result = std::future::poll_fn(|cx| {
+                poll_copy_direction(cx, &mut reader, &mut writer, &mut buf, &mut state)
+            })
+            .await
+            .unwrap();
+            match result {
+                CopyPoll::Flushed(n) => total_bytes += n,
+                CopyPoll::Finished => break,
+            }
+        }
+
+        assert_eq!(writer.written, b"aaabbbccc");
+        assert_eq!(total_bytes, 9);
+        // All 3 chunks were available consecutively — should batch into 1 flush
+        // (the EOF-triggered flush), not 3 separate flushes.
+        assert_eq!(
+            writer.flush_count, 1,
+            "consecutive reads should batch flushes"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_flush_on_pending() {
+        // Simulate: chunk1, Pending, chunk2, Pending, EOF.
+        // Should flush after each Pending (2 flushes) plus EOF flush (but
+        // EOF after Pending with 0 accumulated goes straight to shutdown).
+        // Actually: chunk1 → write → Reading(3) → Pending → Flushing(3) → flush#1
+        //           chunk2 → write → Reading(3) → Pending → but no accumulated → Pending
+        //           Wait, after flush#1 we reset to Reading(0), then read chunk2...
+        // Let me trace: chunk1 → write → Reading(3) → Pending → Flush(3, false) → flush#1
+        //               Reading(0) → chunk2 → write → Reading(3) → Pending → Flush(3, false) → flush#2
+        //               Reading(0) → EOF → ShuttingDown → Finished
+        let mut reader = MockReader::new(vec![
+            Some(b"aaa".to_vec()),
+            None, // Pending
+            Some(b"bbb".to_vec()),
+            None, // Pending
+                  // EOF
+        ]);
+        let mut writer = FlushCountingWriter::new();
+        let mut buf = vec![0u8; 64];
+        let mut state = CopyState::Reading(0);
+
+        let mut total_bytes = 0;
+        loop {
+            let result = std::future::poll_fn(|cx| {
+                poll_copy_direction(cx, &mut reader, &mut writer, &mut buf, &mut state)
+            })
+            .await
+            .unwrap();
+            match result {
+                CopyPoll::Flushed(n) => total_bytes += n,
+                CopyPoll::Finished => break,
+            }
+        }
+
+        assert_eq!(writer.written, b"aaabbb");
+        assert_eq!(total_bytes, 6);
+        // 2 flushes: one after each Pending gap.
+        assert_eq!(writer.flush_count, 2, "should flush once per Pending gap");
+    }
+
+    #[tokio::test]
+    async fn test_flush_batching_burst_then_pending() {
+        // 3 chunks in a burst, then Pending, then 1 more chunk, then EOF.
+        // Should produce 2 flushes: one for the burst (at Pending), one at EOF.
+        let mut reader = MockReader::new(vec![
+            Some(b"a".to_vec()),
+            Some(b"b".to_vec()),
+            Some(b"c".to_vec()),
+            None, // Pending — triggers flush of accumulated 3 bytes
+            Some(b"d".to_vec()),
+            // EOF — triggers flush of 1 byte
+        ]);
+        let mut writer = FlushCountingWriter::new();
+        let mut buf = vec![0u8; 64];
+        let mut state = CopyState::Reading(0);
+
+        let mut total_bytes = 0;
+        loop {
+            let result = std::future::poll_fn(|cx| {
+                poll_copy_direction(cx, &mut reader, &mut writer, &mut buf, &mut state)
+            })
+            .await
+            .unwrap();
+            match result {
+                CopyPoll::Flushed(n) => total_bytes += n,
+                CopyPoll::Finished => break,
+            }
+        }
+
+        assert_eq!(writer.written, b"abcd");
+        assert_eq!(total_bytes, 4);
+        assert_eq!(
+            writer.flush_count, 2,
+            "burst then pending then EOF = 2 flushes"
+        );
     }
 }
