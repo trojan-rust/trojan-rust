@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+## [0.8.1](https://github.com/trojan-rust/trojan-rust/compare/v0.8.0...v0.8.1) - 2026-02-18
+
+### Bug Fixes
+
+- wire auth.record_traffic() so traffic data reaches auth-worker
+
+
+### Performance
+
+- defer flush until reader is idle and share TLS config
+
 ## [0.8.0](https://github.com/trojan-rust/trojan-rust/compare/v0.7.0...v0.8.0) - 2026-02-18
 
 ### Bug Fixes
