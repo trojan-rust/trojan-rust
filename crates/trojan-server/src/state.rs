@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use crate::pool::ConnectionPool;
 use trojan_config::{TcpConfig, WebSocketConfig};
+use trojan_dns::DnsResolver;
 
 /// Shared server state for all connections.
 #[derive(Clone)]
@@ -22,6 +23,7 @@ pub struct ServerState {
     pub tcp_recv_buffer: usize,
     pub tcp_config: TcpConfig,
     pub websocket: WebSocketConfig,
+    pub dns_resolver: DnsResolver,
     /// Analytics event collector (only available when analytics feature is enabled).
     #[cfg(feature = "analytics")]
     pub analytics: Option<trojan_analytics::EventCollector>,

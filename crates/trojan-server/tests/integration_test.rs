@@ -239,6 +239,7 @@ impl TestServer {
                 level: Some("warn".to_string()),
                 ..Default::default()
             },
+            dns: Default::default(),
         };
 
         let auth = MemoryAuth::from_passwords(&config.auth.passwords);
@@ -494,6 +495,7 @@ async fn test_graceful_shutdown() {
             level: Some("warn".to_string()),
             ..Default::default()
         },
+        dns: Default::default(),
     };
 
     let auth = MemoryAuth::from_passwords(&config.auth.passwords);
@@ -658,6 +660,7 @@ async fn test_max_connections_limit() {
             level: Some("warn".to_string()),
             ..Default::default()
         },
+        dns: Default::default(),
     };
 
     let auth = MemoryAuth::from_passwords(&config.auth.passwords);
@@ -810,6 +813,7 @@ async fn test_rate_limiting() {
             level: Some("warn".to_string()),
             ..Default::default()
         },
+        dns: Default::default(),
     };
 
     let auth = MemoryAuth::from_passwords(&config.auth.passwords);
@@ -945,6 +949,7 @@ async fn test_tls13_only() {
             level: Some("warn".to_string()),
             ..Default::default()
         },
+        dns: Default::default(),
     };
 
     let auth = MemoryAuth::from_passwords(&config.auth.passwords);
@@ -1144,6 +1149,7 @@ async fn test_udp_idle_timeout() {
             level: Some("warn".to_string()),
             ..Default::default()
         },
+        dns: Default::default(),
     };
 
     let auth = MemoryAuth::from_passwords(&config.auth.passwords);
@@ -1388,6 +1394,7 @@ async fn test_tcp_idle_timeout() {
             level: Some("warn".to_string()),
             ..Default::default()
         },
+        dns: Default::default(),
     };
 
     let auth = MemoryAuth::from_passwords(&config.auth.passwords);
@@ -1659,6 +1666,7 @@ mod rules_tests {
                     level: Some("debug".to_string()),
                     ..Default::default()
                 },
+                dns: Default::default(),
             };
 
             let auth = MemoryAuth::from_passwords(&config.auth.passwords);

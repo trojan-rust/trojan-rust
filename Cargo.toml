@@ -27,6 +27,7 @@ members = [
     "crates/trojan-rs",
     "crates/trojan-relay",
     "crates/trojan-transport",
+    "crates/trojan-dns",
     "crates/trojan-lb",
     "crates/trojan-rules",
     "crates/trojan-agent",
@@ -55,6 +56,7 @@ trojan-client = { version = "0.7.0", path = "crates/trojan-client" }
 trojan-cert = { version = "0.7.0", path = "crates/trojan-cert" }
 trojan-relay = { version = "0.7.0", path = "crates/trojan-relay" }
 trojan-transport = { version = "0.7.0", path = "crates/trojan-transport" }
+trojan-dns = { version = "0.7.0", path = "crates/trojan-dns" }
 trojan-lb = { version = "0.7.0", path = "crates/trojan-lb" }
 trojan-rules = { version = "0.7.0", path = "crates/trojan-rules" }
 trojan-agent = { version = "0.7.0", path = "crates/trojan-agent" }
@@ -62,6 +64,13 @@ trojan-protocol = { version = "0.7.0", path = "crates/trojan-protocol" }
 
 # External dependencies (shared across crates)
 arc-swap = "1"
+hickory-resolver = { version = "0.25", features = [
+    "system-config",
+    "tokio",
+    "tls-aws-lc-rs",
+    "https-aws-lc-rs",
+    "webpki-roots",
+] }
 bincode = "=1.3.3"
 async-trait = "0.1"
 axum = "0.8"

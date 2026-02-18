@@ -42,10 +42,18 @@ pub async fn run(
 ) -> Result<(), RelayError> {
     let relay_cfg = &config.relay;
 
+    // Build DNS resolver from config
+    let resolver = trojan_dns::DnsResolver::new(&relay_cfg.dns)
+        .map_err(|e| RelayError::Config(format!("dns resolver: {e}")))?;
+    info!(dns = ?relay_cfg.dns.strategy, "dns resolver initialized");
+
     let connectors = OutboundConnectors {
-        tls: TlsTransportConnector::new_insecure(relay_cfg.outbound.sni.clone()),
-        plain: PlainTransportConnector,
-        ws: WsTransportConnector,
+        tls: TlsTransportConnector::new_insecure_with_resolver(
+            relay_cfg.outbound.sni.clone(),
+            resolver.clone(),
+        ),
+        plain: PlainTransportConnector::with_resolver(resolver.clone()),
+        ws: WsTransportConnector::with_resolver(resolver),
         default_transport: relay_cfg.transport.clone(),
         default_sni: relay_cfg.outbound.sni.clone(),
     };

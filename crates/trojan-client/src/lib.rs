@@ -24,11 +24,17 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use trojan_auth::sha224_hex;
 use trojan_core::defaults::DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS;
+use trojan_dns::DnsResolver;
 
 /// Run the trojan client with the given configuration.
 pub async fn run(config: ClientConfig, shutdown: CancellationToken) -> Result<(), ClientError> {
     // Compute password hash
     let hash_hex = sha224_hex(&config.client.password);
+
+    // Build DNS resolver from config
+    let dns_resolver = DnsResolver::new(&config.client.dns)
+        .map_err(|e| ClientError::Config(format!("dns resolver: {e}")))?;
+    info!(dns = ?config.client.dns.strategy, "dns resolver initialized");
 
     // Build TLS config
     let tls_config = connector::build_tls_config(&config.client.tls)?;
@@ -42,6 +48,7 @@ pub async fn run(config: ClientConfig, shutdown: CancellationToken) -> Result<()
         sni,
         tcp_config: config.client.tcp.clone(),
         tls_handshake_timeout: Duration::from_secs(DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS),
+        dns_resolver,
     });
 
     // Bind SOCKS5 listener

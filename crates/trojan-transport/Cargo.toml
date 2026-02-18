@@ -13,6 +13,7 @@ categories = ["network-programming"]
 
 [dependencies]
 trojan-core = { workspace = true, features = ["ws"] }
+trojan-dns.workspace = true
 
 tokio = { workspace = true, features = ["net", "io-util"] }
 tokio-rustls.workspace = true

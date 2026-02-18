@@ -12,6 +12,7 @@ use std::pin::Pin;
 
 use tokio::net::TcpStream;
 use tokio_tungstenite::{accept_async, client_async};
+use trojan_dns::DnsResolver;
 
 use trojan_core::transport::WsIo;
 
@@ -39,8 +40,34 @@ impl TransportAcceptor for WsTransportAcceptor {
 }
 
 /// WebSocket transport connector — connects outbound and upgrades to WebSocket.
+///
+/// When a [`DnsResolver`] is configured, domain names are resolved via
+/// hickory-resolver before TCP connect. Without a resolver, falls back to
+/// Tokio's built-in system DNS resolution.
 #[derive(Debug, Clone)]
-pub struct WsTransportConnector;
+pub struct WsTransportConnector {
+    resolver: Option<DnsResolver>,
+}
+
+impl WsTransportConnector {
+    /// Create a WebSocket connector without a DNS resolver (uses system DNS).
+    pub fn new() -> Self {
+        Self { resolver: None }
+    }
+
+    /// Create a WebSocket connector with a custom DNS resolver.
+    pub fn with_resolver(resolver: DnsResolver) -> Self {
+        Self {
+            resolver: Some(resolver),
+        }
+    }
+}
+
+impl Default for WsTransportConnector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl TransportConnector for WsTransportConnector {
     type Stream = WsIo<TcpStream>;
@@ -50,8 +77,17 @@ impl TransportConnector for WsTransportConnector {
         addr: &str,
     ) -> Pin<Box<dyn Future<Output = Result<Self::Stream, TransportError>> + Send + '_>> {
         let addr = addr.to_string();
+        let resolver = self.resolver.clone();
         Box::pin(async move {
-            let tcp = TcpStream::connect(&addr).await?;
+            let tcp = if let Some(resolver) = resolver {
+                let socket_addr = resolver
+                    .resolve(&addr)
+                    .await
+                    .map_err(|e| TransportError::Io(std::io::Error::other(e)))?;
+                TcpStream::connect(socket_addr).await?
+            } else {
+                TcpStream::connect(&addr).await?
+            };
             tcp.set_nodelay(true)?;
 
             let url = format!("ws://{}/", addr);

@@ -32,6 +32,10 @@ pub struct ClientSettings {
     /// TCP socket options.
     #[serde(default)]
     pub tcp: TcpConfig,
+
+    /// DNS resolver configuration.
+    #[serde(default)]
+    pub dns: trojan_dns::DnsConfig,
 }
 
 /// Client-side TLS configuration.

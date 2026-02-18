@@ -14,6 +14,8 @@ use tokio::net::TcpStream;
 use tokio_rustls::rustls;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
+use trojan_dns::DnsResolver;
+
 use crate::error::TransportError;
 use crate::tls_config::TlsConfig;
 use crate::{TransportAcceptor, TransportConnector};
@@ -56,11 +58,17 @@ impl TransportAcceptor for TlsTransportAcceptor {
 // ── TLS Connector ──
 
 /// TLS transport connector for outbound connections.
+///
+/// When a [`DnsResolver`] is configured, domain names are resolved via
+/// hickory-resolver before TCP connect. Without a resolver, falls back to
+/// Tokio's built-in system DNS resolution.
 #[derive(Debug, Clone)]
 pub struct TlsTransportConnector {
     client_config: Arc<rustls::ClientConfig>,
     /// SNI value to send in the TLS ClientHello.
     sni: String,
+    /// Optional DNS resolver for cached / custom resolution.
+    resolver: Option<DnsResolver>,
 }
 
 impl TlsTransportConnector {
@@ -69,6 +77,16 @@ impl TlsTransportConnector {
         Self {
             client_config: Arc::new(build_insecure_client_tls_config()),
             sni,
+            resolver: None,
+        }
+    }
+
+    /// Build an insecure TLS connector with a custom DNS resolver.
+    pub fn new_insecure_with_resolver(sni: String, resolver: DnsResolver) -> Self {
+        Self {
+            client_config: Arc::new(build_insecure_client_tls_config()),
+            sni,
+            resolver: Some(resolver),
         }
     }
 
@@ -77,6 +95,7 @@ impl TlsTransportConnector {
         Self {
             client_config: self.client_config.clone(),
             sni,
+            resolver: self.resolver.clone(),
         }
     }
 }
@@ -91,8 +110,17 @@ impl TransportConnector for TlsTransportConnector {
         let client_config = self.client_config.clone();
         let sni = self.sni.clone();
         let addr = addr.to_string();
+        let resolver = self.resolver.clone();
         Box::pin(async move {
-            let tcp = TcpStream::connect(&addr).await?;
+            let tcp = if let Some(resolver) = resolver {
+                let socket_addr = resolver
+                    .resolve(&addr)
+                    .await
+                    .map_err(|e| TransportError::Io(std::io::Error::other(e)))?;
+                TcpStream::connect(socket_addr).await?
+            } else {
+                TcpStream::connect(&addr).await?
+            };
             tcp.set_nodelay(true)?;
 
             let server_name = rustls::pki_types::ServerName::try_from(sni)

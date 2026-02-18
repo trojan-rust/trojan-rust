@@ -14,8 +14,9 @@ use trojan_config::{OutboundConfig, TcpConfig};
 use trojan_proto::AddressRef;
 
 use crate::error::ServerError;
-use crate::resolve::resolve_address;
+use crate::resolve::{resolve_address, resolve_sockaddr};
 use crate::util::connect_with_buffers;
+use trojan_dns::DnsResolver;
 
 /// A configured outbound connector.
 #[derive(Debug)]
@@ -152,10 +153,11 @@ impl Outbound {
         tcp_config: &TcpConfig,
         send_buf: usize,
         recv_buf: usize,
+        resolver: &DnsResolver,
     ) -> Result<Option<OutboundStream>, ServerError> {
         match self {
             Outbound::Direct { bind } => {
-                let target = resolve_address(address, tcp_config.prefer_ipv4).await?;
+                let target = resolve_address(address, resolver).await?;
                 let stream = if let Some(bind_ip) = bind {
                     connect_with_bind(target, *bind_ip, send_buf, recv_buf, tcp_config).await?
                 } else {
@@ -168,8 +170,15 @@ impl Outbound {
                 password_hash,
                 sni,
             } => {
-                let stream =
-                    connect_trojan_outbound(addr, password_hash, sni, address, tcp_config).await?;
+                let stream = connect_trojan_outbound(
+                    addr,
+                    password_hash,
+                    sni,
+                    address,
+                    tcp_config,
+                    resolver,
+                )
+                .await?;
                 Ok(Some(OutboundStream::Tls(stream)))
             }
             Outbound::Reject => Ok(None),
@@ -211,13 +220,14 @@ async fn connect_trojan_outbound(
     sni: &str,
     target: &AddressRef<'_>,
     tcp_config: &TcpConfig,
+    resolver: &DnsResolver,
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, ServerError> {
     use rustls::pki_types::ServerName;
     use std::sync::Arc;
     use tokio_rustls::TlsConnector;
 
     // Resolve the trojan server address
-    let server_addr = crate::resolve::resolve_sockaddr(addr, tcp_config.prefer_ipv4).await?;
+    let server_addr = resolve_sockaddr(addr, resolver).await?;
     debug!(server = %addr, resolved = %server_addr, "connecting to trojan outbound");
 
     // Create TLS config for outbound (trust system roots)

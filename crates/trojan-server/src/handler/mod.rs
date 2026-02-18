@@ -239,7 +239,7 @@ where
                                     // An IP-based rule appeared first; resolve and retry.
                                     match crate::resolve::resolve_address(
                                         &req.address,
-                                        state.tcp_config.prefer_ipv4,
+                                        &state.dns_resolver,
                                     )
                                     .await
                                     {
@@ -363,6 +363,7 @@ where
             &state.tcp_config,
             state.tcp_send_buffer,
             state.tcp_recv_buffer,
+            &state.dns_resolver,
         )
         .await?;
     record_target_connect_duration(connect_start.elapsed().as_secs_f64());

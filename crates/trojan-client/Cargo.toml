@@ -43,6 +43,7 @@ socket2.workspace = true
 
 # workspace crates
 trojan-core.workspace = true
+trojan-dns.workspace = true
 trojan-proto.workspace = true
 trojan-auth.workspace = true
 trojan-config.workspace = true

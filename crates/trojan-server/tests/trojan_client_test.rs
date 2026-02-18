@@ -184,6 +184,7 @@ impl TestServer {
                 level: Some("debug".to_string()),
                 ..Default::default()
             },
+            dns: Default::default(),
         };
 
         let auth = MemoryAuth::from_passwords(&config.auth.passwords);

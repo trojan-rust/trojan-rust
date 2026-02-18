@@ -245,6 +245,7 @@ impl TestServer {
                 level: Some("warn".to_string()),
                 ..Default::default()
             },
+            dns: Default::default(),
         };
 
         let auth = MemoryAuth::from_passwords(&config.auth.passwords);
@@ -294,6 +295,7 @@ impl TestClient {
                     ..Default::default()
                 },
                 tcp: TcpConfig::default(),
+                dns: Default::default(),
             },
             logging: LoggingConfig {
                 level: Some("warn".to_string()),
@@ -604,6 +606,7 @@ mod rules_e2e {
                     level: Some("warn".to_string()),
                     ..Default::default()
                 },
+                dns: Default::default(),
             };
 
             let auth = MemoryAuth::from_passwords(&config.auth.passwords);

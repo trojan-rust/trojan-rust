@@ -25,6 +25,10 @@ pub struct EntryConfig {
     /// Global timeout settings.
     #[serde(default)]
     pub timeouts: TimeoutConfig,
+
+    /// DNS resolver settings.
+    #[serde(default)]
+    pub dns: trojan_dns::DnsConfig,
 }
 
 /// A named relay chain — an ordered list of relay nodes.
@@ -131,6 +135,10 @@ pub struct RelayListenerConfig {
     /// Timeout settings.
     #[serde(default)]
     pub timeouts: TimeoutConfig,
+
+    /// DNS resolver settings.
+    #[serde(default)]
+    pub dns: trojan_dns::DnsConfig,
 }
 
 /// Optional manual TLS certificate for relay node.

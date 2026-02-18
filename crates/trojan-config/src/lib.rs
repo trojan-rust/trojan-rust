@@ -28,4 +28,6 @@ pub struct Config {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub analytics: AnalyticsConfig,
+    #[serde(default)]
+    pub dns: trojan_dns::DnsConfig,
 }

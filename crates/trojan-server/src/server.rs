@@ -22,6 +22,7 @@ use crate::util::{ConnectionGuard, ConnectionTracker, apply_tcp_options, create_
 use trojan_auth::AuthBackend;
 use trojan_config::Config;
 use trojan_core::defaults;
+use trojan_dns::DnsResolver;
 use trojan_metrics::{
     ERROR_TLS_HANDSHAKE, record_connection_accepted, record_connection_closed,
     record_connection_rejected, record_error, record_tls_handshake_duration,
@@ -55,8 +56,12 @@ pub async fn run_with_shutdown(
         .parse()
         .map_err(|_| ServerError::Config("invalid listen address".into()))?;
 
-    let fallback_addr =
-        resolve_sockaddr(&config.server.fallback, config.server.tcp.prefer_ipv4).await?;
+    // Build DNS resolver from config
+    let dns_resolver = DnsResolver::new(&config.dns)
+        .map_err(|e| ServerError::Config(format!("dns resolver: {e}")))?;
+    info!(dns = ?config.dns.strategy, "dns resolver initialized");
+
+    let fallback_addr = resolve_sockaddr(&config.server.fallback, &dns_resolver).await?;
 
     // Initialize fallback connection pool if configured
     let fallback_pool: Option<Arc<ConnectionPool>> =
@@ -233,6 +238,7 @@ pub async fn run_with_shutdown(
         tcp_recv_buffer,
         tcp_config: config.server.tcp.clone(),
         websocket: config.websocket.clone(),
+        dns_resolver,
         #[cfg(feature = "analytics")]
         analytics,
         #[cfg(feature = "rules")]

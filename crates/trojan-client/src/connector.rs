@@ -10,6 +10,7 @@ use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 use tracing::debug;
 use trojan_config::TcpConfig;
+use trojan_dns::DnsResolver;
 
 use crate::error::ClientError;
 
@@ -28,16 +29,19 @@ pub struct ClientState {
     pub tcp_config: TcpConfig,
     /// TLS handshake timeout.
     pub tls_handshake_timeout: Duration,
+    /// DNS resolver.
+    pub dns_resolver: DnsResolver,
 }
 
 impl ClientState {
     /// Establish a TLS connection to the remote trojan server.
     pub async fn connect(&self) -> Result<TlsStream<TcpStream>, ClientError> {
         // DNS resolve
-        let addr: SocketAddr = tokio::net::lookup_host(&self.remote_addr)
-            .await?
-            .next()
-            .ok_or_else(|| ClientError::Resolve(self.remote_addr.clone()))?;
+        let addr: SocketAddr = self
+            .dns_resolver
+            .resolve(&self.remote_addr)
+            .await
+            .map_err(|_| ClientError::Resolve(self.remote_addr.clone()))?;
 
         debug!(remote = %addr, "connecting to trojan server");
 

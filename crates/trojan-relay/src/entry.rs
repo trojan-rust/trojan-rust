@@ -41,10 +41,18 @@ pub async fn run(
     let router = Arc::new(Router::new(&config)?);
     let timeouts = config.timeouts.clone();
 
+    // Build DNS resolver from config
+    let resolver = trojan_dns::DnsResolver::new(&config.dns)
+        .map_err(|e| RelayError::Config(format!("dns resolver: {e}")))?;
+    info!(dns = ?config.dns.strategy, "dns resolver initialized");
+
     // Shared insecure TLS client config (SNI set per-connection via with_sni)
-    let base_tls_connector = TlsTransportConnector::new_insecure("crates.io".to_string());
-    let plain_connector = PlainTransportConnector;
-    let ws_connector = WsTransportConnector;
+    let base_tls_connector = TlsTransportConnector::new_insecure_with_resolver(
+        "crates.io".to_string(),
+        resolver.clone(),
+    );
+    let plain_connector = PlainTransportConnector::with_resolver(resolver.clone());
+    let ws_connector = WsTransportConnector::with_resolver(resolver);
 
     // Spawn a listener task for each rule
     let mut handles = Vec::new();
