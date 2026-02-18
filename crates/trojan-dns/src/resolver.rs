@@ -1,6 +1,6 @@
 //! Async DNS resolver backed by hickory-resolver.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 
 use hickory_proto::xfer::Protocol;
@@ -159,6 +159,11 @@ fn parse_server_urls(urls: &[String]) -> Result<NameServerConfigGroup, DnsError>
 
         match protocol {
             "udp" | "tcp" => {
+                if rest.contains('/') {
+                    return Err(DnsError::InvalidServer(format!(
+                        "unexpected path for {protocol} server: {url}"
+                    )));
+                }
                 let proto = if protocol == "udp" {
                     Protocol::Udp
                 } else {
@@ -175,9 +180,14 @@ fn parse_server_urls(urls: &[String]) -> Result<NameServerConfigGroup, DnsError>
                 });
             }
             "tls" => {
+                if rest.contains('/') {
+                    return Err(DnsError::InvalidServer(format!(
+                        "unexpected path for tls server: {url}"
+                    )));
+                }
                 // tls://1.1.1.1 or tls://dns.name:853
                 let (host, port) = parse_host_port(rest, 853)?;
-                let socket_addr = resolve_static_addr(host, port)?;
+                let socket_addr = resolve_server_addr(host, port)?;
                 configs.push(NameServerConfig {
                     socket_addr,
                     protocol: Protocol::Tls,
@@ -189,28 +199,17 @@ fn parse_server_urls(urls: &[String]) -> Result<NameServerConfigGroup, DnsError>
             }
             "https" => {
                 // https://dns.google/dns-query
-                let (host_with_path, port) = if let Some((h, p)) = rest.split_once(':') {
-                    // https://host:port/path
-                    let (port_str, _path) = p.split_once('/').unwrap_or((p, ""));
-                    let port = port_str
-                        .parse::<u16>()
-                        .map_err(|_| DnsError::InvalidServer(format!("invalid port: {url}")))?;
-                    (h, port)
-                } else {
-                    // https://host/path
-                    let host = rest.split('/').next().unwrap_or(rest);
-                    (host, 443)
+                let (authority, path) = match rest.split_once('/') {
+                    Some((authority, path)) => (authority, format!("/{path}")),
+                    None => (rest, "/dns-query".to_string()),
                 };
-
-                let host = host_with_path.split('/').next().unwrap_or(host_with_path);
-                let path = rest.find('/').map(|i| &rest[i..]).unwrap_or("/dns-query");
-
-                let socket_addr = resolve_static_addr(host, port)?;
+                let (host, port) = parse_host_port(authority, 443)?;
+                let socket_addr = resolve_server_addr(host, port)?;
                 configs.push(NameServerConfig {
                     socket_addr,
                     protocol: Protocol::Https,
                     tls_dns_name: Some(host.to_string()),
-                    http_endpoint: Some(path.to_string()),
+                    http_endpoint: Some(path),
                     trust_negative_responses: false,
                     bind_addr: None,
                 });
@@ -232,16 +231,50 @@ fn parse_server_urls(urls: &[String]) -> Result<NameServerConfigGroup, DnsError>
     Ok(NameServerConfigGroup::from(configs))
 }
 
-/// Parse "host:port" or "host" with a default port.
+/// Parse "host:port", "[ipv6]:port", "host", or "[ipv6]" with a default port.
 fn parse_host_port(s: &str, default_port: u16) -> Result<(&str, u16), DnsError> {
-    if let Some((host, port_str)) = s.rsplit_once(':') {
+    // Bracketed IPv6: [::1]:853 or [::1]
+    if let Some(rest) = s.strip_prefix('[') {
+        let (host, tail) = rest
+            .split_once(']')
+            .ok_or_else(|| DnsError::InvalidServer(format!("invalid IPv6 host in: {s}")))?;
+        if host.is_empty() {
+            return Err(DnsError::InvalidServer(format!("empty host in: {s}")));
+        }
+        if tail.is_empty() {
+            return Ok((host, default_port));
+        }
+        let port_str = tail.strip_prefix(':').ok_or_else(|| {
+            DnsError::InvalidServer(format!("invalid port separator in bracketed host: {s}"))
+        })?;
         let port = port_str
             .parse::<u16>()
             .map_err(|_| DnsError::InvalidServer(format!("invalid port in: {s}")))?;
-        Ok((host, port))
-    } else {
-        Ok((s, default_port))
+        return Ok((host, port));
     }
+
+    // Unbracketed host:port.
+    // Note: raw IPv6 literals in server URLs must use brackets.
+    if let Some((host, port_str)) = s.rsplit_once(':') {
+        if host.contains(':') {
+            return Err(DnsError::InvalidServer(format!(
+                "ipv6 host must be bracketed in server url: {s}"
+            )));
+        }
+        if host.is_empty() {
+            return Err(DnsError::InvalidServer(format!("empty host in: {s}")));
+        }
+        let port = port_str
+            .parse::<u16>()
+            .map_err(|_| DnsError::InvalidServer(format!("invalid port in: {s}")))?;
+        return Ok((host, port));
+    }
+
+    if s.is_empty() {
+        return Err(DnsError::InvalidServer("empty host".to_string()));
+    }
+
+    Ok((s, default_port))
 }
 
 /// Parse a "host:port" or "host" string into a SocketAddr (for UDP/TCP servers).
@@ -252,18 +285,24 @@ fn parse_socket_addr(s: &str, default_port: u16) -> Result<SocketAddr, DnsError>
     }
 
     let (host, port) = parse_host_port(s, default_port)?;
-    resolve_static_addr(host, port)
+    resolve_server_addr(host, port)
 }
 
-/// Resolve a static hostname to a SocketAddr.
+/// Resolve a DNS server host to a SocketAddr.
 ///
-/// For DNS server addresses we parse IP literals only — we cannot use
-/// DNS to resolve DNS server addresses.
-fn resolve_static_addr(host: &str, port: u16) -> Result<SocketAddr, DnsError> {
-    let ip: IpAddr = host.parse().map_err(|_| {
-        DnsError::InvalidServer(format!("dns server must be an IP address, got: {host}"))
+/// Supports both IP literals and hostnames. Hostnames are resolved once at
+/// startup via the system resolver.
+fn resolve_server_addr(host: &str, port: u16) -> Result<SocketAddr, DnsError> {
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Ok(SocketAddr::new(ip, port));
+    }
+
+    let mut addrs = (host, port).to_socket_addrs().map_err(|e| {
+        DnsError::InvalidServer(format!("failed to resolve dns server host '{host}': {e}"))
     })?;
-    Ok(SocketAddr::new(ip, port))
+    addrs
+        .next()
+        .ok_or_else(|| DnsError::InvalidServer(format!("dns server host has no addresses: {host}")))
 }
 
 #[cfg(test)]
@@ -341,10 +380,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_server_urls_domain_rejected() {
-        // DNS server addresses must be IP addresses
-        let urls = vec!["udp://dns.google".to_string()];
-        parse_server_urls(&urls).unwrap_err();
+    fn parse_server_urls_domain_supported() {
+        let urls = vec!["udp://localhost".to_string()];
+        let group = parse_server_urls(&urls).unwrap();
+        assert_eq!(group.len(), 1);
     }
 
     #[test]

@@ -6,6 +6,8 @@
 //! - **Negative caching**: short-lived entries for invalid hashes to prevent DB flooding
 
 use std::collections::HashMap;
+#[cfg(feature = "tokio-runtime")]
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -80,6 +82,10 @@ pub struct AuthCache {
     hits: AtomicU64,
     /// Cache miss counter.
     misses: AtomicU64,
+
+    /// In-flight stale revalidations (hashes currently being refreshed).
+    #[cfg(feature = "tokio-runtime")]
+    revalidating: RwLock<HashSet<String>>,
 }
 
 impl AuthCache {
@@ -98,6 +104,8 @@ impl AuthCache {
             neg_ttl,
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
+            #[cfg(feature = "tokio-runtime")]
+            revalidating: RwLock::new(HashSet::new()),
         }
     }
 
@@ -179,6 +187,8 @@ impl AuthCache {
         self.cache.write().clear();
         self.traffic_deltas.write().clear();
         self.neg_cache.write().clear();
+        #[cfg(feature = "tokio-runtime")]
+        self.revalidating.write().clear();
     }
 
     /// Remove expired entries from positive and negative caches.
@@ -266,6 +276,20 @@ impl AuthCache {
     /// is not blocked by a stale negative entry.
     pub fn remove_negative(&self, hash: &str) {
         self.neg_cache.write().remove(hash);
+    }
+
+    /// Mark a hash as revalidating; returns `true` if caller should proceed.
+    ///
+    /// Returns `false` when another task is already revalidating this hash.
+    #[cfg(feature = "tokio-runtime")]
+    pub(crate) fn start_revalidation(&self, hash: &str) -> bool {
+        self.revalidating.write().insert(hash.to_string())
+    }
+
+    /// Clear revalidation marker for a hash.
+    #[cfg(feature = "tokio-runtime")]
+    pub(crate) fn finish_revalidation(&self, hash: &str) {
+        self.revalidating.write().remove(hash);
     }
 
     // ── Statistics ──────────────────────────────────────────────
@@ -578,5 +602,15 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         cache.cleanup_expired();
         assert_eq!(cache.stats().size, 0);
+    }
+
+    #[cfg(feature = "tokio-runtime")]
+    #[test]
+    fn test_revalidation_marker_deduplicates() {
+        let cache = make_cache();
+        assert!(cache.start_revalidation("hash1"));
+        assert!(!cache.start_revalidation("hash1"));
+        cache.finish_revalidation("hash1");
+        assert!(cache.start_revalidation("hash1"));
     }
 }

@@ -56,10 +56,22 @@ pub async fn run_with_shutdown(
         .parse()
         .map_err(|_| ServerError::Config("invalid listen address".into()))?;
 
-    // Build DNS resolver from config
-    let dns_resolver = DnsResolver::new(&config.dns)
+    // Build DNS resolver from config.
+    // Backward compatibility: preserve legacy `server.tcp.prefer_ipv4` behavior.
+    let mut dns_config = config.dns.clone();
+    if config.server.tcp.prefer_ipv4 && !dns_config.prefer_ipv4 {
+        dns_config.prefer_ipv4 = true;
+        info!(
+            "server.tcp.prefer_ipv4 is deprecated; mapped to dns.prefer_ipv4 for backward compatibility"
+        );
+    }
+    let dns_resolver = DnsResolver::new(&dns_config)
         .map_err(|e| ServerError::Config(format!("dns resolver: {e}")))?;
-    info!(dns = ?config.dns.strategy, "dns resolver initialized");
+    info!(
+        dns = ?dns_config.strategy,
+        prefer_ipv4 = dns_config.prefer_ipv4,
+        "dns resolver initialized"
+    );
 
     let fallback_addr = resolve_sockaddr(&config.server.fallback, &dns_resolver).await?;
 

@@ -201,11 +201,16 @@ impl<S: UserStore> StoreAuth<S> {
 impl<S: UserStore + 'static> StoreAuth<S> {
     /// Spawn a background task to revalidate a stale cache entry.
     fn spawn_revalidation(&self, cache: &Arc<AuthCache>, hash: &str) {
+        // Single-flight: avoid spawning duplicate revalidation tasks per hash.
+        if !cache.start_revalidation(hash) {
+            return;
+        }
         let store = Arc::clone(&self.store);
         let cache = Arc::clone(cache);
         let hash = hash.to_string();
         tokio::spawn(async move {
-            Self::revalidate(store, cache, hash).await;
+            Self::revalidate(store, Arc::clone(&cache), hash.clone()).await;
+            cache.finish_revalidation(&hash);
         });
     }
 
@@ -254,11 +259,11 @@ impl<S: UserStore + 'static> AuthBackend for StoreAuth<S> {
                 }
                 CacheLookup::Stale(cached) => {
                     let result = Self::validate_cached(cache, hash, cached);
-                    // Spawn background revalidation for successful stale hits
+                    // Spawn background revalidation for stale hits, including
+                    // validation failures (e.g. disabled/traffic exceeded), so
+                    // cache state can recover quickly when backend state changes.
                     #[cfg(feature = "tokio-runtime")]
-                    if result.is_ok() {
-                        self.spawn_revalidation(cache, hash);
-                    }
+                    self.spawn_revalidation(cache, hash);
                     return result;
                 }
                 CacheLookup::Miss => { /* fall through to store query */ }
