@@ -3,6 +3,21 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+## [0.8.0](https://github.com/trojan-rust/trojan-rust/compare/v0.7.0...v0.8.0) - 2026-02-18
+
+### Bug Fixes
+
+- harden SWR and preserve DNS compatibility
+
+- widen timing margins in stale cache tests to prevent flakiness
+
+
+### Features
+
+- add stale-while-revalidate cache for HTTP auth
+
+- add trojan-dns crate with hickory-resolver for unified DNS resolution
+
 ## [0.7.0](https://github.com/trojan-rust/trojan-rust/compare/v0.6.1...v0.7.0) - 2026-02-17
 
 ### Features
