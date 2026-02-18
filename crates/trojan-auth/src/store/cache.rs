@@ -546,10 +546,12 @@ mod tests {
 
     #[test]
     fn test_cache_stale_lookup() {
+        // Use wide margins to avoid flakiness under heavy CPU load,
+        // where thread::sleep can overshoot significantly.
         let cache = AuthCache::new(
-            Duration::from_millis(10), // TTL
-            Duration::from_millis(50), // stale window
-            Duration::ZERO,            // neg TTL
+            Duration::from_millis(50),  // TTL
+            Duration::from_millis(500), // stale window
+            Duration::ZERO,             // neg TTL
         );
         let user = make_user("user1", 1000, 100);
         cache.insert("hash1".to_string(), user);
@@ -557,8 +559,8 @@ mod tests {
         // Should be Fresh
         assert!(matches!(cache.lookup("hash1"), CacheLookup::Fresh(_)));
 
-        // Wait past TTL
-        std::thread::sleep(Duration::from_millis(15));
+        // Wait past TTL (100ms margin)
+        std::thread::sleep(Duration::from_millis(150));
 
         // Should be Stale (past TTL but within stale window)
         assert!(matches!(cache.lookup("hash1"), CacheLookup::Stale(_)));
@@ -567,7 +569,7 @@ mod tests {
         assert!(cache.get("hash1").is_none());
 
         // Wait past stale window
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(500));
 
         // Should be Miss
         assert!(matches!(cache.lookup("hash1"), CacheLookup::Miss));
@@ -576,30 +578,30 @@ mod tests {
     #[test]
     fn test_cache_stale_disabled_when_zero() {
         // When stale_ttl is ZERO, stale lookup should be Miss
-        let cache = AuthCache::new(Duration::from_millis(10), Duration::ZERO, Duration::ZERO);
+        let cache = AuthCache::new(Duration::from_millis(50), Duration::ZERO, Duration::ZERO);
         let user = make_user("user1", 0, 0);
         cache.insert("hash1".to_string(), user);
 
-        std::thread::sleep(Duration::from_millis(15));
+        std::thread::sleep(Duration::from_millis(150));
         assert!(matches!(cache.lookup("hash1"), CacheLookup::Miss));
     }
 
     #[test]
     fn test_cleanup_respects_stale_window() {
         let cache = AuthCache::new(
-            Duration::from_millis(10), // TTL
-            Duration::from_millis(50), // stale window
+            Duration::from_millis(50),  // TTL
+            Duration::from_millis(500), // stale window
             Duration::ZERO,
         );
         cache.insert("hash1".to_string(), make_user("user1", 0, 0));
 
         // Past TTL but within stale window — should NOT be cleaned up
-        std::thread::sleep(Duration::from_millis(15));
+        std::thread::sleep(Duration::from_millis(150));
         cache.cleanup_expired();
         assert_eq!(cache.stats().size, 1);
 
         // Past stale window — should be cleaned up
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(500));
         cache.cleanup_expired();
         assert_eq!(cache.stats().size, 0);
     }
