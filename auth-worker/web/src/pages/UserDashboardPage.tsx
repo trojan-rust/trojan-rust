@@ -1,5 +1,6 @@
-import { useCallback } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { useClipboard } from 'foxact/use-clipboard';
+import QRCode from 'qrcode';
 import { formatBytes, formatExpiry } from '../utils/format';
 import type { MeResponse } from '../types';
 
@@ -9,6 +10,24 @@ interface UserDashboardPageProps {
   onLogout: () => void;
   onRefresh: () => void;
   refreshing: boolean;
+}
+
+function QRDialog({ url, name, onClose }: { url: string; name: string; onClose: () => void }) {
+  const [dataUrl, setDataUrl] = useState('');
+  useEffect(() => {
+    QRCode.toDataURL(url, { width: 256, margin: 2 }).then(setDataUrl);
+  }, [url]);
+
+  return (
+    <dialog open style={{ position: 'fixed', top: '10vh', left: '50%', transform: 'translateX(-50%)', padding: '1rem', border: '1px solid #ccc', borderRadius: '4px', zIndex: 1000, textAlign: 'center' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+        <strong>{name}</strong>
+        <button onClick={onClose}>Close</button>
+      </div>
+      {dataUrl ? <img src={dataUrl} alt="QR Code" style={{ width: 256, height: 256 }} /> : <p>Generating…</p>}
+      <p style={{ wordBreak: 'break-all', fontFamily: 'monospace', fontSize: '0.75em', maxWidth: 256, margin: '0.5rem auto 0' }}>{url}</p>
+    </dialog>
+  );
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -23,6 +42,7 @@ function CopyButton({ text }: { text: string }) {
 
 export default function UserDashboardPage({ data, password, onLogout, onRefresh, refreshing }: UserDashboardPageProps) {
   const { user, traffic_by_node, sub_templates } = data;
+  const [qrTarget, setQrTarget] = useState<{ url: string; name: string } | null>(null);
 
   return (
     <div>
@@ -67,7 +87,7 @@ export default function UserDashboardPage({ data, password, onLogout, onRefresh,
             <tr>
               <th>name</th>
               <th>url</th>
-              <th style={{ width: '10em' }}>action</th>
+              <th style={{ width: '14em' }}>action</th>
             </tr>
           </thead>
           <tbody>
@@ -79,6 +99,7 @@ export default function UserDashboardPage({ data, password, onLogout, onRefresh,
                   <td style={{ wordBreak: 'break-all', fontFamily: 'monospace', fontSize: '0.85em' }}>{url}</td>
                   <td>
                     <CopyButton text={url} />{' '}
+                    <button onClick={() => setQrTarget({ url, name })}>QR</button>{' '}
                     <a href={`${url}&preview=1`} target="_blank" rel="noreferrer">
                       <button>Preview</button>
                     </a>
@@ -89,6 +110,8 @@ export default function UserDashboardPage({ data, password, onLogout, onRefresh,
           </tbody>
         </table>
       )}
+
+      {qrTarget && <QRDialog url={qrTarget.url} name={qrTarget.name} onClose={() => setQrTarget(null)} />}
 
       <h2>Traffic by Node ({traffic_by_node.length})</h2>
       {traffic_by_node.length === 0 ? (

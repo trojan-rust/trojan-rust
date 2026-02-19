@@ -10,6 +10,7 @@
   "dependencies": {
     "foxact": "^0.2.52",
     "human-format": "^1",
+    "qrcode": "^1.5.4",
     "react": "^19",
     "react-dom": "^19",
     "swr": "^2",
@@ -19,6 +20,7 @@
     "@pmmmwh/react-refresh-webpack-plugin": "^0.5",
     "@swc/core": "^1",
     "@swc/helpers": "^0.5",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/webpack": "^5",

@@ -718,7 +718,7 @@ pub async fn handle_update_sub_template(
                     .execute()
                     .await;
             }
-            // On rename, delete the old name's cache entry
+            // On rename, invalidate old name's cache entry
             if let Some(old) = old_name {
                 if old != row.name {
                     let _ = kv.delete(&format!("sub:{old}")).await;

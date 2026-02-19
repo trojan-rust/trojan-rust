@@ -3,7 +3,7 @@ use worker::*;
 
 use crate::types::*;
 
-pub const CACHE_TTL: u64 = 300; // 5 min
+pub const CACHE_TTL: u64 = 3600; // 1 hour
 
 pub fn sha224_hex(input: &str) -> String {
     use sha2::{Digest, Sha224};
