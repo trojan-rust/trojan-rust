@@ -506,7 +506,10 @@ pub async fn handle_sub(req: Request, ctx: RouteContext<()>) -> Result<Response>
 /// GET /me — Basic Auth (username:password)
 /// Returns user info, traffic logs, and subscription template names.
 pub async fn handle_me(req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    let user = check_basic_auth(&req, &ctx).await?;
+    let user = match check_basic_auth(&req, &ctx).await {
+        Ok(u) => u,
+        Err(_) => return Response::error("unauthorized", 401),
+    };
     let user_id = user.id as u64;
 
     let d1 = ctx.env.d1("DB")?;
