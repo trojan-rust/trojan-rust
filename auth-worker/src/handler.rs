@@ -56,41 +56,42 @@ pub async fn handle_traffic(mut req: Request, ctx: RouteContext<()>) -> Result<R
     // slightly stale but will self-correct on next cache miss.
     // This avoids burning KV delete operations on every traffic report.
 
+    #[derive(Deserialize)]
+    struct Returning {
+        _id: f64,
+    }
+
     let update = d1
-        .prepare("UPDATE users SET traffic_used = traffic_used + ?1 WHERE id = ?2");
-    let meta = update
+        .prepare("UPDATE users SET traffic_used = traffic_used + ?1 WHERE id = ?2 RETURNING id AS _id");
+    let row = update
         .bind(&[
             JsValue::from(traffic_req.bytes as f64),
             JsValue::from(&traffic_req.user_id),
         ])?
-        .run()
-        .await?
-        .meta()?;
+        .first::<Returning>(None)
+        .await?;
 
-    let rows_written = meta
-        .and_then(|m| m.changed_db)
-        .unwrap_or(false);
+    let result: std::result::Result<(), AuthError> = match row {
+        Some(_) => {
+            // Upsert daily traffic aggregation
+            let log_stmt = d1.prepare(
+                "INSERT INTO traffic_logs (user_id, node_id, bytes, date) \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(user_id, node_id, date) DO UPDATE SET bytes = bytes + ?3",
+            );
+            let _ = log_stmt
+                .bind(&[
+                    JsValue::from(&traffic_req.user_id),
+                    JsValue::from(node_id as f64),
+                    JsValue::from(traffic_req.bytes as f64),
+                    JsValue::from(&today_date()),
+                ])?
+                .run()
+                .await;
 
-    let result: std::result::Result<(), AuthError> = if rows_written {
-        // Upsert daily traffic aggregation
-        let log_stmt = d1.prepare(
-            "INSERT INTO traffic_logs (user_id, node_id, bytes, date) \
-             VALUES (?1, ?2, ?3, ?4) \
-             ON CONFLICT(user_id, node_id, date) DO UPDATE SET bytes = bytes + ?3",
-        );
-        let _ = log_stmt
-            .bind(&[
-                JsValue::from(&traffic_req.user_id),
-                JsValue::from(node_id as f64),
-                JsValue::from(traffic_req.bytes as f64),
-                JsValue::from(&today_date()),
-            ])?
-            .run()
-            .await;
-
-        Ok(())
-    } else {
-        Err(AuthError::NotFound)
+            Ok(())
+        }
+        None => Err(AuthError::NotFound),
     };
 
     encode(&result, &codec)
