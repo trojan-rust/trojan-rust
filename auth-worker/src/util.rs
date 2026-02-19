@@ -85,6 +85,70 @@ pub async fn check_node(req: &Request, ctx: &RouteContext<()>) -> Result<u64> {
     Ok(node_id)
 }
 
+/// Authenticate a user via HTTP Basic Auth (username:password).
+/// Returns the UserRow on success.
+pub async fn check_basic_auth(req: &Request, ctx: &RouteContext<()>) -> Result<UserRow> {
+    let header = req
+        .headers()
+        .get("Authorization")?
+        .unwrap_or_default();
+    let encoded = header
+        .strip_prefix("Basic ")
+        .ok_or_else(|| Error::from("unauthorized"))?;
+
+    use base64::Engine;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| Error::from("unauthorized"))?;
+    let cred = String::from_utf8(decoded).map_err(|_| Error::from("unauthorized"))?;
+    let (username, password) = cred
+        .split_once(':')
+        .ok_or_else(|| Error::from("unauthorized"))?;
+
+    let hash = sha224_hex(password);
+    let d1 = ctx.env.d1("DB")?;
+    let stmt = d1.prepare("SELECT * FROM users WHERE username = ?1 AND hash = ?2");
+    let query = stmt.bind(&[JsValue::from(username), JsValue::from(&hash)])?;
+
+    query
+        .first::<UserRow>(None)
+        .await?
+        .ok_or_else(|| Error::from("unauthorized"))
+}
+
+/// Parse a human-readable duration string like "24h", "30m", "1d12h", "90s".
+/// Supported units: d (days), h (hours), m (minutes), s (seconds).
+/// Returns total seconds, or 0 if the string is empty or invalid.
+pub fn parse_duration_secs(s: &str) -> u64 {
+    let s = s.trim();
+    if s.is_empty() {
+        return 0;
+    }
+    let mut total: u64 = 0;
+    let mut num = String::new();
+    for c in s.chars() {
+        if c.is_ascii_digit() {
+            num.push(c);
+        } else {
+            let n: u64 = num.parse().unwrap_or(0);
+            num.clear();
+            match c {
+                'd' => total += n * 86400,
+                'h' => total += n * 3600,
+                'm' => total += n * 60,
+                's' => total += n,
+                _ => {}
+            }
+        }
+    }
+    // Bare number without unit → treat as hours for backward compat
+    if !num.is_empty() {
+        let n: u64 = num.parse().unwrap_or(0);
+        total += n * 3600;
+    }
+    total
+}
+
 pub fn validate_user(data: &CacheData) -> std::result::Result<AuthResult, AuthError> {
     if !data.enabled {
         Err(AuthError::Disabled)

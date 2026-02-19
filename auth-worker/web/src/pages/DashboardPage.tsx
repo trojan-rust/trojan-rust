@@ -58,7 +58,7 @@ export default function DashboardPage({ onLogout }: DashboardPageProps) {
 
       {error && <p style={{ color: 'red' }}>{error}</p>}
 
-      <UserTable users={users} onError={setError} />
+      <UserTable users={users} nodes={nodes} onError={setError} />
       <AddUserForm onError={setError} />
 
       <hr style={{ margin: '2rem 0' }} />

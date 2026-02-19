@@ -39,7 +39,9 @@ CREATE TABLE IF NOT EXISTS sub_templates (
     name         TEXT NOT NULL UNIQUE,
     filename     TEXT NOT NULL DEFAULT '',
     content      TEXT NOT NULL DEFAULT '',
-    content_type TEXT NOT NULL DEFAULT 'text/plain; charset=utf-8',
-    created_at   INTEGER NOT NULL DEFAULT 0,
-    updated_at   INTEGER NOT NULL DEFAULT 0
+    content_type    TEXT NOT NULL DEFAULT 'text/plain; charset=utf-8',
+    update_interval TEXT NOT NULL DEFAULT '',
+    profile_url     TEXT NOT NULL DEFAULT '',
+    created_at      INTEGER NOT NULL DEFAULT 0,
+    updated_at      INTEGER NOT NULL DEFAULT 0
 );

@@ -21,7 +21,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     setLoading(false);
     if (ok) {
       onLogin(input.trim());
-      navigate('/');
+      navigate('/admin');
     } else {
       setError('Invalid token');
     }
@@ -29,7 +29,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
   return (
     <div>
-      <h1>Auth Panel</h1>
+      <h1>Admin Dashboard</h1>
       <form onSubmit={handleSubmit}>
         <fieldset>
           <legend>Login</legend>

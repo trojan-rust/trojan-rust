@@ -1,17 +1,61 @@
 import { useState } from 'react';
-import { useUpdateUser, useDeleteUser, USERS_KEY } from '../api';
+import { useUpdateUser, useDeleteUser, useTrafficLogs, USERS_KEY } from '../api';
 import { formatBytes, formatExpiry } from '../utils/format';
-import type { User, EditData } from '../types';
+import type { User, EditData, Node } from '../types';
 
 interface UserTableProps {
   users: User[];
+  nodes: Node[];
   onError: (msg: string) => void;
 }
 
-function UserRow({ user, onError }: { user: User; onError: (msg: string) => void }) {
+function TrafficDialog({ userId, username, nodes, onClose }: { userId: number; username: string; nodes: Node[]; onClose: () => void }) {
+  const { data: logs, isLoading } = useTrafficLogs(userId);
+  const nodeMap = new Map(nodes.map((n) => [n.id, n.name]));
+
+  return (
+    <dialog open style={{ position: 'fixed', top: '10vh', left: '10vw', width: '80vw', maxWidth: '800px', maxHeight: '80vh', padding: '1rem', border: '1px solid #ccc', borderRadius: '4px', zIndex: 1000 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+        <strong>Traffic — {username}</strong>
+        <button onClick={onClose}>Close</button>
+      </div>
+      {isLoading ? (
+        <p>Loading…</p>
+      ) : !logs || logs.length === 0 ? (
+        <p>No traffic logs.</p>
+      ) : (
+        <div style={{ overflow: 'auto', maxHeight: 'calc(80vh - 4rem)' }}>
+          <table border={1} cellPadding={4} style={{ width: '100%' }}>
+            <thead>
+              <tr>
+                <th>id</th>
+                <th>node</th>
+                <th>bytes</th>
+                <th>time</th>
+              </tr>
+            </thead>
+            <tbody>
+              {logs.map((log) => (
+                <tr key={log.id}>
+                  <td>{log.id}</td>
+                  <td>{nodeMap.get(log.node_id) ?? log.node_id}</td>
+                  <td>{formatBytes(log.bytes)}</td>
+                  <td>{formatExpiry(log.recorded_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </dialog>
+  );
+}
+
+function UserRow({ user, nodes, onError }: { user: User; nodes: Node[]; onError: (msg: string) => void }) {
   const { trigger: updateUser } = useUpdateUser();
   const { trigger: deleteUser } = useDeleteUser();
   const [editing, setEditing] = useState(false);
+  const [showTraffic, setShowTraffic] = useState(false);
   const [editData, setEditData] = useState<EditData>({
     username: '', traffic_limit: '0', traffic_used: '0', expires_at: '0', enabled: true,
   });
@@ -83,14 +127,16 @@ function UserRow({ user, onError }: { user: User; onError: (msg: string) => void
       <td>{formatExpiry(user.expires_at)}</td>
       <td>{user.enabled ? '✓' : '✗'}</td>
       <td>
-        <button onClick={startEdit}>Edit</button>
+        <button onClick={() => setShowTraffic(true)}>Traffic</button>{' '}
+        <button onClick={startEdit}>Edit</button>{' '}
         <button onClick={handleDelete}>Delete</button>
+        {showTraffic && <TrafficDialog userId={user.id} username={user.username} nodes={nodes} onClose={() => setShowTraffic(false)} />}
       </td>
     </tr>
   );
 }
 
-export default function UserTable({ users, onError }: UserTableProps) {
+export default function UserTable({ users, nodes, onError }: UserTableProps) {
   return (
     <>
       <h2>Users ({users.length})</h2>
@@ -109,7 +155,7 @@ export default function UserTable({ users, onError }: UserTableProps) {
         </thead>
         <tbody>
           {users.map((u) => (
-            <UserRow key={u.id} user={u} onError={onError} />
+            <UserRow key={u.id} user={u} nodes={nodes} onError={onError} />
           ))}
         </tbody>
       </table>

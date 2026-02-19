@@ -462,19 +462,83 @@ pub async fn handle_sub(req: Request, ctx: RouteContext<()>) -> Result<Response>
         return Response::error("unauthorized", 401);
     }
 
-    // 4. Render template
-    let rendered = tpl.content.replace("{{ pwd }}", &pwd).replace("{{ name }}", name);
+    // 4. Render template — replace variables
+    let interval_secs = parse_duration_secs(&tpl.update_interval);
+    let interval_hours = interval_secs / 3600;
+    let rendered = tpl
+        .content
+        .replace("{{ pwd }}", &pwd)
+        .replace("{{ name }}", name)
+        .replace("{{ update_interval_seconds }}", &interval_secs.to_string())
+        .replace("{{ update_interval_hours }}", &interval_hours.to_string());
 
-    // 5. Return with correct Content-Type and Content-Disposition
+    // 5. Build response with subscription headers
     let mut resp = Response::ok(rendered)?;
     resp.headers_mut().set("Content-Type", &tpl.content_type)?;
     if !tpl.filename.is_empty() {
         resp.headers_mut().set(
             "Content-Disposition",
-            &format!("attachment; filename=\"{}\"", tpl.filename),
+            &format!("attachment; filename={}", tpl.filename),
         )?;
     }
+    // subscription-userinfo: upload=0; download=<used>; total=<limit>; expire=<unix>
+    resp.headers_mut().set(
+        "subscription-userinfo",
+        &format!(
+            "upload=0; download={}; total={}; expire={}",
+            data.traffic_used, data.traffic_limit, data.expires_at
+        ),
+    )?;
+    if interval_hours > 0 {
+        resp.headers_mut()
+            .set("profile-update-interval", &interval_hours.to_string())?;
+    }
+    if !tpl.profile_url.is_empty() {
+        resp.headers_mut()
+            .set("profile-web-page-url", &tpl.profile_url)?;
+    }
     Ok(resp)
+}
+
+// ── User Self-Service ────────────────────────────────────────────
+
+/// GET /me — Basic Auth (username:password)
+/// Returns user info, traffic logs, and subscription template names.
+pub async fn handle_me(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let user = check_basic_auth(&req, &ctx).await?;
+    let user_id = user.id as u64;
+
+    let d1 = ctx.env.d1("DB")?;
+
+    // Traffic aggregated by node
+    let traffic_stmt = d1.prepare(
+        "SELECT t.node_id, n.name AS node_name, SUM(t.bytes) AS total_bytes \
+         FROM traffic_logs t JOIN nodes n ON t.node_id = n.id \
+         WHERE t.user_id = ?1 GROUP BY t.node_id ORDER BY total_bytes DESC",
+    );
+    let traffic_rows = traffic_stmt
+        .bind(&[JsValue::from(user_id as f64)])?
+        .all()
+        .await?
+        .results::<NodeTrafficRow>()?;
+    let traffic_by_node: Vec<NodeTrafficResponse> =
+        traffic_rows.iter().map(|r| r.to_response()).collect();
+
+    // Sub template names
+    let tpl_stmt = d1.prepare("SELECT name FROM sub_templates ORDER BY id");
+    #[derive(Deserialize)]
+    struct TplName {
+        name: String,
+    }
+    let tpl_rows = tpl_stmt.all().await?.results::<TplName>()?;
+    let sub_templates: Vec<String> = tpl_rows.into_iter().map(|r| r.name).collect();
+
+    let resp = MeResponse {
+        user: user.to_response(),
+        traffic_by_node,
+        sub_templates,
+    };
+    Response::from_json(&resp)
 }
 
 // ── Sub Template CRUD ───────────────────────────────────────────
@@ -492,10 +556,7 @@ pub async fn handle_list_sub_templates(req: Request, ctx: RouteContext<()>) -> R
 }
 
 /// POST /admin/sub-templates — JSON
-pub async fn handle_add_sub_template(
-    mut req: Request,
-    ctx: RouteContext<()>,
-) -> Result<Response> {
+pub async fn handle_add_sub_template(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     check_admin(&req, &ctx)?;
 
     let body: AddSubTemplateRequest = req.json().await?;
@@ -503,14 +564,16 @@ pub async fn handle_add_sub_template(
 
     let d1 = ctx.env.d1("DB")?;
     let stmt = d1.prepare(
-        "INSERT INTO sub_templates (name, filename, content, content_type, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING *",
+        "INSERT INTO sub_templates (name, filename, content, content_type, update_interval, profile_url, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) RETURNING *",
     );
     let query = stmt.bind(&[
         JsValue::from(&body.name),
         JsValue::from(&body.filename),
         JsValue::from(&body.content),
         JsValue::from(&body.content_type),
+        JsValue::from(&body.update_interval),
+        JsValue::from(&body.profile_url),
         JsValue::from(now as f64),
         JsValue::from(now as f64),
     ])?;
@@ -568,6 +631,16 @@ pub async fn handle_update_sub_template(
     if let Some(ref content_type) = body.content_type {
         sets.push(format!("content_type = ?{idx}"));
         binds.push(JsValue::from(content_type));
+        idx += 1;
+    }
+    if let Some(ref update_interval) = body.update_interval {
+        sets.push(format!("update_interval = ?{idx}"));
+        binds.push(JsValue::from(update_interval));
+        idx += 1;
+    }
+    if let Some(ref profile_url) = body.profile_url {
+        sets.push(format!("profile_url = ?{idx}"));
+        binds.push(JsValue::from(profile_url));
         idx += 1;
     }
 
@@ -674,13 +747,29 @@ pub async fn handle_migrate(req: Request, ctx: RouteContext<()>) -> Result<Respo
             name         TEXT NOT NULL UNIQUE,
             filename     TEXT NOT NULL DEFAULT '',
             content      TEXT NOT NULL DEFAULT '',
-            content_type TEXT NOT NULL DEFAULT 'text/plain; charset=utf-8',
-            created_at   INTEGER NOT NULL DEFAULT 0,
-            updated_at   INTEGER NOT NULL DEFAULT 0
+            content_type    TEXT NOT NULL DEFAULT 'text/plain; charset=utf-8',
+            update_interval TEXT NOT NULL DEFAULT '',
+            profile_url     TEXT NOT NULL DEFAULT '',
+            created_at      INTEGER NOT NULL DEFAULT 0,
+            updated_at      INTEGER NOT NULL DEFAULT 0
         )",
     )
     .run()
     .await?;
+
+    // Backfill: add columns if table existed before they were added
+    let _ = d1
+        .prepare("ALTER TABLE sub_templates ADD COLUMN filename TEXT NOT NULL DEFAULT ''")
+        .run()
+        .await;
+    let _ = d1
+        .prepare("ALTER TABLE sub_templates ADD COLUMN update_interval TEXT NOT NULL DEFAULT ''")
+        .run()
+        .await;
+    let _ = d1
+        .prepare("ALTER TABLE sub_templates ADD COLUMN profile_url TEXT NOT NULL DEFAULT ''")
+        .run()
+        .await;
 
     Response::ok("migrated")
 }

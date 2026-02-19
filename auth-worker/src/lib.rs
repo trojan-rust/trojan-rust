@@ -31,6 +31,8 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .post_async("/admin/nodes/:id/rotate", handle_rotate_node_token)
         // Traffic logs
         .get_async("/admin/traffic", handle_list_traffic)
+        // User self-service
+        .get_async("/me", handle_me)
         // Sub templates
         .get_async("/sub/:name", handle_sub)
         .get_async("/admin/sub-templates", handle_list_sub_templates)

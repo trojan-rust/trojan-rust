@@ -224,6 +224,8 @@ pub struct SubTemplateRow {
     pub filename: String,
     pub content: String,
     pub content_type: String,
+    pub update_interval: String,
+    pub profile_url: String,
     pub created_at: f64,
     pub updated_at: f64,
 }
@@ -236,6 +238,8 @@ impl SubTemplateRow {
             filename: self.filename.clone(),
             content: self.content.clone(),
             content_type: self.content_type.clone(),
+            update_interval: self.update_interval.clone(),
+            profile_url: self.profile_url.clone(),
             created_at: self.created_at as u64,
             updated_at: self.updated_at as u64,
         }
@@ -249,6 +253,8 @@ pub struct SubTemplateResponse {
     pub filename: String,
     pub content: String,
     pub content_type: String,
+    pub update_interval: String,
+    pub profile_url: String,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -262,6 +268,10 @@ pub struct AddSubTemplateRequest {
     pub content: String,
     #[serde(default = "default_content_type")]
     pub content_type: String,
+    #[serde(default)]
+    pub update_interval: String,
+    #[serde(default)]
+    pub profile_url: String,
 }
 
 fn default_content_type() -> String {
@@ -274,6 +284,41 @@ pub struct UpdateSubTemplateRequest {
     pub filename: Option<String>,
     pub content: Option<String>,
     pub content_type: Option<String>,
+    pub update_interval: Option<String>,
+    pub profile_url: Option<String>,
+}
+
+// ── User Self-Service (Basic Auth) ───────────────────────────────
+
+#[derive(Deserialize)]
+pub struct NodeTrafficRow {
+    pub node_id: f64,
+    pub node_name: String,
+    pub total_bytes: f64,
+}
+
+#[derive(Serialize)]
+pub struct NodeTrafficResponse {
+    pub node_id: u64,
+    pub node_name: String,
+    pub total_bytes: u64,
+}
+
+impl NodeTrafficRow {
+    pub fn to_response(&self) -> NodeTrafficResponse {
+        NodeTrafficResponse {
+            node_id: self.node_id as u64,
+            node_name: self.node_name.clone(),
+            total_bytes: self.total_bytes as u64,
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct MeResponse {
+    pub user: UserResponse,
+    pub traffic_by_node: Vec<NodeTrafficResponse>,
+    pub sub_templates: Vec<String>,
 }
 
 // ── Codec ─────────────────────────────────────────────────────────

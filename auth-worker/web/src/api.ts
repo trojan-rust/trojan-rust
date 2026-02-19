@@ -1,10 +1,11 @@
 import useSWR, { type Middleware } from 'swr';
 import useSWRMutation from 'swr/mutation';
-import type { Node, SubTemplate, User } from './types';
+import type { MeResponse, Node, SubTemplate, TrafficLog, User } from './types';
 import { useTokenValue } from './hooks/useToken';
 
 export const USERS_KEY = '/admin/users';
 export const NODES_KEY = '/admin/nodes';
+export const TRAFFIC_KEY = '/admin/traffic';
 export const SUB_TEMPLATES_KEY = '/admin/sub-templates';
 
 // SWR Auth middleware
@@ -67,6 +68,11 @@ export function useSubTemplates() {
   return useSWR(SUB_TEMPLATES_KEY, getFetcher<SubTemplate[]>);
 }
 
+export function useTrafficLogs(userId: number | null) {
+  const key = userId != null ? `${TRAFFIC_KEY}?user_id=${userId}` : null;
+  return useSWR(key, getFetcher<TrafficLog[]>);
+}
+
 export function useVersion() {
   return useSWR('/admin/version', getFetcher<string>);
 }
@@ -115,6 +121,19 @@ export function useDeleteSubTemplate() {
 
 export function useMigrate() {
   return useSWRMutation<string, Error, string, MutationArg>('/admin/migrate', mutationFetcher);
+}
+
+// ── User self-service (Basic Auth) ───────────────────────────────
+
+export async function fetchMe(username: string, password: string): Promise<MeResponse> {
+  const basic = btoa(`${username}:${password}`);
+  const res = await fetch('/me', {
+    headers: { Authorization: `Basic ${basic}` },
+  });
+  if (!res.ok) {
+    throw new Error(res.status === 401 ? 'Invalid username or password' : `HTTP ${res.status}`);
+  }
+  return res.json();
 }
 
 // ── Standalone (non-hook) ────────────────────────────────────────

@@ -71,6 +71,8 @@ export interface SubTemplate {
   filename: string;
   content: string;
   content_type: string;
+  update_interval: string;
+  profile_url: string;
   created_at: number;
   updated_at: number;
 }
@@ -80,6 +82,8 @@ export interface AddSubTemplateForm {
   filename: string;
   content: string;
   content_type: string;
+  update_interval: string;
+  profile_url: string;
 }
 
 export const EMPTY_ADD_SUB_TEMPLATE_FORM: AddSubTemplateForm = {
@@ -87,11 +91,29 @@ export const EMPTY_ADD_SUB_TEMPLATE_FORM: AddSubTemplateForm = {
   filename: '',
   content: '',
   content_type: 'text/plain; charset=utf-8',
+  update_interval: '',
+  profile_url: '',
 };
+
+// ── User Self-Service ───────────────────────────────────────────
+
+export interface NodeTraffic {
+  node_id: number;
+  node_name: string;
+  total_bytes: number;
+}
+
+export interface MeResponse {
+  user: User;
+  traffic_by_node: NodeTraffic[];
+  sub_templates: string[];
+}
 
 export interface EditSubTemplateData {
   name: string;
   filename: string;
   content: string;
   content_type: string;
+  update_interval: string;
+  profile_url: string;
 }
