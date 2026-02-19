@@ -27,8 +27,9 @@ CREATE TABLE IF NOT EXISTS traffic_logs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id     INTEGER NOT NULL REFERENCES users(id),
     node_id     INTEGER NOT NULL REFERENCES nodes(id),
-    bytes       INTEGER NOT NULL,
-    recorded_at INTEGER NOT NULL
+    bytes       INTEGER NOT NULL DEFAULT 0,
+    date        TEXT NOT NULL,
+    UNIQUE(user_id, node_id, date)
 );
 
 CREATE INDEX IF NOT EXISTS idx_traffic_logs_user ON traffic_logs(user_id);

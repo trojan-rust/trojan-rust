@@ -23,6 +23,25 @@ pub fn now_secs() -> u64 {
     Date::now().as_millis() / 1000
 }
 
+/// Return today's date as "YYYY-MM-DD" in UTC.
+pub fn today_date() -> String {
+    let ts = now_secs();
+    let days = ts / 86400;
+    // Convert days since epoch to y-m-d (civil calendar)
+    // Algorithm from Howard Hinnant's chrono-compatible date algorithms
+    let z = days as i64 + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64; // day of era [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{:04}-{:02}-{:02}", y, m, d)
+}
+
 pub fn check_admin(req: &Request, ctx: &RouteContext<()>) -> Result<()> {
     let token = ctx.secret("ADMIN_TOKEN")?.to_string();
     let header = req.headers().get("Authorization")?.unwrap_or_default();
@@ -42,8 +61,11 @@ pub async fn cache_put(kv: &kv::KvStore, hash: &str, data: &CacheData) -> Result
         .map_err(|e| Error::from(e.to_string()))
 }
 
+/// Default interval (seconds) between last_seen updates for nodes.
+const DEFAULT_LAST_SEEN_TTL: u64 = 180;
+
 /// Extract Bearer token from Authorization header, look up the node in D1,
-/// verify it's enabled, update last_seen, and return the node id.
+/// verify it's enabled, update last_seen (throttled), and return the node id.
 pub async fn check_node(req: &Request, ctx: &RouteContext<()>) -> Result<u64> {
     let header = req.headers().get("Authorization")?.unwrap_or_default();
     let token = header
@@ -51,7 +73,7 @@ pub async fn check_node(req: &Request, ctx: &RouteContext<()>) -> Result<u64> {
         .ok_or_else(|| Error::from("unauthorized: missing bearer token"))?;
 
     let d1 = ctx.env.d1("DB")?;
-    let stmt = d1.prepare("SELECT id, enabled FROM nodes WHERE token = ?1");
+    let stmt = d1.prepare("SELECT id, enabled, last_seen FROM nodes WHERE token = ?1");
     let query = stmt.bind(&[JsValue::from(token)])?;
 
     let node = query
@@ -64,23 +86,32 @@ pub async fn check_node(req: &Request, ctx: &RouteContext<()>) -> Result<u64> {
     }
 
     let node_id = node.id as u64;
+    let now = now_secs();
 
-    // Update last_seen and ip (fire-and-forget, don't fail the request)
-    let ip = req
-        .headers()
-        .get("CF-Connecting-IP")
+    // Throttle last_seen updates: only write if older than TTL
+    let ttl: u64 = ctx
+        .var("NODE_LAST_SEEN_TTL")
         .ok()
-        .flatten()
-        .unwrap_or_default();
-    let update = d1.prepare("UPDATE nodes SET last_seen = ?1, ip = ?2 WHERE id = ?3");
-    let _ = update
-        .bind(&[
-            JsValue::from(now_secs() as f64),
-            JsValue::from(&ip),
-            JsValue::from(node_id as f64),
-        ])?
-        .run()
-        .await;
+        .and_then(|v| v.to_string().parse().ok())
+        .unwrap_or(DEFAULT_LAST_SEEN_TTL);
+
+    if now - (node.last_seen as u64) >= ttl {
+        let ip = req
+            .headers()
+            .get("CF-Connecting-IP")
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let update = d1.prepare("UPDATE nodes SET last_seen = ?1, ip = ?2 WHERE id = ?3");
+        let _ = update
+            .bind(&[
+                JsValue::from(now as f64),
+                JsValue::from(&ip),
+                JsValue::from(node_id as f64),
+            ])?
+            .run()
+            .await;
+    }
 
     Ok(node_id)
 }

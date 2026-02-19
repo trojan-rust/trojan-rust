@@ -67,7 +67,7 @@ export default function UserDashboardPage({ data, password, onLogout, onRefresh,
             <tr>
               <th>name</th>
               <th>url</th>
-              <th style={{ width: '5em' }}>action</th>
+              <th style={{ width: '10em' }}>action</th>
             </tr>
           </thead>
           <tbody>
@@ -77,7 +77,12 @@ export default function UserDashboardPage({ data, password, onLogout, onRefresh,
                 <tr key={name}>
                   <td>{name}</td>
                   <td style={{ wordBreak: 'break-all', fontFamily: 'monospace', fontSize: '0.85em' }}>{url}</td>
-                  <td><CopyButton text={url} /></td>
+                  <td>
+                    <CopyButton text={url} />{' '}
+                    <a href={`${url}&preview=1`} target="_blank" rel="noreferrer">
+                      <button>Preview</button>
+                    </a>
+                  </td>
                 </tr>
               );
             })}

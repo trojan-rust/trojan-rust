@@ -31,7 +31,7 @@ function TrafficDialog({ userId, username, nodes, onClose }: { userId: number; u
                 <th>id</th>
                 <th>node</th>
                 <th>bytes</th>
-                <th>time</th>
+                <th>date</th>
               </tr>
             </thead>
             <tbody>
@@ -40,7 +40,7 @@ function TrafficDialog({ userId, username, nodes, onClose }: { userId: number; u
                   <td>{log.id}</td>
                   <td>{nodeMap.get(log.node_id) ?? log.node_id}</td>
                   <td>{formatBytes(log.bytes)}</td>
-                  <td>{formatExpiry(log.recorded_at)}</td>
+                  <td>{log.date}</td>
                 </tr>
               ))}
             </tbody>

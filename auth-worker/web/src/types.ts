@@ -60,7 +60,7 @@ export interface TrafficLog {
   user_id: number;
   node_id: number;
   bytes: number;
-  recorded_at: number;
+  date: string;
 }
 
 // ── Sub Templates ───────────────────────────────────────────────

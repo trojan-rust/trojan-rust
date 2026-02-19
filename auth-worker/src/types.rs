@@ -105,6 +105,7 @@ impl NodeRow {
 pub struct NodeLookup {
     pub id: f64,
     pub enabled: f64,
+    pub last_seen: f64,
 }
 
 #[derive(Deserialize)]
@@ -113,7 +114,7 @@ pub struct TrafficLogRow {
     pub user_id: f64,
     pub node_id: f64,
     pub bytes: f64,
-    pub recorded_at: f64,
+    pub date: String,
 }
 
 impl TrafficLogRow {
@@ -123,7 +124,7 @@ impl TrafficLogRow {
             user_id: self.user_id as u64,
             node_id: self.node_id as u64,
             bytes: self.bytes as u64,
-            recorded_at: self.recorded_at as u64,
+            date: self.date.clone(),
         }
     }
 }
@@ -212,12 +213,12 @@ pub struct TrafficLogResponse {
     pub user_id: u64,
     pub node_id: u64,
     pub bytes: u64,
-    pub recorded_at: u64,
+    pub date: String,
 }
 
 // ── Admin API — Sub Templates (JSON) ─────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct SubTemplateRow {
     pub id: f64,
     pub name: String,

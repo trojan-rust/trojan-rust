@@ -68,17 +68,18 @@ pub async fn handle_traffic(mut req: Request, ctx: RouteContext<()>) -> Result<R
             let kv = ctx.kv("CACHE")?;
             let _ = kv.delete(&ret.hash).await;
 
-            // Insert traffic log entry
+            // Upsert daily traffic aggregation
             let log_stmt = d1.prepare(
-                "INSERT INTO traffic_logs (user_id, node_id, bytes, recorded_at) \
-                 VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO traffic_logs (user_id, node_id, bytes, date) \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(user_id, node_id, date) DO UPDATE SET bytes = bytes + ?3",
             );
             let _ = log_stmt
                 .bind(&[
                     JsValue::from(&traffic_req.user_id),
                     JsValue::from(node_id as f64),
                     JsValue::from(traffic_req.bytes as f64),
-                    JsValue::from(now_secs() as f64),
+                    JsValue::from(&today_date()),
                 ])?
                 .run()
                 .await;
@@ -401,7 +402,7 @@ pub async fn handle_list_traffic(req: Request, ctx: RouteContext<()>) -> Result<
         format!(" WHERE {}", conditions.join(" AND "))
     };
 
-    let sql = format!("SELECT * FROM traffic_logs{where_clause} ORDER BY id DESC LIMIT 1000");
+    let sql = format!("SELECT * FROM traffic_logs{where_clause} ORDER BY date DESC, id DESC LIMIT 1000");
 
     let d1 = ctx.env.d1("DB")?;
     let stmt = d1.prepare(&sql);
@@ -432,16 +433,38 @@ pub async fn handle_sub(req: Request, ctx: RouteContext<()>) -> Result<Response>
     };
 
     let d1 = ctx.env.d1("DB")?;
+    let kv = ctx.kv("CACHE")?;
+    let cache_key = format!("sub:{name}");
 
-    // 1. Look up template
-    let tpl_stmt = d1.prepare("SELECT * FROM sub_templates WHERE name = ?1");
-    let tpl = tpl_stmt
-        .bind(&[JsValue::from(name)])?
-        .first::<SubTemplateRow>(None)
-        .await?;
-    let tpl = match tpl {
+    // 1. Look up template (KV cache → D1 fallback)
+    let cached = kv
+        .get(&cache_key)
+        .text()
+        .await?
+        .and_then(|s| serde_json::from_str::<SubTemplateRow>(&s).ok());
+
+    let tpl = match cached {
         Some(t) => t,
-        None => return Response::error("template not found", 404),
+        None => {
+            let tpl_stmt = d1.prepare("SELECT * FROM sub_templates WHERE name = ?1");
+            match tpl_stmt
+                .bind(&[JsValue::from(name)])?
+                .first::<SubTemplateRow>(None)
+                .await?
+            {
+                Some(t) => {
+                    if let Ok(json) = serde_json::to_string(&t) {
+                        let _ = kv
+                            .put(&cache_key, &json)?
+                            .expiration_ttl(3600)
+                            .execute()
+                            .await;
+                    }
+                    t
+                }
+                None => return Response::error("template not found", 404),
+            }
+        }
     };
 
     // 2. Validate pwd against users table
@@ -583,7 +606,12 @@ pub async fn handle_add_sub_template(mut req: Request, ctx: RouteContext<()>) ->
     ])?;
 
     match query.first::<SubTemplateRow>(None).await? {
-        Some(row) => Response::from_json(&row.to_response()),
+        Some(row) => {
+            // Invalidate KV cache
+            let kv = ctx.kv("CACHE")?;
+            let _ = kv.delete(&format!("sub:{}", row.name)).await;
+            Response::from_json(&row.to_response())
+        }
         None => Response::error("insert failed", 500),
     }
 }
@@ -612,6 +640,19 @@ pub async fn handle_update_sub_template(
 
     let id = ctx.param("id").unwrap().to_string();
     let body: UpdateSubTemplateRequest = req.json().await?;
+
+    // Fetch old name for cache invalidation (in case name changes)
+    let d1 = ctx.env.d1("DB")?;
+    #[derive(Deserialize)]
+    struct OldName {
+        name: String,
+    }
+    let old_name = d1
+        .prepare("SELECT name FROM sub_templates WHERE id = ?1")
+        .bind(&[JsValue::from(&id)])?
+        .first::<OldName>(None)
+        .await?
+        .map(|r| r.name);
 
     let mut sets = Vec::new();
     let mut binds: Vec<JsValue> = Vec::new();
@@ -663,12 +704,21 @@ pub async fn handle_update_sub_template(
     );
     binds.push(JsValue::from(&id));
 
-    let d1 = ctx.env.d1("DB")?;
     let stmt = d1.prepare(&sql);
     let query = stmt.bind(&binds)?;
 
     match query.first::<SubTemplateRow>(None).await? {
-        Some(row) => Response::from_json(&row.to_response()),
+        Some(row) => {
+            // Invalidate KV cache (both old and new name in case of rename)
+            let kv = ctx.kv("CACHE")?;
+            let _ = kv.delete(&format!("sub:{}", row.name)).await;
+            if let Some(old) = old_name {
+                if old != row.name {
+                    let _ = kv.delete(&format!("sub:{old}")).await;
+                }
+            }
+            Response::from_json(&row.to_response())
+        }
         None => Response::error("not found", 404),
     }
 }
@@ -679,8 +729,21 @@ pub async fn handle_delete_sub_template(req: Request, ctx: RouteContext<()>) -> 
 
     let id = ctx.param("id").unwrap();
     let d1 = ctx.env.d1("DB")?;
-    let stmt = d1.prepare("DELETE FROM sub_templates WHERE id = ?1");
-    stmt.bind(&[JsValue::from(id)])?.run().await?;
+
+    // Get name for cache invalidation
+    #[derive(Deserialize)]
+    struct Returning {
+        name: String,
+    }
+    let stmt = d1.prepare("DELETE FROM sub_templates WHERE id = ?1 RETURNING name");
+    if let Some(ret) = stmt
+        .bind(&[JsValue::from(id)])?
+        .first::<Returning>(None)
+        .await?
+    {
+        let kv = ctx.kv("CACHE")?;
+        let _ = kv.delete(&format!("sub:{}", ret.name)).await;
+    }
 
     Response::ok("deleted")
 }
@@ -730,8 +793,9 @@ pub async fn handle_migrate(req: Request, ctx: RouteContext<()>) -> Result<Respo
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id     INTEGER NOT NULL REFERENCES users(id),
             node_id     INTEGER NOT NULL REFERENCES nodes(id),
-            bytes       INTEGER NOT NULL,
-            recorded_at INTEGER NOT NULL
+            bytes       INTEGER NOT NULL DEFAULT 0,
+            date        TEXT NOT NULL,
+            UNIQUE(user_id, node_id, date)
         )",
     )
     .run()
@@ -772,6 +836,22 @@ pub async fn handle_migrate(req: Request, ctx: RouteContext<()>) -> Result<Respo
         .await;
     let _ = d1
         .prepare("ALTER TABLE sub_templates ADD COLUMN profile_url TEXT NOT NULL DEFAULT ''")
+        .run()
+        .await;
+
+    // Migrate traffic_logs: add date column (old rows used recorded_at)
+    let _ = d1
+        .prepare("ALTER TABLE traffic_logs ADD COLUMN date TEXT NOT NULL DEFAULT ''")
+        .run()
+        .await;
+    // Backfill date from recorded_at for old rows (epoch seconds → YYYY-MM-DD)
+    let _ = d1
+        .prepare("UPDATE traffic_logs SET date = strftime('%Y-%m-%d', recorded_at, 'unixepoch') WHERE date = ''")
+        .run()
+        .await;
+    // Create unique index (may fail if duplicates exist from old data, that's ok)
+    let _ = d1
+        .prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_traffic_logs_daily ON traffic_logs(user_id, node_id, date)")
         .run()
         .await;
 
