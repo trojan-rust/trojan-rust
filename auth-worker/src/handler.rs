@@ -50,43 +50,47 @@ pub async fn handle_traffic(mut req: Request, ctx: RouteContext<()>) -> Result<R
     let traffic_req: TrafficRequest = decode(&mut req, &codec).await?;
 
     let d1 = ctx.env.d1("DB")?;
-    let stmt = d1
-        .prepare("UPDATE users SET traffic_used = traffic_used + ?1 WHERE id = ?2 RETURNING hash");
-    let query = stmt.bind(&[
-        JsValue::from(traffic_req.bytes as f64),
-        JsValue::from(&traffic_req.user_id),
-    ])?;
 
-    #[derive(Deserialize)]
-    struct Returning {
-        hash: String,
-    }
+    // Note: we no longer invalidate the KV user cache here.
+    // The verify cache has a 5-min TTL, so traffic_used will be
+    // slightly stale but will self-correct on next cache miss.
+    // This avoids burning KV delete operations on every traffic report.
 
-    let result: std::result::Result<(), AuthError> = match query.first::<Returning>(None).await? {
-        Some(ret) => {
-            // Invalidate KV cache
-            let kv = ctx.kv("CACHE")?;
-            let _ = kv.delete(&ret.hash).await;
+    let update = d1
+        .prepare("UPDATE users SET traffic_used = traffic_used + ?1 WHERE id = ?2");
+    let meta = update
+        .bind(&[
+            JsValue::from(traffic_req.bytes as f64),
+            JsValue::from(&traffic_req.user_id),
+        ])?
+        .run()
+        .await?
+        .meta()?;
 
-            // Upsert daily traffic aggregation
-            let log_stmt = d1.prepare(
-                "INSERT INTO traffic_logs (user_id, node_id, bytes, date) \
-                 VALUES (?1, ?2, ?3, ?4) \
-                 ON CONFLICT(user_id, node_id, date) DO UPDATE SET bytes = bytes + ?3",
-            );
-            let _ = log_stmt
-                .bind(&[
-                    JsValue::from(&traffic_req.user_id),
-                    JsValue::from(node_id as f64),
-                    JsValue::from(traffic_req.bytes as f64),
-                    JsValue::from(&today_date()),
-                ])?
-                .run()
-                .await;
+    let rows_written = meta
+        .and_then(|m| m.changed_db)
+        .unwrap_or(false);
 
-            Ok(())
-        }
-        None => Err(AuthError::NotFound),
+    let result: std::result::Result<(), AuthError> = if rows_written {
+        // Upsert daily traffic aggregation
+        let log_stmt = d1.prepare(
+            "INSERT INTO traffic_logs (user_id, node_id, bytes, date) \
+             VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(user_id, node_id, date) DO UPDATE SET bytes = bytes + ?3",
+        );
+        let _ = log_stmt
+            .bind(&[
+                JsValue::from(&traffic_req.user_id),
+                JsValue::from(node_id as f64),
+                JsValue::from(traffic_req.bytes as f64),
+                JsValue::from(&today_date()),
+            ])?
+            .run()
+            .await;
+
+        Ok(())
+    } else {
+        Err(AuthError::NotFound)
     };
 
     encode(&result, &codec)
@@ -213,9 +217,9 @@ pub async fn handle_update_user(mut req: Request, ctx: RouteContext<()>) -> Resu
 
     match query.first::<UserRow>(None).await? {
         Some(row) => {
-            // Invalidate KV cache
+            // Update KV cache with new data (avoids a delete operation)
             let kv = ctx.kv("CACHE")?;
-            let _ = kv.delete(&row.hash).await;
+            let _ = cache_put(&kv, &row.hash, &row.to_cache_data()).await;
 
             Response::from_json(&row.to_response())
         }
@@ -606,12 +610,7 @@ pub async fn handle_add_sub_template(mut req: Request, ctx: RouteContext<()>) ->
     ])?;
 
     match query.first::<SubTemplateRow>(None).await? {
-        Some(row) => {
-            // Invalidate KV cache
-            let kv = ctx.kv("CACHE")?;
-            let _ = kv.delete(&format!("sub:{}", row.name)).await;
-            Response::from_json(&row.to_response())
-        }
+        Some(row) => Response::from_json(&row.to_response()),
         None => Response::error("insert failed", 500),
     }
 }
@@ -709,9 +708,16 @@ pub async fn handle_update_sub_template(
 
     match query.first::<SubTemplateRow>(None).await? {
         Some(row) => {
-            // Invalidate KV cache (both old and new name in case of rename)
+            // Update KV cache with new data (avoids a delete + stale window)
             let kv = ctx.kv("CACHE")?;
-            let _ = kv.delete(&format!("sub:{}", row.name)).await;
+            if let Ok(json) = serde_json::to_string(&row) {
+                let _ = kv
+                    .put(&format!("sub:{}", row.name), &json)?
+                    .expiration_ttl(3600)
+                    .execute()
+                    .await;
+            }
+            // On rename, delete the old name's cache entry
             if let Some(old) = old_name {
                 if old != row.name {
                     let _ = kv.delete(&format!("sub:{old}")).await;
