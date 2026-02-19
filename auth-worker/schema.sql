@@ -33,3 +33,13 @@ CREATE TABLE IF NOT EXISTS traffic_logs (
 
 CREATE INDEX IF NOT EXISTS idx_traffic_logs_user ON traffic_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_traffic_logs_node ON traffic_logs(node_id);
+
+CREATE TABLE IF NOT EXISTS sub_templates (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT NOT NULL UNIQUE,
+    filename     TEXT NOT NULL DEFAULT '',
+    content      TEXT NOT NULL DEFAULT '',
+    content_type TEXT NOT NULL DEFAULT 'text/plain; charset=utf-8',
+    created_at   INTEGER NOT NULL DEFAULT 0,
+    updated_at   INTEGER NOT NULL DEFAULT 0
+);

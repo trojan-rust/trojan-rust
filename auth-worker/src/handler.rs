@@ -416,6 +416,198 @@ pub async fn handle_list_traffic(req: Request, ctx: RouteContext<()>) -> Result<
     Response::from_json(&logs)
 }
 
+// ── Public Subscription Route ────────────────────────────────────
+
+/// GET /sub/:name?pwd=<password> — public, no admin auth
+/// Validates pwd against users table, renders template with {{ pwd }}.
+pub async fn handle_sub(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let name = ctx.param("name").unwrap();
+    let url = req.url()?;
+    let params: std::collections::HashMap<String, String> =
+        url.query_pairs().into_owned().collect();
+
+    let pwd = match params.get("pwd") {
+        Some(p) if !p.is_empty() => p.clone(),
+        _ => return Response::error("missing pwd parameter", 400),
+    };
+
+    let d1 = ctx.env.d1("DB")?;
+
+    // 1. Look up template
+    let tpl_stmt = d1.prepare("SELECT * FROM sub_templates WHERE name = ?1");
+    let tpl = tpl_stmt
+        .bind(&[JsValue::from(name)])?
+        .first::<SubTemplateRow>(None)
+        .await?;
+    let tpl = match tpl {
+        Some(t) => t,
+        None => return Response::error("template not found", 404),
+    };
+
+    // 2. Validate pwd against users table
+    let hash = sha224_hex(&pwd);
+    let user_stmt = d1.prepare("SELECT * FROM users WHERE hash = ?1");
+    let user = user_stmt
+        .bind(&[JsValue::from(&hash)])?
+        .first::<UserRow>(None)
+        .await?;
+    let user = match user {
+        Some(u) => u,
+        None => return Response::error("unauthorized", 401),
+    };
+
+    // 3. Check user validity (enabled, expiry, traffic)
+    let data = user.to_cache_data();
+    if validate_user(&data).is_err() {
+        return Response::error("unauthorized", 401);
+    }
+
+    // 4. Render template
+    let rendered = tpl.content.replace("{{ pwd }}", &pwd);
+
+    // 5. Return with correct Content-Type and Content-Disposition
+    let mut resp = Response::ok(rendered)?;
+    resp.headers_mut().set("Content-Type", &tpl.content_type)?;
+    if !tpl.filename.is_empty() {
+        resp.headers_mut().set(
+            "Content-Disposition",
+            &format!("attachment; filename=\"{}\"", tpl.filename),
+        )?;
+    }
+    Ok(resp)
+}
+
+// ── Sub Template CRUD ───────────────────────────────────────────
+
+/// GET /admin/sub-templates — JSON
+pub async fn handle_list_sub_templates(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    check_admin(&req, &ctx)?;
+
+    let d1 = ctx.env.d1("DB")?;
+    let stmt = d1.prepare("SELECT * FROM sub_templates ORDER BY id");
+    let results = stmt.all().await?.results::<SubTemplateRow>()?;
+
+    let templates: Vec<SubTemplateResponse> = results.iter().map(|r| r.to_response()).collect();
+    Response::from_json(&templates)
+}
+
+/// POST /admin/sub-templates — JSON
+pub async fn handle_add_sub_template(
+    mut req: Request,
+    ctx: RouteContext<()>,
+) -> Result<Response> {
+    check_admin(&req, &ctx)?;
+
+    let body: AddSubTemplateRequest = req.json().await?;
+    let now = now_secs();
+
+    let d1 = ctx.env.d1("DB")?;
+    let stmt = d1.prepare(
+        "INSERT INTO sub_templates (name, filename, content, content_type, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING *",
+    );
+    let query = stmt.bind(&[
+        JsValue::from(&body.name),
+        JsValue::from(&body.filename),
+        JsValue::from(&body.content),
+        JsValue::from(&body.content_type),
+        JsValue::from(now as f64),
+        JsValue::from(now as f64),
+    ])?;
+
+    match query.first::<SubTemplateRow>(None).await? {
+        Some(row) => Response::from_json(&row.to_response()),
+        None => Response::error("insert failed", 500),
+    }
+}
+
+/// GET /admin/sub-templates/:id — JSON
+pub async fn handle_get_sub_template(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    check_admin(&req, &ctx)?;
+
+    let id = ctx.param("id").unwrap();
+    let d1 = ctx.env.d1("DB")?;
+    let stmt = d1.prepare("SELECT * FROM sub_templates WHERE id = ?1");
+    let query = stmt.bind(&[JsValue::from(id)])?;
+
+    match query.first::<SubTemplateRow>(None).await? {
+        Some(row) => Response::from_json(&row.to_response()),
+        None => Response::error("not found", 404),
+    }
+}
+
+/// PATCH /admin/sub-templates/:id — JSON
+pub async fn handle_update_sub_template(
+    mut req: Request,
+    ctx: RouteContext<()>,
+) -> Result<Response> {
+    check_admin(&req, &ctx)?;
+
+    let id = ctx.param("id").unwrap().to_string();
+    let body: UpdateSubTemplateRequest = req.json().await?;
+
+    let mut sets = Vec::new();
+    let mut binds: Vec<JsValue> = Vec::new();
+    let mut idx = 1u32;
+
+    if let Some(ref name) = body.name {
+        sets.push(format!("name = ?{idx}"));
+        binds.push(JsValue::from(name));
+        idx += 1;
+    }
+    if let Some(ref filename) = body.filename {
+        sets.push(format!("filename = ?{idx}"));
+        binds.push(JsValue::from(filename));
+        idx += 1;
+    }
+    if let Some(ref content) = body.content {
+        sets.push(format!("content = ?{idx}"));
+        binds.push(JsValue::from(content));
+        idx += 1;
+    }
+    if let Some(ref content_type) = body.content_type {
+        sets.push(format!("content_type = ?{idx}"));
+        binds.push(JsValue::from(content_type));
+        idx += 1;
+    }
+
+    if sets.is_empty() {
+        return Response::error("no fields to update", 400);
+    }
+
+    // Always update updated_at
+    sets.push(format!("updated_at = ?{idx}"));
+    binds.push(JsValue::from(now_secs() as f64));
+    idx += 1;
+
+    let sql = format!(
+        "UPDATE sub_templates SET {} WHERE id = ?{idx} RETURNING *",
+        sets.join(", ")
+    );
+    binds.push(JsValue::from(&id));
+
+    let d1 = ctx.env.d1("DB")?;
+    let stmt = d1.prepare(&sql);
+    let query = stmt.bind(&binds)?;
+
+    match query.first::<SubTemplateRow>(None).await? {
+        Some(row) => Response::from_json(&row.to_response()),
+        None => Response::error("not found", 404),
+    }
+}
+
+/// DELETE /admin/sub-templates/:id
+pub async fn handle_delete_sub_template(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    check_admin(&req, &ctx)?;
+
+    let id = ctx.param("id").unwrap();
+    let d1 = ctx.env.d1("DB")?;
+    let stmt = d1.prepare("DELETE FROM sub_templates WHERE id = ?1");
+    stmt.bind(&[JsValue::from(id)])?.run().await?;
+
+    Response::ok("deleted")
+}
+
 // ── Migration ────────────────────────────────────────────────────
 
 /// POST /admin/migrate — auto-create tables
@@ -475,6 +667,20 @@ pub async fn handle_migrate(req: Request, ctx: RouteContext<()>) -> Result<Respo
     d1.prepare("CREATE INDEX IF NOT EXISTS idx_traffic_logs_node ON traffic_logs(node_id)")
         .run()
         .await?;
+
+    d1.prepare(
+        "CREATE TABLE IF NOT EXISTS sub_templates (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            name         TEXT NOT NULL UNIQUE,
+            filename     TEXT NOT NULL DEFAULT '',
+            content      TEXT NOT NULL DEFAULT '',
+            content_type TEXT NOT NULL DEFAULT 'text/plain; charset=utf-8',
+            created_at   INTEGER NOT NULL DEFAULT 0,
+            updated_at   INTEGER NOT NULL DEFAULT 0
+        )",
+    )
+    .run()
+    .await?;
 
     Response::ok("migrated")
 }

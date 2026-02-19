@@ -31,6 +31,13 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .post_async("/admin/nodes/:id/rotate", handle_rotate_node_token)
         // Traffic logs
         .get_async("/admin/traffic", handle_list_traffic)
+        // Sub templates
+        .get_async("/sub/:name", handle_sub)
+        .get_async("/admin/sub-templates", handle_list_sub_templates)
+        .post_async("/admin/sub-templates", handle_add_sub_template)
+        .get_async("/admin/sub-templates/:id", handle_get_sub_template)
+        .patch_async("/admin/sub-templates/:id", handle_update_sub_template)
+        .delete_async("/admin/sub-templates/:id", handle_delete_sub_template)
         // Migration
         .post_async("/admin/migrate", handle_migrate)
         .run(req, env)

@@ -215,6 +215,67 @@ pub struct TrafficLogResponse {
     pub recorded_at: u64,
 }
 
+// ── Admin API — Sub Templates (JSON) ─────────────────────────────
+
+#[derive(Deserialize)]
+pub struct SubTemplateRow {
+    pub id: f64,
+    pub name: String,
+    pub filename: String,
+    pub content: String,
+    pub content_type: String,
+    pub created_at: f64,
+    pub updated_at: f64,
+}
+
+impl SubTemplateRow {
+    pub fn to_response(&self) -> SubTemplateResponse {
+        SubTemplateResponse {
+            id: self.id as u64,
+            name: self.name.clone(),
+            filename: self.filename.clone(),
+            content: self.content.clone(),
+            content_type: self.content_type.clone(),
+            created_at: self.created_at as u64,
+            updated_at: self.updated_at as u64,
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct SubTemplateResponse {
+    pub id: u64,
+    pub name: String,
+    pub filename: String,
+    pub content: String,
+    pub content_type: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Deserialize)]
+pub struct AddSubTemplateRequest {
+    pub name: String,
+    #[serde(default)]
+    pub filename: String,
+    #[serde(default)]
+    pub content: String,
+    #[serde(default = "default_content_type")]
+    pub content_type: String,
+}
+
+fn default_content_type() -> String {
+    "text/plain; charset=utf-8".to_string()
+}
+
+#[derive(Deserialize, Default)]
+pub struct UpdateSubTemplateRequest {
+    pub name: Option<String>,
+    pub filename: Option<String>,
+    pub content: Option<String>,
+    pub content_type: Option<String>,
+}
+
 // ── Codec ─────────────────────────────────────────────────────────
 
 pub enum Codec {

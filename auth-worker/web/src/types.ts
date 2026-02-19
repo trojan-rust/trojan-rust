@@ -62,3 +62,36 @@ export interface TrafficLog {
   bytes: number;
   recorded_at: number;
 }
+
+// ── Sub Templates ───────────────────────────────────────────────
+
+export interface SubTemplate {
+  id: number;
+  name: string;
+  filename: string;
+  content: string;
+  content_type: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface AddSubTemplateForm {
+  name: string;
+  filename: string;
+  content: string;
+  content_type: string;
+}
+
+export const EMPTY_ADD_SUB_TEMPLATE_FORM: AddSubTemplateForm = {
+  name: '',
+  filename: '',
+  content: '',
+  content_type: 'text/plain; charset=utf-8',
+};
+
+export interface EditSubTemplateData {
+  name: string;
+  filename: string;
+  content: string;
+  content_type: string;
+}

@@ -1,10 +1,11 @@
 import useSWR, { type Middleware } from 'swr';
 import useSWRMutation from 'swr/mutation';
-import type { Node, User } from './types';
+import type { Node, SubTemplate, User } from './types';
 import { useTokenValue } from './hooks/useToken';
 
 export const USERS_KEY = '/admin/users';
 export const NODES_KEY = '/admin/nodes';
+export const SUB_TEMPLATES_KEY = '/admin/sub-templates';
 
 // SWR Auth middleware
 // Skips fetch when no token is present (returns null key).
@@ -62,6 +63,10 @@ export function useNodes() {
   return useSWR(NODES_KEY, getFetcher<Node[]>);
 }
 
+export function useSubTemplates() {
+  return useSWR(SUB_TEMPLATES_KEY, getFetcher<SubTemplate[]>);
+}
+
 export function useVersion() {
   return useSWR('/admin/version', getFetcher<string>);
 }
@@ -94,6 +99,18 @@ export function useDeleteNode() {
 
 export function useRotateNodeToken() {
   return useSWRMutation<Node, Error, string, MutationArg>(NODES_KEY, mutationFetcher);
+}
+
+export function useAddSubTemplate() {
+  return useSWRMutation<SubTemplate, Error, string, MutationArg>(SUB_TEMPLATES_KEY, mutationFetcher);
+}
+
+export function useUpdateSubTemplate() {
+  return useSWRMutation<SubTemplate, Error, string, MutationArg>(SUB_TEMPLATES_KEY, mutationFetcher);
+}
+
+export function useDeleteSubTemplate() {
+  return useSWRMutation<unknown, Error, string, MutationArg>(SUB_TEMPLATES_KEY, mutationFetcher);
 }
 
 export function useMigrate() {
