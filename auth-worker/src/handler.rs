@@ -475,7 +475,8 @@ pub async fn handle_sub(req: Request, ctx: RouteContext<()>) -> Result<Response>
     // 5. Build response with subscription headers
     let mut resp = Response::ok(rendered)?;
     resp.headers_mut().set("Content-Type", &tpl.content_type)?;
-    if !tpl.filename.is_empty() {
+    let preview = params.get("preview").is_some_and(|v| v == "1" || v == "true");
+    if !preview && !tpl.filename.is_empty() {
         resp.headers_mut().set(
             "Content-Disposition",
             &format!("attachment; filename={}", tpl.filename),
