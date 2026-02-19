@@ -846,21 +846,72 @@ pub async fn handle_migrate(req: Request, ctx: RouteContext<()>) -> Result<Respo
         .run()
         .await;
 
-    // Migrate traffic_logs: add date column (old rows used recorded_at)
-    let _ = d1
-        .prepare("ALTER TABLE traffic_logs ADD COLUMN date TEXT NOT NULL DEFAULT ''")
-        .run()
-        .await;
-    // Backfill date from recorded_at for old rows (epoch seconds → YYYY-MM-DD)
-    let _ = d1
-        .prepare("UPDATE traffic_logs SET date = strftime('%Y-%m-%d', recorded_at, 'unixepoch') WHERE date = ''")
-        .run()
-        .await;
-    // Create unique index (may fail if duplicates exist from old data, that's ok)
-    let _ = d1
-        .prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_traffic_logs_daily ON traffic_logs(user_id, node_id, date)")
-        .run()
-        .await;
+    #[derive(Deserialize)]
+    struct RecordedAtCheck {
+        cnt: f64,
+    }
+    // Migrate traffic_logs to daily aggregation schema.
+    // Old table had (user_id, node_id, bytes, recorded_at) with no unique constraint.
+    // New table needs UNIQUE(user_id, node_id, date) for ON CONFLICT upsert to work.
+    // Strategy: rebuild table by aggregating old data into new schema.
+    let needs_rebuild = d1
+        .prepare("SELECT COUNT(*) AS cnt FROM pragma_table_info('traffic_logs') WHERE name = 'recorded_at'")
+        .all()
+        .await
+        .ok()
+        .and_then(|r| r.results::<RecordedAtCheck>().ok())
+        .map(|rows| rows.first().is_some_and(|r| r.cnt > 0.0))
+        .unwrap_or(false);
+
+    if needs_rebuild {
+        // 1. Aggregate old rows into new table
+        let _ = d1
+            .prepare(
+                "CREATE TABLE IF NOT EXISTS traffic_logs_new (
+                    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL REFERENCES users(id),
+                    node_id INTEGER NOT NULL REFERENCES nodes(id),
+                    bytes   INTEGER NOT NULL DEFAULT 0,
+                    date    TEXT NOT NULL,
+                    UNIQUE(user_id, node_id, date)
+                )",
+            )
+            .run()
+            .await;
+        let _ = d1
+            .prepare(
+                "INSERT OR REPLACE INTO traffic_logs_new (user_id, node_id, bytes, date)
+                 SELECT user_id, node_id, SUM(bytes), strftime('%Y-%m-%d', recorded_at, 'unixepoch')
+                 FROM traffic_logs
+                 GROUP BY user_id, node_id, strftime('%Y-%m-%d', recorded_at, 'unixepoch')",
+            )
+            .run()
+            .await;
+        // 2. Swap tables
+        let _ = d1
+            .prepare("DROP TABLE IF EXISTS traffic_logs")
+            .run()
+            .await;
+        let _ = d1
+            .prepare("ALTER TABLE traffic_logs_new RENAME TO traffic_logs")
+            .run()
+            .await;
+        // 3. Recreate indexes
+        let _ = d1
+            .prepare("CREATE INDEX IF NOT EXISTS idx_traffic_logs_user ON traffic_logs(user_id)")
+            .run()
+            .await;
+        let _ = d1
+            .prepare("CREATE INDEX IF NOT EXISTS idx_traffic_logs_node ON traffic_logs(node_id)")
+            .run()
+            .await;
+    } else {
+        // Table already has new schema, just ensure unique index exists
+        let _ = d1
+            .prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_traffic_logs_daily ON traffic_logs(user_id, node_id, date)")
+            .run()
+            .await;
+    }
 
     Response::ok("migrated")
 }
