@@ -463,7 +463,7 @@ pub async fn handle_sub(req: Request, ctx: RouteContext<()>) -> Result<Response>
     }
 
     // 4. Render template
-    let rendered = tpl.content.replace("{{ pwd }}", &pwd);
+    let rendered = tpl.content.replace("{{ pwd }}", &pwd).replace("{{ name }}", name);
 
     // 5. Return with correct Content-Type and Content-Disposition
     let mut resp = Response::ok(rendered)?;
