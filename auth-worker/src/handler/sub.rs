@@ -87,9 +87,17 @@ pub async fn handle_sub(req: Request, ctx: RouteContext<()>) -> Result<Response>
     resp.headers_mut().set("Content-Type", &tpl.content_type)?;
     let preview = params.get("preview").is_some_and(|v| v == "1" || v == "true");
     if !preview && !tpl.filename.is_empty() {
+        // RFC 6266 + RFC 5987: quoted filename for compat, filename* for non-ASCII.
+        // FlClash (Dart) strictly requires quoted-string; see FlClash#937.
+        // ASCII-only fallback for filename= (strip non-ASCII to avoid invalid header bytes).
+        let ascii_name: String = tpl.filename.chars().filter(|c| c.is_ascii()).collect();
+        let encoded = percent_encode_rfc5987(&tpl.filename);
         resp.headers_mut().set(
             "Content-Disposition",
-            &format!("attachment; filename={}", tpl.filename),
+            &format!(
+                "attachment; filename=\"{}\"; filename*=UTF-8''{}",
+                ascii_name, encoded
+            ),
         )?;
     }
     // subscription-userinfo: upload=0; download=<used>; total=<limit>; expire=<unix>

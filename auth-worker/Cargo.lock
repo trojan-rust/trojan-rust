@@ -613,13 +613,14 @@ dependencies = [
 
 [[package]]
 name = "trojan-auth-worker"
-version = "0.1.8"
+version = "0.2.0"
 dependencies = [
  "base64",
  "bincode",
  "console_error_panic_hook",
  "getrandom",
  "hex",
+ "percent-encoding",
  "serde",
  "serde_json",
  "sha2",

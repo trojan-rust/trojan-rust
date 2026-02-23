@@ -180,6 +180,28 @@ pub fn parse_duration_secs(s: &str) -> u64 {
     total
 }
 
+/// Percent-encode a string for use in RFC 5987 `filename*` parameter.
+/// Uses the `attr-char` set from RFC 5987 (unreserved chars only).
+pub fn percent_encode_rfc5987(s: &str) -> String {
+    /// RFC 5987 attr-char: ALPHA / DIGIT / "!" / "#" / "$" / "&" / "+" / "-" / "." /
+    /// "^" / "_" / "`" / "|" / "~" (we use a conservative subset matching NON_ALPHANUMERIC
+    /// minus the chars that need encoding in header parameters).
+    const RFC5987_SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'!')
+        .remove(b'#')
+        .remove(b'$')
+        .remove(b'&')
+        .remove(b'+')
+        .remove(b'-')
+        .remove(b'.')
+        .remove(b'^')
+        .remove(b'_')
+        .remove(b'`')
+        .remove(b'|')
+        .remove(b'~');
+    percent_encoding::utf8_percent_encode(s, RFC5987_SET).to_string()
+}
+
 pub fn validate_user(data: &CacheData) -> std::result::Result<AuthResult, AuthError> {
     if !data.enabled {
         Err(AuthError::Disabled)
