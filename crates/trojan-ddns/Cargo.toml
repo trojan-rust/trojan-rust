@@ -1,0 +1,25 @@
+[package]
+name = "trojan-ddns"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Dynamic DNS update service for trojan-rs"
+keywords = ["trojan", "ddns", "cloudflare", "dns"]
+categories = ["network-programming"]
+
+[dependencies]
+trojan-config.workspace = true
+
+cloudflare = { version = "0.14", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time", "sync"] }
+tokio-util.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

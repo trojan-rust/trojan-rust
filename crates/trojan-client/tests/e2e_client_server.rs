@@ -246,6 +246,7 @@ impl TestServer {
                 ..Default::default()
             },
             dns: Default::default(),
+            ddns: Default::default(),
         };
 
         let auth = MemoryAuth::from_passwords(&config.auth.passwords);
@@ -607,6 +608,7 @@ mod rules_e2e {
                     ..Default::default()
                 },
                 dns: Default::default(),
+                ddns: Default::default(),
             };
 
             let auth = MemoryAuth::from_passwords(&config.auth.passwords);

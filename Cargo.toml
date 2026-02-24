@@ -32,6 +32,7 @@ members = [
     "crates/trojan-rules",
     "crates/trojan-agent",
     "crates/trojan-protocol",
+    "crates/trojan-ddns",
 ]
 
 [workspace.package]
@@ -61,6 +62,7 @@ trojan-lb = { version = "0.8.1", path = "crates/trojan-lb" }
 trojan-rules = { version = "0.8.1", path = "crates/trojan-rules" }
 trojan-agent = { version = "0.8.1", path = "crates/trojan-agent" }
 trojan-protocol = { version = "0.8.1", path = "crates/trojan-protocol" }
+trojan-ddns = { version = "0.8.1", path = "crates/trojan-ddns" }
 
 # External dependencies (shared across crates)
 arc-swap = "1"

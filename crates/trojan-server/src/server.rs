@@ -227,6 +227,17 @@ pub async fn run_with_shutdown(
         }
     }
 
+    // Spawn DDNS update task if enabled
+    #[cfg(feature = "ddns")]
+    if config.ddns.enabled {
+        let ddns_config = config.ddns.clone();
+        let ddns_shutdown = shutdown.clone();
+        info!("starting DDNS update task");
+        tokio::spawn(async move {
+            trojan_ddns::ddns_loop(ddns_config, ddns_shutdown).await;
+        });
+    }
+
     // Log TCP options
     let tcp_cfg = &config.server.tcp;
     info!(

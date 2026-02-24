@@ -2,6 +2,7 @@
 
 mod analytics;
 mod cli;
+mod ddns;
 mod defaults;
 mod loader;
 mod types;
@@ -11,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 pub use analytics::*;
 pub use cli::*;
+pub use ddns::*;
 pub use loader::*;
 pub use types::*;
 pub use validate::*;
@@ -30,4 +32,6 @@ pub struct Config {
     pub analytics: AnalyticsConfig,
     #[serde(default)]
     pub dns: trojan_dns::DnsConfig,
+    #[serde(default)]
+    pub ddns: DdnsConfig,
 }

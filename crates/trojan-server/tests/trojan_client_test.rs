@@ -185,6 +185,7 @@ impl TestServer {
                 ..Default::default()
             },
             dns: Default::default(),
+            ddns: Default::default(),
         };
 
         let auth = MemoryAuth::from_passwords(&config.auth.passwords);

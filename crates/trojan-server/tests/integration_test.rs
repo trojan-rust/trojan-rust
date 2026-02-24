@@ -240,6 +240,7 @@ impl TestServer {
                 ..Default::default()
             },
             dns: Default::default(),
+            ddns: Default::default(),
         };
 
         let auth = MemoryAuth::from_passwords(&config.auth.passwords);
@@ -496,6 +497,7 @@ async fn test_graceful_shutdown() {
             ..Default::default()
         },
         dns: Default::default(),
+        ddns: Default::default(),
     };
 
     let auth = MemoryAuth::from_passwords(&config.auth.passwords);
@@ -661,6 +663,7 @@ async fn test_max_connections_limit() {
             ..Default::default()
         },
         dns: Default::default(),
+        ddns: Default::default(),
     };
 
     let auth = MemoryAuth::from_passwords(&config.auth.passwords);
@@ -814,6 +817,7 @@ async fn test_rate_limiting() {
             ..Default::default()
         },
         dns: Default::default(),
+        ddns: Default::default(),
     };
 
     let auth = MemoryAuth::from_passwords(&config.auth.passwords);
@@ -950,6 +954,7 @@ async fn test_tls13_only() {
             ..Default::default()
         },
         dns: Default::default(),
+        ddns: Default::default(),
     };
 
     let auth = MemoryAuth::from_passwords(&config.auth.passwords);
@@ -1150,6 +1155,7 @@ async fn test_udp_idle_timeout() {
             ..Default::default()
         },
         dns: Default::default(),
+        ddns: Default::default(),
     };
 
     let auth = MemoryAuth::from_passwords(&config.auth.passwords);
@@ -1395,6 +1401,7 @@ async fn test_tcp_idle_timeout() {
             ..Default::default()
         },
         dns: Default::default(),
+        ddns: Default::default(),
     };
 
     let auth = MemoryAuth::from_passwords(&config.auth.passwords);
@@ -1667,6 +1674,7 @@ mod rules_tests {
                     ..Default::default()
                 },
                 dns: Default::default(),
+                ddns: Default::default(),
             };
 
             let auth = MemoryAuth::from_passwords(&config.auth.passwords);
