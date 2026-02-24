@@ -109,12 +109,28 @@ where
     W: AsyncWrite + Unpin,
 {
     let hash = hash_password(password);
-    debug_assert_eq!(hash.len(), HASH_LEN);
+    write_handshake_prehashed(writer, &hash, target, metadata).await
+}
+
+/// Write a relay handshake using a pre-computed password hash.
+///
+/// Same as [`write_handshake`] but skips SHA-224 hashing — useful when the
+/// hash is computed once and reused across many connections.
+pub async fn write_handshake_prehashed<W>(
+    writer: &mut W,
+    hash_hex: &str,
+    target: &str,
+    metadata: &HandshakeMetadata,
+) -> Result<(), RelayError>
+where
+    W: AsyncWrite + Unpin,
+{
+    debug_assert_eq!(hash_hex.len(), HASH_LEN);
 
     let meta_str = metadata.encode();
 
     let mut buf = Vec::with_capacity(HASH_LEN + 2 + target.len() + 2 + meta_str.len() + 2);
-    buf.extend_from_slice(hash.as_bytes());
+    buf.extend_from_slice(hash_hex.as_bytes());
     buf.extend_from_slice(CRLF);
     buf.extend_from_slice(target.as_bytes());
     buf.extend_from_slice(CRLF);
@@ -140,38 +156,82 @@ pub struct RelayHandshake {
 /// Read and parse a relay handshake from the stream.
 ///
 /// Reads: `56-byte-hash + CRLF + target + CRLF + metadata + CRLF`
+///
+/// The variable-length part (target + metadata) is read into a single buffer
+/// to minimize read syscalls on TLS streams, where each small read triggers
+/// a separate decryption operation.
 pub async fn read_handshake<R>(reader: &mut R) -> Result<RelayHandshake, RelayError>
 where
     R: AsyncRead + Unpin,
 {
-    // Read 56-byte hash
-    let mut hash_buf = [0u8; HASH_LEN];
-    reader.read_exact(&mut hash_buf).await?;
+    // Read the fixed-size hash + CRLF in one shot (58 bytes)
+    let mut header = [0u8; HASH_LEN + 2];
+    reader.read_exact(&mut header).await?;
 
-    let hash = std::str::from_utf8(&hash_buf)
+    let hash = std::str::from_utf8(&header[..HASH_LEN])
         .map_err(|_| RelayError::Handshake("invalid hash encoding".into()))?;
 
-    // Validate hex chars
     if !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(RelayError::Handshake("invalid hash characters".into()));
     }
 
-    // Read CRLF after hash
-    let mut crlf = [0u8; 2];
-    reader.read_exact(&mut crlf).await?;
-    if &crlf != CRLF {
+    if &header[HASH_LEN..] != CRLF {
         return Err(RelayError::Handshake("expected CRLF after hash".into()));
     }
 
-    // Read target address until CRLF
-    let target = read_line(reader, MAX_TARGET_LEN, "target").await?;
-    if target.is_empty() {
-        return Err(RelayError::Handshake("empty target address".into()));
+    // Read the variable-length part (target + CRLF + metadata + CRLF) incrementally.
+    // Use a single buffer to minimize read syscalls on TLS streams.
+    let max_remaining = MAX_TARGET_LEN + 2 + MAX_METADATA_LEN + 2;
+    let mut buf = Vec::with_capacity(128);
+    let mut tmp = [0u8; 256];
+
+    loop {
+        let n = reader.read(&mut tmp).await?;
+        if n == 0 {
+            return Err(RelayError::Handshake("unexpected EOF in handshake".into()));
+        }
+        buf.extend_from_slice(&tmp[..n]);
+
+        // Check if we have at least two CRLF sequences
+        if buf.windows(2).filter(|w| *w == CRLF).count() >= 2 {
+            break;
+        }
+
+        if buf.len() > max_remaining {
+            return Err(RelayError::Handshake("handshake data too long".into()));
+        }
     }
 
-    // Read metadata line until CRLF
-    let meta_str = read_line(reader, MAX_METADATA_LEN, "metadata").await?;
-    let metadata = HandshakeMetadata::parse(&meta_str);
+    // Parse target (up to first CRLF) and metadata (between first and second CRLF)
+    let first_crlf = buf
+        .windows(2)
+        .position(|w| w == CRLF)
+        .ok_or_else(|| RelayError::Handshake("missing CRLF after target".into()))?;
+
+    let target_bytes = &buf[..first_crlf];
+    if target_bytes.is_empty() {
+        return Err(RelayError::Handshake("empty target address".into()));
+    }
+    if target_bytes.len() > MAX_TARGET_LEN {
+        return Err(RelayError::Handshake("target too long".into()));
+    }
+    let target = std::str::from_utf8(target_bytes)
+        .map_err(|_| RelayError::Handshake("invalid target encoding".into()))?
+        .to_string();
+
+    let meta_start = first_crlf + 2;
+    let second_crlf = buf[meta_start..]
+        .windows(2)
+        .position(|w| w == CRLF)
+        .ok_or_else(|| RelayError::Handshake("missing CRLF after metadata".into()))?;
+
+    let meta_bytes = &buf[meta_start..meta_start + second_crlf];
+    if meta_bytes.len() > MAX_METADATA_LEN {
+        return Err(RelayError::Handshake("metadata too long".into()));
+    }
+    let meta_str = std::str::from_utf8(meta_bytes)
+        .map_err(|_| RelayError::Handshake("invalid metadata encoding".into()))?;
+    let metadata = HandshakeMetadata::parse(meta_str);
 
     Ok(RelayHandshake {
         hash: hash.to_string(),
@@ -180,36 +240,27 @@ where
     })
 }
 
-/// Read bytes until CRLF, returning the content before it.
-async fn read_line<R>(reader: &mut R, max_len: usize, field: &str) -> Result<String, RelayError>
-where
-    R: AsyncRead + Unpin,
-{
-    let mut buf = Vec::with_capacity(64);
-    loop {
-        let byte = reader.read_u8().await?;
-        if byte == b'\r' {
-            let next = reader.read_u8().await?;
-            if next == b'\n' {
-                break;
-            }
-            return Err(RelayError::Handshake(format!(
-                "expected LF after CR in {}",
-                field
-            )));
-        }
-        buf.push(byte);
-        if buf.len() > max_len {
-            return Err(RelayError::Handshake(format!("{} too long", field)));
-        }
+/// Verify that a handshake hash matches a pre-computed expected hash.
+/// Uses constant-time comparison to prevent timing side-channels.
+pub fn verify_hash_precomputed(handshake: &RelayHandshake, expected_hash: &str) -> bool {
+    if handshake.hash.len() != expected_hash.len() {
+        return false;
     }
-    String::from_utf8(buf).map_err(|_| RelayError::Handshake(format!("invalid {} encoding", field)))
+    // Constant-time comparison
+    handshake
+        .hash
+        .as_bytes()
+        .iter()
+        .zip(expected_hash.as_bytes().iter())
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
 }
 
 /// Verify that a handshake hash matches the expected password.
+/// Uses constant-time comparison to prevent timing side-channels.
 pub fn verify_hash(handshake: &RelayHandshake, password: &str) -> bool {
     let expected = hash_password(password);
-    handshake.hash == expected
+    verify_hash_precomputed(handshake, &expected)
 }
 
 #[cfg(test)]

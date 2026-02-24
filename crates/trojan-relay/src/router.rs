@@ -17,8 +17,8 @@ pub struct Router {
     rules_by_addr: HashMap<SocketAddr, usize>,
     /// All rules in order
     rules: Vec<RuleConfig>,
-    /// Chain name → chain config
-    chains: HashMap<String, ChainConfig>,
+    /// Chain name → chain config (Arc-wrapped to avoid cloning per connection)
+    chains: HashMap<String, Arc<ChainConfig>>,
     /// One LoadBalancer per rule, indexed same as `rules`.
     load_balancers: Vec<Arc<LoadBalancer>>,
 }
@@ -27,7 +27,7 @@ pub struct Router {
 #[derive(Debug)]
 pub struct ResolvedRoute<'a> {
     pub rule: &'a RuleConfig,
-    pub chain: &'a ChainConfig,
+    pub chain: Arc<ChainConfig>,
     pub lb: &'a Arc<LoadBalancer>,
 }
 
@@ -75,7 +75,11 @@ impl Router {
         Ok(Self {
             rules_by_addr,
             rules: config.rules.clone(),
-            chains: config.chains.clone(),
+            chains: config
+                .chains
+                .iter()
+                .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+                .collect(),
             load_balancers,
         })
     }
@@ -84,7 +88,7 @@ impl Router {
     pub fn resolve(&self, listen_addr: &SocketAddr) -> Option<ResolvedRoute<'_>> {
         let idx = self.rules_by_addr.get(listen_addr)?;
         let rule = &self.rules[*idx];
-        let chain = self.chains.get(&rule.chain)?;
+        let chain = self.chains.get(&rule.chain)?.clone();
         let lb = &self.load_balancers[*idx];
         Some(ResolvedRoute { rule, chain, lb })
     }

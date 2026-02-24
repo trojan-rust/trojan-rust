@@ -15,7 +15,7 @@ use tracing::{Instrument, debug, info, info_span, warn};
 
 use crate::config::{RelayNodeConfig, TimeoutConfig, TransportType};
 use crate::error::RelayError;
-use crate::handshake::{self, verify_hash};
+use crate::handshake;
 use crate::transport::TransportAcceptor;
 use crate::transport::plain::{PlainTransportAcceptor, PlainTransportConnector};
 use crate::transport::tls::{TlsTransportAcceptor, TlsTransportConnector};
@@ -87,7 +87,7 @@ where
     let listener = TcpListener::bind(relay_cfg.listen).await?;
     info!(listen = %relay_cfg.listen, transport = ?relay_cfg.transport, "relay node started");
 
-    let password = relay_cfg.auth.password.clone();
+    let password_hash = handshake::hash_password(&relay_cfg.auth.password);
     let timeouts = relay_cfg.timeouts.clone();
 
     loop {
@@ -102,7 +102,7 @@ where
                 let _ = tcp_stream.set_nodelay(true);
                 let acceptor = acceptor.clone();
                 let connectors = connectors.clone();
-                let password = password.clone();
+                let password_hash = password_hash.clone();
                 let timeouts = timeouts.clone();
 
                 tokio::spawn(
@@ -111,7 +111,7 @@ where
                             tcp_stream,
                             acceptor,
                             connectors,
-                            &password,
+                            &password_hash,
                             &timeouts,
                         ).await {
                             debug!(error = %e, "relay connection error");
@@ -128,7 +128,7 @@ async fn handle_relay_connection<A>(
     tcp_stream: tokio::net::TcpStream,
     acceptor: A,
     connectors: OutboundConnectors,
-    password: &str,
+    password_hash: &str,
     timeouts: &TimeoutConfig,
 ) -> Result<(), RelayError>
 where
@@ -150,7 +150,7 @@ where
         .map_err(|_| RelayError::Handshake("relay handshake timeout".into()))??;
 
     // 3. Verify password
-    if !verify_hash(&hs, password) {
+    if !handshake::verify_hash_precomputed(&hs, password_hash) {
         warn!("relay auth failed");
         return Err(RelayError::AuthFailed);
     }

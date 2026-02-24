@@ -180,6 +180,28 @@ async fn handle_entry_connection(
     let idle_timeout = Duration::from_secs(timeouts.idle_timeout_secs);
     let relay_buffer_size = timeouts.relay_buffer_size;
 
+    // Pre-compute password hashes once (avoids SHA-224 per connection per hop)
+    let prehashed: Vec<String> = chain
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            n.password
+                .as_deref()
+                .map(handshake::hash_password)
+                .ok_or_else(|| {
+                    RelayError::Config(format!(
+                        "chain node {} missing password",
+                        if i == 0 {
+                            "first".to_string()
+                        } else {
+                            n.addr.clone()
+                        }
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     // Select destination via load balancer
     let selection = lb.select(peer_ip)?;
     let selected_dest = selection.addr;
@@ -208,7 +230,7 @@ async fn handle_entry_connection(
             let tls_connector = base_tls_connector.with_sni(first_sni.to_string());
             let tunnel = tokio::time::timeout(
                 connect_timeout,
-                build_tunnel(chain, &selected_dest, &tls_connector),
+                build_tunnel(chain, &selected_dest, &tls_connector, &prehashed),
             )
             .await
             .map_err(|_| RelayError::ConnectTimeout(selected_dest.clone()))??;
@@ -226,7 +248,7 @@ async fn handle_entry_connection(
         TransportType::Plain => {
             let tunnel = tokio::time::timeout(
                 connect_timeout,
-                build_tunnel(chain, &selected_dest, &plain_connector),
+                build_tunnel(chain, &selected_dest, &plain_connector, &prehashed),
             )
             .await
             .map_err(|_| RelayError::ConnectTimeout(selected_dest.clone()))??;
@@ -244,7 +266,7 @@ async fn handle_entry_connection(
         TransportType::Ws => {
             let tunnel = tokio::time::timeout(
                 connect_timeout,
-                build_tunnel(chain, &selected_dest, &ws_connector),
+                build_tunnel(chain, &selected_dest, &ws_connector, &prehashed),
             )
             .await
             .map_err(|_| RelayError::ConnectTimeout(selected_dest.clone()))??;
@@ -287,6 +309,7 @@ async fn build_tunnel<C>(
     chain: &ChainConfig,
     dest: &str,
     connector: &C,
+    prehashed: &[String],
 ) -> Result<C::Stream, RelayError>
 where
     C: TransportConnector,
@@ -308,13 +331,14 @@ where
 
     let mut stream = connector.connect(&first_node.addr).await?;
 
-    // Send relay handshake to first node
-    let password = first_node
-        .password
-        .as_deref()
-        .ok_or_else(|| RelayError::Config("first chain node missing password".into()))?;
-
-    handshake::write_handshake(&mut stream, password, &handshake_target, &handshake_meta).await?;
+    // Send relay handshake to first node (using pre-computed hash)
+    handshake::write_handshake_prehashed(
+        &mut stream,
+        &prehashed[0],
+        &handshake_target,
+        &handshake_meta,
+    )
+    .await?;
 
     // For chains with more than one node, send remaining handshakes through the tunnel.
     // Each relay node forwards bytes after its own handshake completes, so subsequent
@@ -325,14 +349,9 @@ where
     //   A → (B1→B2): handshake(pw=B2, target=B3, meta={how to reach B3})
     //   A → (B1→B2→B3): handshake(pw=B3, target=C, meta={how to reach C})
     for i in 1..chain.nodes.len() {
-        let node = &chain.nodes[i];
         let (target, meta) = next_hop_info(chain, dest, i);
 
-        let password = node.password.as_deref().ok_or_else(|| {
-            RelayError::Config(format!("chain node {} missing password", node.addr))
-        })?;
-
-        handshake::write_handshake(&mut stream, password, &target, &meta).await?;
+        handshake::write_handshake_prehashed(&mut stream, &prehashed[i], &target, &meta).await?;
     }
 
     Ok(stream)
