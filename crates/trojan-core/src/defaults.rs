@@ -94,7 +94,7 @@ pub const DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 // ============================================================================
 
 /// Default WebSocket enabled.
-pub const DEFAULT_WS_ENABLED: bool = true;
+pub const DEFAULT_WS_ENABLED: bool = false;
 /// Default WebSocket mode: "mixed" or "split".
 pub const DEFAULT_WS_MODE: &str = "mixed";
 /// Default WebSocket path.
