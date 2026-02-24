@@ -3,6 +3,22 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+## [0.9.0](https://github.com/trojan-rust/trojan-rust/compare/v0.8.1...v0.9.0) - 2026-02-24
+
+### Bug Fixes
+
+- default WebSocket to disabled
+
+
+### Features
+
+- add dynamic DNS support with Cloudflare provider
+
+
+### Performance
+
+- use atomics for traffic deltas and add cache cleanup task
+
 ## [0.8.1](https://github.com/trojan-rust/trojan-rust/compare/v0.8.0...v0.8.1) - 2026-02-18
 
 ### Bug Fixes
