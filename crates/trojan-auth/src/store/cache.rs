@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 #[cfg(feature = "tokio-runtime")]
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
@@ -71,7 +71,7 @@ pub struct AuthCache {
     stale_ttl: Duration,
 
     /// Accumulated traffic bytes since last DB fetch, keyed by user_id.
-    traffic_deltas: RwLock<HashMap<String, i64>>,
+    traffic_deltas: RwLock<HashMap<String, AtomicI64>>,
 
     /// Negative cache: hash → expiry instant.
     neg_cache: RwLock<HashMap<String, Instant>>,
@@ -212,11 +212,19 @@ impl AuthCache {
     /// cache hits reflect the accumulated traffic.
     #[allow(clippy::cast_possible_wrap)]
     pub fn add_traffic_delta(&self, user_id: &str, bytes: u64) {
-        *self
-            .traffic_deltas
+        // Fast path: read lock + atomic add (no write lock needed)
+        let deltas = self.traffic_deltas.read();
+        if let Some(delta) = deltas.get(user_id) {
+            delta.fetch_add(bytes as i64, Ordering::Relaxed);
+            return;
+        }
+        drop(deltas);
+        // Slow path: write lock to insert new entry
+        self.traffic_deltas
             .write()
             .entry(user_id.to_string())
-            .or_insert(0) += bytes as i64;
+            .or_insert_with(|| AtomicI64::new(0))
+            .fetch_add(bytes as i64, Ordering::Relaxed);
     }
 
     /// Read the accumulated traffic delta for a user.
@@ -227,7 +235,7 @@ impl AuthCache {
         self.traffic_deltas
             .read()
             .get(user_id)
-            .copied()
+            .map(|d| d.load(Ordering::Relaxed))
             .unwrap_or(0)
     }
 

@@ -9,6 +9,8 @@
 //! - Optional batched traffic recording via [`TrafficRecorder`]
 
 use std::sync::Arc;
+#[cfg(feature = "tokio-runtime")]
+use std::time::Duration;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -212,6 +214,24 @@ impl<S: UserStore + 'static> StoreAuth<S> {
             Self::revalidate(store, Arc::clone(&cache), hash.clone()).await;
             cache.finish_revalidation(&hash);
         });
+    }
+
+    /// Start a background task that periodically removes expired cache entries.
+    ///
+    /// Call this after construction when a tokio runtime is available.
+    /// Without this, expired entries are only lazily evicted on access.
+    pub fn start_cache_cleanup(&self, interval: Duration) {
+        if let Some(ref cache) = self.auth_cache {
+            let cache = Arc::clone(cache);
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(interval);
+                ticker.tick().await;
+                loop {
+                    ticker.tick().await;
+                    cache.cleanup_expired();
+                }
+            });
+        }
     }
 
     /// Re-fetch a user from the store and update the cache.
