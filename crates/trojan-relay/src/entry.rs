@@ -348,10 +348,10 @@ where
     //   A → B1: handshake(pw=B1, target=B2, meta={how to reach B2})
     //   A → (B1→B2): handshake(pw=B2, target=B3, meta={how to reach B3})
     //   A → (B1→B2→B3): handshake(pw=B3, target=C, meta={how to reach C})
-    for i in 1..chain.nodes.len() {
+    for (i, hash) in (1..chain.nodes.len()).zip(&prehashed[1..]) {
         let (target, meta) = next_hop_info(chain, dest, i);
 
-        handshake::write_handshake_prehashed(&mut stream, &prehashed[i], &target, &meta).await?;
+        handshake::write_handshake_prehashed(&mut stream, hash, &target, &meta).await?;
     }
 
     Ok(stream)
