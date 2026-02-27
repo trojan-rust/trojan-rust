@@ -34,7 +34,7 @@ sql-tls-rustls = ["sqlx/tls-rustls-ring"]
 sql-tls-native = ["sqlx/tls-native-tls"]
 
 # HTTP backend (calls remote auth-worker)
-http = ["dep:reqwest", "dep:bincode", "dep:serde", "dep:serde_json", "tokio-runtime"]
+http = ["dep:reqwest", "dep:bincode", "dep:serde", "dep:serde_json", "batched-traffic"]
 
 # CLI tool for auth management
 cli = ["sql", "dep:clap", "dep:tabled", "tokio/rt-multi-thread"]

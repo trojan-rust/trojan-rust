@@ -16,13 +16,17 @@
 //! let auth = HttpAuth::new(config);
 //! ```
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use crate::store::{StoreAuth, StoreAuthConfig, TrafficRecordingMode, UserRecord, UserStore};
+use crate::store::{
+    FlushFn, StoreAuth, StoreAuthConfig, TrafficRecorder, TrafficRecordingMode, UserRecord,
+    UserStore,
+};
 use crate::{AuthBackend, AuthError, AuthResult};
 
 // ── Codec ─────────────────────────────────────────────────────────
@@ -79,7 +83,7 @@ impl HttpAuthConfig {
     /// Extract the generic [`StoreAuthConfig`] for constructing [`StoreAuth`].
     fn store_auth_config(&self) -> StoreAuthConfig {
         StoreAuthConfig {
-            traffic_mode: TrafficRecordingMode::Immediate,
+            traffic_mode: TrafficRecordingMode::Batched,
             batch_flush_interval: Duration::from_secs(30),
             batch_max_pending: 1000,
             cache_enabled: self.cache_ttl > Duration::ZERO,
@@ -218,10 +222,77 @@ impl HttpAuth {
     /// Create a new HTTP auth backend from configuration.
     pub fn new(config: HttpAuthConfig) -> Self {
         let store_config = config.store_auth_config();
-        let store = HttpStore::new(&config.base_url, config.codec, config.node_token);
-        Self {
-            inner: StoreAuth::new(store, &store_config),
+        let store = HttpStore::new(&config.base_url, config.codec, config.node_token.clone());
+
+        let mut auth = StoreAuth::new(store, &store_config);
+
+        // Set up batched traffic recording
+        if store_config.traffic_mode == TrafficRecordingMode::Batched {
+            let client = Client::new();
+            let traffic_url = format!("{}/traffic", config.base_url.trim_end_matches('/'));
+            let codec = config.codec;
+            let node_token = config.node_token;
+
+            let flush_fn: FlushFn = Arc::new(move |batch| {
+                let client = client.clone();
+                let traffic_url = traffic_url.clone();
+                let node_token = node_token.clone();
+                Box::pin(async move {
+                    for (user_id, bytes) in batch {
+                        let req = wire::TrafficRequest { user_id, bytes };
+                        let result: Result<(), _> = async {
+                            let resp = match codec {
+                                Codec::Bincode => {
+                                    let body =
+                                        bincode::serialize(&req).map_err(AuthError::backend)?;
+                                    let mut r = client
+                                        .post(&traffic_url)
+                                        .header("Content-Type", "application/octet-stream");
+                                    if let Some(ref token) = node_token {
+                                        r = r.header("Authorization", format!("Bearer {token}"));
+                                    }
+                                    r.body(body).send().await.map_err(AuthError::backend)?
+                                }
+                                Codec::Json => {
+                                    let mut r = client.post(&traffic_url);
+                                    if let Some(ref token) = node_token {
+                                        r = r.header("Authorization", format!("Bearer {token}"));
+                                    }
+                                    r.json(&req).send().await.map_err(AuthError::backend)?
+                                }
+                            };
+                            if !resp.status().is_success() {
+                                return Err(AuthError::Backend(format!(
+                                    "HTTP {}",
+                                    resp.status().as_u16()
+                                )));
+                            }
+                            Ok(())
+                        }
+                        .await;
+
+                        if let Err(e) = result {
+                            tracing::warn!(
+                                user_id = req.user_id,
+                                bytes = req.bytes,
+                                error = %e,
+                                "failed to flush traffic record"
+                            );
+                        }
+                    }
+                    Ok(())
+                })
+            });
+
+            let recorder = TrafficRecorder::new(
+                store_config.batch_flush_interval,
+                store_config.batch_max_pending,
+                flush_fn,
+            );
+            auth = auth.with_traffic_recorder(recorder);
         }
+
+        Self { inner: auth }
     }
 }
 
