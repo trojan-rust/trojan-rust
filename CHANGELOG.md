@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+## [0.9.1](https://github.com/trojan-rust/trojan-rust/compare/v0.9.0...v0.9.1) - 2026-02-28
+
+### Chores
+
+- update Cargo.lock dependencies
+
+
+### Performance
+
+- use batched traffic recording for HTTP backend
+
 ## [0.9.0](https://github.com/trojan-rust/trojan-rust/compare/v0.8.1...v0.9.0) - 2026-02-24
 
 ### Bug Fixes
