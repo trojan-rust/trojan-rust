@@ -64,6 +64,11 @@ pub struct HttpAuthConfig {
     ///
     /// Invalid hashes are cached for this duration to prevent flooding.
     pub neg_cache_ttl: Duration,
+    /// Traffic batch flush interval (default: 30s).
+    ///
+    /// Traffic updates are accumulated in memory and flushed to the
+    /// auth-worker at this interval.
+    pub batch_flush_interval: Duration,
 }
 
 impl Default for HttpAuthConfig {
@@ -75,6 +80,7 @@ impl Default for HttpAuthConfig {
             cache_ttl: Duration::from_secs(300),
             stale_ttl: Duration::from_secs(600),
             neg_cache_ttl: Duration::from_secs(10),
+            batch_flush_interval: Duration::from_secs(30),
         }
     }
 }
@@ -84,7 +90,7 @@ impl HttpAuthConfig {
     fn store_auth_config(&self) -> StoreAuthConfig {
         StoreAuthConfig {
             traffic_mode: TrafficRecordingMode::Batched,
-            batch_flush_interval: Duration::from_secs(30),
+            batch_flush_interval: self.batch_flush_interval,
             batch_max_pending: 1000,
             cache_enabled: self.cache_ttl > Duration::ZERO,
             cache_ttl: self.cache_ttl,

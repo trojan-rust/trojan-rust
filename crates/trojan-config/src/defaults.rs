@@ -56,6 +56,7 @@ default_fns! {
     default_http_cache_ttl_secs       => DEFAULT_AUTH_CACHE_TTL_SECS: u64,
     default_http_cache_stale_ttl_secs => DEFAULT_AUTH_CACHE_STALE_TTL_SECS: u64,
     default_http_cache_neg_ttl_secs   => DEFAULT_AUTH_CACHE_NEG_TTL_SECS: u64,
+    default_http_batch_flush_interval_secs => DEFAULT_AUTH_BATCH_FLUSH_INTERVAL_SECS: u64,
 }
 
 default_string_fns! {

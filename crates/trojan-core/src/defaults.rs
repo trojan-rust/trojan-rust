@@ -112,6 +112,8 @@ pub const DEFAULT_AUTH_CACHE_TTL_SECS: u64 = 300;
 pub const DEFAULT_AUTH_CACHE_STALE_TTL_SECS: u64 = 600;
 /// Default auth negative cache TTL in seconds.
 pub const DEFAULT_AUTH_CACHE_NEG_TTL_SECS: u64 = 10;
+/// Default auth traffic batch flush interval in seconds.
+pub const DEFAULT_AUTH_BATCH_FLUSH_INTERVAL_SECS: u64 = 30;
 
 // ============================================================================
 // Protocol Constants

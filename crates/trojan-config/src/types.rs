@@ -310,6 +310,13 @@ pub struct AuthConfig {
     /// Invalid hashes are cached for this duration to prevent request flooding.
     #[serde(default = "default_http_cache_neg_ttl_secs")]
     pub http_cache_neg_ttl_secs: u64,
+
+    /// HTTP auth traffic batch flush interval in seconds (default: 30).
+    /// Traffic updates are accumulated in memory and flushed to the auth-worker
+    /// at this interval. Set higher to reduce HTTP requests at the cost of
+    /// delayed traffic accounting.
+    #[serde(default = "default_http_batch_flush_interval_secs")]
+    pub http_batch_flush_interval_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

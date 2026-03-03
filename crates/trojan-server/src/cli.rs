@@ -178,6 +178,7 @@ fn build_auth(auth: &trojan_config::AuthConfig) -> Box<dyn AuthBackend> {
             cache_ttl = auth.http_cache_ttl_secs,
             stale_ttl = auth.http_cache_stale_ttl_secs,
             neg_cache_ttl = auth.http_cache_neg_ttl_secs,
+            batch_flush_interval = auth.http_batch_flush_interval_secs,
             "using HTTP auth backend"
         );
         let config = HttpAuthConfig {
@@ -187,6 +188,7 @@ fn build_auth(auth: &trojan_config::AuthConfig) -> Box<dyn AuthBackend> {
             cache_ttl: Duration::from_secs(auth.http_cache_ttl_secs),
             stale_ttl: Duration::from_secs(auth.http_cache_stale_ttl_secs),
             neg_cache_ttl: Duration::from_secs(auth.http_cache_neg_ttl_secs),
+            batch_flush_interval: Duration::from_secs(auth.http_batch_flush_interval_secs),
         };
         Box::new(HttpAuth::new(config))
     } else {
