@@ -121,7 +121,7 @@ jobs:
         shell: bash
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: trojan-${{ matrix.target }}
           path: trojan-${{ matrix.target }}.*
@@ -136,7 +136,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Download artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
