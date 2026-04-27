@@ -10,6 +10,7 @@
 
 use std::time::Duration;
 
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tracing::{Instrument, debug, info, info_span, warn};
 
@@ -144,10 +145,14 @@ where
         .await
         .map_err(|_| RelayError::Handshake("transport accept timeout".into()))??;
 
-    // 2. Read relay handshake (now includes metadata)
-    let hs = tokio::time::timeout(handshake_timeout, handshake::read_handshake(&mut inbound))
-        .await
-        .map_err(|_| RelayError::Handshake("relay handshake timeout".into()))??;
+    // 2. Read relay handshake (now includes metadata).
+    // `residue` is any bytes read past the handshake's second CRLF — they
+    // belong to whatever the upstream sent next (the next hop's handshake or
+    // the client's payload) and must be forwarded to outbound verbatim.
+    let (hs, residue) =
+        tokio::time::timeout(handshake_timeout, handshake::read_handshake(&mut inbound))
+            .await
+            .map_err(|_| RelayError::Handshake("relay handshake timeout".into()))??;
 
     // 3. Verify password
     if !handshake::verify_hash_precomputed(&hs, password_hash) {
@@ -155,7 +160,7 @@ where
         return Err(RelayError::AuthFailed);
     }
 
-    debug!(target = %hs.target, "relay handshake accepted");
+    debug!(target = %hs.target, residue_len = residue.len(), "relay handshake accepted");
 
     // 4. Determine outbound transport from handshake metadata or node defaults
     let outbound_transport = hs
@@ -179,12 +184,16 @@ where
     match outbound_transport {
         TransportType::Tls => {
             let connector = connectors.tls.with_sni(outbound_sni.to_string());
-            let outbound = tokio::time::timeout(
+            let mut outbound = tokio::time::timeout(
                 connect_timeout,
                 crate::transport::TransportConnector::connect(&connector, &hs.target),
             )
             .await
             .map_err(|_| RelayError::ConnectTimeout(hs.target.clone()))??;
+
+            if !residue.is_empty() {
+                outbound.write_all(&residue).await?;
+            }
 
             relay_bidirectional(
                 inbound,
@@ -196,12 +205,16 @@ where
             .await?;
         }
         TransportType::Plain => {
-            let outbound = tokio::time::timeout(
+            let mut outbound = tokio::time::timeout(
                 connect_timeout,
                 crate::transport::TransportConnector::connect(&connectors.plain, &hs.target),
             )
             .await
             .map_err(|_| RelayError::ConnectTimeout(hs.target.clone()))??;
+
+            if !residue.is_empty() {
+                outbound.write_all(&residue).await?;
+            }
 
             relay_bidirectional(
                 inbound,
@@ -213,12 +226,16 @@ where
             .await?;
         }
         TransportType::Ws => {
-            let outbound = tokio::time::timeout(
+            let mut outbound = tokio::time::timeout(
                 connect_timeout,
                 crate::transport::TransportConnector::connect(&connectors.ws, &hs.target),
             )
             .await
             .map_err(|_| RelayError::ConnectTimeout(hs.target.clone()))??;
+
+            if !residue.is_empty() {
+                outbound.write_all(&residue).await?;
+            }
 
             relay_bidirectional(
                 inbound,
