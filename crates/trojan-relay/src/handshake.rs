@@ -160,7 +160,13 @@ pub struct RelayHandshake {
 /// The variable-length part (target + metadata) is read into a single buffer
 /// to minimize read syscalls on TLS streams, where each small read triggers
 /// a separate decryption operation.
-pub async fn read_handshake<R>(reader: &mut R) -> Result<RelayHandshake, RelayError>
+///
+/// Returns the parsed handshake plus any **residue bytes** read past the
+/// second CRLF. The caller MUST forward these bytes to the next hop before
+/// starting bidirectional copy — they belong to the upstream's next message
+/// (e.g. the next hop's handshake in a multi-hop chain, or the client's
+/// payload), and dropping them desyncs the stream.
+pub async fn read_handshake<R>(reader: &mut R) -> Result<(RelayHandshake, Vec<u8>), RelayError>
 where
     R: AsyncRead + Unpin,
 {
@@ -233,11 +239,22 @@ where
         .map_err(|_| RelayError::Handshake("invalid metadata encoding".into()))?;
     let metadata = HandshakeMetadata::parse(meta_str);
 
-    Ok(RelayHandshake {
-        hash: hash.to_string(),
-        target,
-        metadata,
-    })
+    // Anything past the second CRLF is residue belonging to the next message.
+    let residue_start = meta_start + second_crlf + 2;
+    let residue = if residue_start < buf.len() {
+        buf[residue_start..].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    Ok((
+        RelayHandshake {
+            hash: hash.to_string(),
+            target,
+            metadata,
+        },
+        residue,
+    ))
 }
 
 /// Verify that a handshake hash matches a pre-computed expected hash.
@@ -301,11 +318,12 @@ mod tests {
             client
         });
 
-        let hs = read_handshake(&mut server).await.unwrap();
+        let (hs, residue) = read_handshake(&mut server).await.unwrap();
         assert_eq!(hs.target, target);
         assert!(verify_hash(&hs, password));
         assert!(hs.metadata.transport.is_none());
         assert!(hs.metadata.sni.is_none());
+        assert!(residue.is_empty());
 
         write_handle.await.unwrap();
     }
@@ -328,11 +346,12 @@ mod tests {
             client
         });
 
-        let hs = read_handshake(&mut server).await.unwrap();
+        let (hs, residue) = read_handshake(&mut server).await.unwrap();
         assert_eq!(hs.target, target);
         assert!(verify_hash(&hs, password));
         assert_eq!(hs.metadata.transport, Some(TransportType::Plain));
         assert_eq!(hs.metadata.sni.as_deref(), Some("cdn.example.com"));
+        assert!(residue.is_empty());
 
         write_handle.await.unwrap();
     }
@@ -392,5 +411,61 @@ mod tests {
         let parsed = HandshakeMetadata::parse("");
         assert!(parsed.transport.is_none());
         assert!(parsed.sni.is_none());
+    }
+
+    /// Regression for the v0.9.0 over-read bug: when the upstream pipelines
+    /// a follow-up message in the same TCP/TLS read window, `read_handshake`
+    /// must hand those bytes back as `residue` rather than dropping them.
+    #[tokio::test]
+    async fn test_handshake_returns_residue_for_pipelined_data() {
+        let (mut client, mut server) = duplex(4096);
+
+        let pw1 = "first-hop";
+        let pw2 = "second-hop";
+        let target1 = "B2:443";
+        let target2 = "C:443";
+
+        let mut expected_h2 = Vec::new();
+        let h2 = hash_password(pw2);
+        expected_h2.extend_from_slice(h2.as_bytes());
+        expected_h2.extend_from_slice(CRLF);
+        expected_h2.extend_from_slice(target2.as_bytes());
+        expected_h2.extend_from_slice(CRLF);
+        expected_h2.extend_from_slice(CRLF);
+
+        let writer = tokio::spawn(async move {
+            write_handshake(&mut client, pw1, target1, &HandshakeMetadata::default())
+                .await
+                .unwrap();
+            write_handshake(&mut client, pw2, target2, &HandshakeMetadata::default())
+                .await
+                .unwrap();
+            client
+        });
+
+        let (hs, residue) = read_handshake(&mut server).await.unwrap();
+        assert_eq!(hs.target, target1);
+        assert!(verify_hash(&hs, pw1));
+
+        // Whatever was over-read must equal a prefix of the second handshake;
+        // the rest (if any) stays on the wire to be picked up by a follow-up read.
+        assert!(
+            !residue.is_empty(),
+            "in-process duplex pipes the second write together with the first; \
+             residue should not be empty"
+        );
+        assert_eq!(residue, expected_h2[..residue.len()]);
+
+        if residue.len() < expected_h2.len() {
+            let mut tail = vec![0u8; expected_h2.len() - residue.len()];
+            tokio::io::AsyncReadExt::read_exact(&mut server, &mut tail)
+                .await
+                .unwrap();
+            let mut combined = residue.clone();
+            combined.extend_from_slice(&tail);
+            assert_eq!(combined, expected_h2);
+        }
+
+        let _ = writer.await.unwrap();
     }
 }
