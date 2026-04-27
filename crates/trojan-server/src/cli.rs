@@ -67,7 +67,12 @@ pub async fn run(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    run_with_shutdown(config, auth, shutdown).await?;
+    let result = run_with_shutdown(config, auth.clone(), shutdown).await;
+    // Drain any buffered traffic batches before exiting. Without this,
+    // ~one batch_flush_interval worth of bytes can be lost on every restart.
+    info!("draining auth backend before exit");
+    auth.shutdown().await;
+    result?;
     Ok(())
 }
 

@@ -247,6 +247,23 @@ impl AuthCache {
         self.traffic_deltas.write().remove(user_id);
     }
 
+    /// Reset the traffic delta for a user to a specific starting value.
+    ///
+    /// Called on cache revalidation so the in-memory delta accounts for bytes
+    /// already recorded but not yet flushed to the backend. Without this seed,
+    /// the cache would briefly under-count traffic by the in-flight amount,
+    /// letting users exceed their limit by up to `batch_flush_interval` worth
+    /// of bytes after every revalidation.
+    #[allow(clippy::cast_possible_wrap)]
+    pub fn reset_traffic_delta(&self, user_id: &str, value: u64) {
+        let mut deltas = self.traffic_deltas.write();
+        if value == 0 {
+            deltas.remove(user_id);
+        } else {
+            deltas.insert(user_id.to_string(), AtomicI64::new(value as i64));
+        }
+    }
+
     // ── Negative cache ──────────────────────────────────────────
 
     /// Record a hash as "not found" in the negative cache.

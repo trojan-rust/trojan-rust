@@ -19,7 +19,7 @@ default = []
 tokio-runtime = ["dep:tokio", "dep:tracing"]
 
 # Batched traffic recording (tokio MPSC)
-batched-traffic = ["tokio-runtime"]
+batched-traffic = ["tokio-runtime", "dep:tokio-util"]
 
 # SQL backend with SQLx
 sql = ["dep:sqlx", "batched-traffic"]
@@ -54,6 +54,7 @@ sqlx = { version = "0.8", default-features = false, features = [
 
 # For batch traffic recording (optional, only with sql feature)
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt"], optional = true }
+tokio-util = { workspace = true, optional = true }
 
 # HTTP backend dependencies (optional)
 reqwest = { version = "0.12", default-features = false, features = [

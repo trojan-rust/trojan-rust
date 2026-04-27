@@ -79,6 +79,11 @@ impl AuthBackend for ReloadableAuth {
         let backend = self.get();
         backend.record_traffic(user_id, bytes).await
     }
+
+    async fn shutdown(&self) {
+        let backend = self.get();
+        backend.shutdown().await;
+    }
 }
 
 #[cfg(test)]
