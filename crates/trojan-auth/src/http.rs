@@ -106,7 +106,11 @@ impl HttpAuthConfig {
 ///
 /// Implements [`UserStore`] by calling the auth-worker's `/verify` and
 /// `/traffic` endpoints.
-#[derive(Debug)]
+///
+/// Cloning is cheap — `reqwest::Client` is Arc-internal, the URLs/token are
+/// owned but small. The flush_fn closure clones the store per-task so each
+/// concurrent POST has its own handle.
+#[derive(Debug, Clone)]
 pub struct HttpStore {
     client: Client,
     verify_url: String,
@@ -234,58 +238,33 @@ impl HttpAuth {
 
         // Set up batched traffic recording
         if store_config.traffic_mode == TrafficRecordingMode::Batched {
-            let client = Client::new();
-            let traffic_url = format!("{}/traffic", config.base_url.trim_end_matches('/'));
-            let codec = config.codec;
-            let node_token = config.node_token;
+            // Reuse HttpStore::add_traffic for the actual POST. We clone the
+            // store per-task so each concurrent POST has its own handle.
+            let store_for_flush =
+                HttpStore::new(&config.base_url, config.codec, config.node_token.clone());
 
             let flush_fn: FlushFn = Arc::new(move |batch| {
-                let client = client.clone();
-                let traffic_url = traffic_url.clone();
-                let node_token = node_token.clone();
+                let store = store_for_flush.clone();
                 Box::pin(async move {
+                    // Fire all POSTs concurrently — the auth-worker's /traffic
+                    // endpoint takes one user per request, so a 1000-user
+                    // batch used to mean 1000 sequential round trips. JoinSet
+                    // lets reqwest's connection pool fan them out instead.
+                    let mut tasks = tokio::task::JoinSet::new();
                     for (user_id, bytes) in batch {
-                        let req = wire::TrafficRequest { user_id, bytes };
-                        let result: Result<(), _> = async {
-                            let resp = match codec {
-                                Codec::Bincode => {
-                                    let body =
-                                        bincode::serialize(&req).map_err(AuthError::backend)?;
-                                    let mut r = client
-                                        .post(&traffic_url)
-                                        .header("Content-Type", "application/octet-stream");
-                                    if let Some(ref token) = node_token {
-                                        r = r.header("Authorization", format!("Bearer {token}"));
-                                    }
-                                    r.body(body).send().await.map_err(AuthError::backend)?
-                                }
-                                Codec::Json => {
-                                    let mut r = client.post(&traffic_url);
-                                    if let Some(ref token) = node_token {
-                                        r = r.header("Authorization", format!("Bearer {token}"));
-                                    }
-                                    r.json(&req).send().await.map_err(AuthError::backend)?
-                                }
-                            };
-                            if !resp.status().is_success() {
-                                return Err(AuthError::Backend(format!(
-                                    "HTTP {}",
-                                    resp.status().as_u16()
-                                )));
+                        let store = store.clone();
+                        tasks.spawn(async move {
+                            if let Err(e) = store.add_traffic(&user_id, bytes).await {
+                                tracing::warn!(
+                                    user_id = %user_id,
+                                    bytes = bytes,
+                                    error = %e,
+                                    "failed to flush traffic record"
+                                );
                             }
-                            Ok(())
-                        }
-                        .await;
-
-                        if let Err(e) = result {
-                            tracing::warn!(
-                                user_id = req.user_id,
-                                bytes = req.bytes,
-                                error = %e,
-                                "failed to flush traffic record"
-                            );
-                        }
+                        });
                     }
+                    while tasks.join_next().await.is_some() {}
                     Ok(())
                 })
             });
@@ -310,6 +289,10 @@ impl AuthBackend for HttpAuth {
 
     async fn record_traffic(&self, user_id: &str, bytes: u64) -> Result<(), AuthError> {
         self.inner.record_traffic(user_id, bytes).await
+    }
+
+    async fn shutdown(&self) {
+        self.inner.shutdown().await;
     }
 }
 

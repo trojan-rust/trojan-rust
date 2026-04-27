@@ -39,7 +39,7 @@ pub struct StoreAuth<S: UserStore> {
     store: Arc<S>,
     auth_cache: Option<Arc<AuthCache>>,
     #[cfg(feature = "batched-traffic")]
-    traffic_recorder: Option<TrafficRecorder>,
+    traffic_recorder: Option<Arc<TrafficRecorder>>,
     traffic_mode: TrafficRecordingMode,
 }
 
@@ -71,8 +71,23 @@ impl<S: UserStore> StoreAuth<S> {
     /// Attach a [`TrafficRecorder`] for batched traffic writes.
     #[cfg(feature = "batched-traffic")]
     pub fn with_traffic_recorder(mut self, recorder: TrafficRecorder) -> Self {
-        self.traffic_recorder = Some(recorder);
+        self.traffic_recorder = Some(Arc::new(recorder));
         self
+    }
+
+    /// Bytes recorded for `user_id` that have not yet reached the backend.
+    /// Returns 0 when batched traffic is disabled.
+    #[cfg(feature = "batched-traffic")]
+    fn pending_traffic_for(&self, user_id: &str) -> u64 {
+        self.traffic_recorder
+            .as_ref()
+            .map(|r| r.pending_for(user_id))
+            .unwrap_or(0)
+    }
+
+    #[cfg(not(feature = "batched-traffic"))]
+    fn pending_traffic_for(&self, _user_id: &str) -> u64 {
+        0
     }
 
     /// Get a reference to the underlying store.
@@ -210,8 +225,53 @@ impl<S: UserStore + 'static> StoreAuth<S> {
         let store = Arc::clone(&self.store);
         let cache = Arc::clone(cache);
         let hash = hash.to_string();
+        #[cfg(feature = "batched-traffic")]
+        let recorder = self.traffic_recorder.clone();
+
         tokio::spawn(async move {
-            Self::revalidate(store, Arc::clone(&cache), hash.clone()).await;
+            match store.find_by_hash(&hash).await {
+                Ok(Some(record)) => {
+                    if let Some(ref uid) = record.user_id {
+                        // Seed the delta with bytes already recorded but not
+                        // yet flushed, so we don't briefly under-count traffic
+                        // after revalidation.
+                        #[cfg(feature = "batched-traffic")]
+                        let pending = recorder.as_ref().map(|r| r.pending_for(uid)).unwrap_or(0);
+                        #[cfg(not(feature = "batched-traffic"))]
+                        let pending: u64 = 0;
+                        cache.reset_traffic_delta(uid, pending);
+                    }
+                    // Drop any stale negative entry for this hash — without
+                    // this, a hash that briefly looked invalid could stay
+                    // blocked even though the user is now valid.
+                    cache.remove_negative(&hash);
+                    let cached_user = CachedUser {
+                        user_id: record.user_id.clone(),
+                        traffic_limit: record.traffic_limit,
+                        traffic_used: record.traffic_used,
+                        expires_at: record.expires_at,
+                        enabled: record.enabled,
+                        cached_at: Instant::now(),
+                    };
+                    cache.insert(hash.clone(), cached_user);
+                }
+                Ok(None) => {
+                    cache.remove(&hash);
+                    cache.insert_negative(&hash);
+                }
+                Err(e) => {
+                    // Keep the stale entry: SWR's whole point is that the
+                    // local cache should ride out backend hiccups. Removing
+                    // here turns a brief 5xx into a stampede the next time
+                    // these hashes are queried. The entry will be retried on
+                    // the next stale lookup.
+                    tracing::warn!(
+                        hash = %hash,
+                        error = %e,
+                        "background revalidation failed; keeping stale entry"
+                    );
+                }
+            }
             cache.finish_revalidation(&hash);
         });
     }
@@ -231,34 +291,6 @@ impl<S: UserStore + 'static> StoreAuth<S> {
                     cache.cleanup_expired();
                 }
             });
-        }
-    }
-
-    /// Re-fetch a user from the store and update the cache.
-    async fn revalidate(store: Arc<S>, cache: Arc<AuthCache>, hash: String) {
-        match store.find_by_hash(&hash).await {
-            Ok(Some(record)) => {
-                if let Some(ref uid) = record.user_id {
-                    cache.clear_traffic_delta(uid);
-                }
-                let cached_user = CachedUser {
-                    user_id: record.user_id.clone(),
-                    traffic_limit: record.traffic_limit,
-                    traffic_used: record.traffic_used,
-                    expires_at: record.expires_at,
-                    enabled: record.enabled,
-                    cached_at: Instant::now(),
-                };
-                cache.insert(hash, cached_user);
-            }
-            Ok(None) => {
-                cache.remove(&hash);
-                cache.insert_negative(&hash);
-            }
-            Err(e) => {
-                tracing::warn!(hash = %hash, error = %e, "background revalidation failed");
-                cache.remove(&hash);
-            }
         }
     }
 }
@@ -305,11 +337,16 @@ impl<S: UserStore + 'static> AuthBackend for StoreAuth<S> {
         // Validate business rules
         Self::validate_record(&record)?;
 
-        // Cache successful result and reset traffic delta
+        // Cache successful result and reseed traffic delta with bytes still
+        // in the recorder pipeline (pending + in-flight).
         if let Some(ref cache) = self.auth_cache {
             if let Some(ref uid) = record.user_id {
-                cache.clear_traffic_delta(uid);
+                let pending = self.pending_traffic_for(uid);
+                cache.reset_traffic_delta(uid, pending);
             }
+            // Drop any stale negative entry — a user that just transitioned
+            // from "not found" to "found" should not stay blocked by it.
+            cache.remove_negative(hash);
             let cached_user = CachedUser {
                 user_id: record.user_id.clone(),
                 traffic_limit: record.traffic_limit,
@@ -341,6 +378,13 @@ impl<S: UserStore + 'static> AuthBackend for StoreAuth<S> {
                 Ok(())
             }
             TrafficRecordingMode::Disabled => Ok(()),
+        }
+    }
+
+    async fn shutdown(&self) {
+        #[cfg(feature = "batched-traffic")]
+        if let Some(ref recorder) = self.traffic_recorder {
+            recorder.shutdown().await;
         }
     }
 }
