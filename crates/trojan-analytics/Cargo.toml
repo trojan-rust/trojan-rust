@@ -14,7 +14,7 @@ readme = "README.md"
 
 [dependencies]
 trojan-config.workspace = true
-clickhouse = { version = "0.14", features = ["inserter", "time"] }
+clickhouse = { version = "0.15", features = ["inserter", "time"] }
 time.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "fs", "io-util"] }
 serde.workspace = true
