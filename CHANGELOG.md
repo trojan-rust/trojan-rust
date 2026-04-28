@@ -9,6 +9,11 @@ All notable changes to this project will be documented in this file.
 
 - bump rust-dependencies group (hickory 0.26, sha2 0.11, ctor 0.10, clickhouse 0.15, tokio-tungstenite 0.29)
 
+<<<<<<< Updated upstream
+=======
+- bump maxminddb ([#36](https://github.com/trojan-rust/trojan-rust/pull/36))
+
+>>>>>>> Stashed changes
 
 ### Chores
 
