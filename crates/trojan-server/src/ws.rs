@@ -93,20 +93,14 @@ pub fn inspect_mixed(buf: &[u8], cfg: &WsCfg) -> WsInspect {
             let value_trim = value.trim();
             let value_lower = value_trim.to_ascii_lowercase();
             match name.as_str() {
-                "upgrade" => {
-                    if value_lower.contains("websocket") {
-                        upgrade = true;
-                    }
+                "upgrade" if value_lower.contains("websocket") => {
+                    upgrade = true;
                 }
-                "connection" => {
-                    if value_lower.contains("upgrade") {
-                        connection_upgrade = true;
-                    }
+                "connection" if value_lower.contains("upgrade") => {
+                    connection_upgrade = true;
                 }
-                "sec-websocket-key" => {
-                    if !value_trim.is_empty() {
-                        ws_key = true;
-                    }
+                "sec-websocket-key" if !value_trim.is_empty() => {
+                    ws_key = true;
                 }
                 "host" => {
                     host = Some(value_trim);
@@ -128,6 +122,7 @@ pub fn inspect_mixed(buf: &[u8], cfg: &WsCfg) -> WsInspect {
 }
 
 /// Accept a WebSocket upgrade on the given stream.
+#[allow(clippy::result_large_err)]
 pub async fn accept_ws<S>(
     stream: S,
     initial: Bytes,
