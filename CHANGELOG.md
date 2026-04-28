@@ -3,6 +3,23 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+## [0.10.2](https://github.com/trojan-rust/trojan-rust/compare/v0.10.0...v0.10.2) - 2026-04-28
+
+### Build
+
+- bump rust-dependencies group (hickory 0.26, sha2 0.11, ctor 0.10, clickhouse 0.15, tokio-tungstenite 0.29)
+
+- bump maxminddb ([#36](https://github.com/trojan-rust/trojan-rust/pull/36))
+
+- bump the github-actions group across 1 directory with 5 updates ([#31](https://github.com/trojan-rust/trojan-rust/pull/31))
+
+
+### Chores
+
+- update Cargo.toml dependencies
+
+- release v0.10.1 ([#37](https://github.com/trojan-rust/trojan-rust/pull/37))
+
 ## [0.10.1](https://github.com/trojan-rust/trojan-rust/compare/v0.10.0...v0.10.1) - 2026-04-28
 
 ### Build
