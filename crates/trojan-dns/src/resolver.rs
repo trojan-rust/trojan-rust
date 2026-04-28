@@ -3,12 +3,9 @@
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 
-use hickory_proto::xfer::Protocol;
 use hickory_resolver::Resolver;
-use hickory_resolver::config::{
-    NameServerConfig, NameServerConfigGroup, ResolverConfig, ResolverOpts,
-};
-use hickory_resolver::name_server::TokioConnectionProvider;
+use hickory_resolver::config::{ConnectionConfig, NameServerConfig, ResolverConfig, ResolverOpts};
+use hickory_resolver::net::runtime::TokioRuntimeProvider;
 use tracing::debug;
 
 use crate::config::{DnsConfig, DnsStrategy};
@@ -28,7 +25,7 @@ pub struct DnsResolver {
 }
 
 struct Inner {
-    resolver: Resolver<TokioConnectionProvider>,
+    resolver: Resolver<TokioRuntimeProvider>,
     prefer_ipv4: bool,
 }
 
@@ -50,22 +47,20 @@ impl DnsResolver {
                 let mut builder = Resolver::builder_tokio()
                     .map_err(|e| DnsError::InvalidServer(format!("system config: {e}")))?;
                 let opts = builder.options_mut();
-                opts.cache_size = config.cache_size;
+                opts.cache_size = config.cache_size as u64;
                 opts.preserve_intermediates = true;
-                builder.build()
+                builder.build()?
             }
             DnsStrategy::Custom => {
                 let name_servers = parse_server_urls(&config.servers)?;
                 let resolver_config = ResolverConfig::from_parts(None, vec![], name_servers);
                 let mut opts = ResolverOpts::default();
-                opts.cache_size = config.cache_size;
+                opts.cache_size = config.cache_size as u64;
                 opts.preserve_intermediates = true;
-                let mut builder = Resolver::builder_with_config(
-                    resolver_config,
-                    TokioConnectionProvider::default(),
-                );
+                let mut builder =
+                    Resolver::builder_with_config(resolver_config, TokioRuntimeProvider::default());
                 *builder.options_mut() = opts;
-                builder.build()
+                builder.build()?
             }
         };
 
@@ -148,8 +143,8 @@ fn split_host_port(addr: &str) -> Result<(&str, u16), DnsError> {
     }
 }
 
-/// Parse server URL strings into hickory `NameServerConfigGroup`.
-fn parse_server_urls(urls: &[String]) -> Result<NameServerConfigGroup, DnsError> {
+/// Parse server URL strings into a list of hickory `NameServerConfig`.
+fn parse_server_urls(urls: &[String]) -> Result<Vec<NameServerConfig>, DnsError> {
     let mut configs = Vec::with_capacity(urls.len());
 
     for url in urls {
@@ -164,20 +159,14 @@ fn parse_server_urls(urls: &[String]) -> Result<NameServerConfigGroup, DnsError>
                         "unexpected path for {protocol} server: {url}"
                     )));
                 }
-                let proto = if protocol == "udp" {
-                    Protocol::Udp
-                } else {
-                    Protocol::Tcp
-                };
                 let socket_addr = parse_socket_addr(rest, 53)?;
-                configs.push(NameServerConfig {
-                    socket_addr,
-                    protocol: proto,
-                    tls_dns_name: None,
-                    http_endpoint: None,
-                    trust_negative_responses: false,
-                    bind_addr: None,
-                });
+                let mut conn = if protocol == "udp" {
+                    ConnectionConfig::udp()
+                } else {
+                    ConnectionConfig::tcp()
+                };
+                conn.port = socket_addr.port();
+                configs.push(NameServerConfig::new(socket_addr.ip(), false, vec![conn]));
             }
             "tls" => {
                 if rest.contains('/') {
@@ -188,14 +177,9 @@ fn parse_server_urls(urls: &[String]) -> Result<NameServerConfigGroup, DnsError>
                 // tls://1.1.1.1 or tls://dns.name:853
                 let (host, port) = parse_host_port(rest, 853)?;
                 let socket_addr = resolve_server_addr(host, port)?;
-                configs.push(NameServerConfig {
-                    socket_addr,
-                    protocol: Protocol::Tls,
-                    tls_dns_name: Some(host.to_string()),
-                    http_endpoint: None,
-                    trust_negative_responses: false,
-                    bind_addr: None,
-                });
+                let mut conn = ConnectionConfig::tls(Arc::from(host));
+                conn.port = port;
+                configs.push(NameServerConfig::new(socket_addr.ip(), false, vec![conn]));
             }
             "https" => {
                 // https://dns.google/dns-query
@@ -205,14 +189,10 @@ fn parse_server_urls(urls: &[String]) -> Result<NameServerConfigGroup, DnsError>
                 };
                 let (host, port) = parse_host_port(authority, 443)?;
                 let socket_addr = resolve_server_addr(host, port)?;
-                configs.push(NameServerConfig {
-                    socket_addr,
-                    protocol: Protocol::Https,
-                    tls_dns_name: Some(host.to_string()),
-                    http_endpoint: Some(path),
-                    trust_negative_responses: false,
-                    bind_addr: None,
-                });
+                let mut conn =
+                    ConnectionConfig::https(Arc::from(host), Some(Arc::from(path.as_str())));
+                conn.port = port;
+                configs.push(NameServerConfig::new(socket_addr.ip(), false, vec![conn]));
             }
             _ => {
                 return Err(DnsError::InvalidServer(format!(
@@ -228,7 +208,7 @@ fn parse_server_urls(urls: &[String]) -> Result<NameServerConfigGroup, DnsError>
         ));
     }
 
-    Ok(NameServerConfigGroup::from(configs))
+    Ok(configs)
 }
 
 /// Parse "host:port", "[ipv6]:port", "host", or "[ipv6]" with a default port.

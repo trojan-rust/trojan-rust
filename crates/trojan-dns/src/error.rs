@@ -11,7 +11,7 @@ pub enum DnsError {
 
     /// DNS lookup failed.
     #[error("dns lookup failed: {0}")]
-    Lookup(#[from] hickory_resolver::ResolveError),
+    Lookup(#[from] hickory_resolver::net::NetError),
 
     /// Invalid address format (missing port, bad IP, etc.).
     #[error("invalid address: {0}")]

@@ -19,8 +19,7 @@ pub fn create_client(config: &ClickHouseConfig) -> Result<Client, AnalyticsError
         client = client.with_password(password);
     }
 
-    // Set timeouts via options
-    client = client.with_option(
+    client = client.with_setting(
         "connect_timeout",
         format!("{}s", config.connect_timeout_secs),
     );
