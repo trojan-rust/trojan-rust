@@ -361,7 +361,7 @@ where
 #[cfg(feature = "rules")]
 #[allow(clippy::too_many_arguments)]
 async fn handle_connect_via_outbound<S, A>(
-    stream: S,
+    mut stream: S,
     address: trojan_proto::AddressRef<'_>,
     payload: &[u8],
     outbound: Arc<crate::outbound::Outbound>,
@@ -383,8 +383,12 @@ where
     let target_label = crate::resolve::target_to_label(&address);
     record_target_connection(&target_label);
 
+    // Connect via the outbound. Any pre-relay failure (resolve, connect, or
+    // initial payload write) drops the TLS stream — call shutdown first so
+    // the client sees close_notify rather than UnexpectedEof. REJECT also
+    // shuts down cleanly for the same reason.
     let connect_start = tokio::time::Instant::now();
-    let maybe_outbound_stream = outbound
+    let maybe_outbound_stream = match outbound
         .connect(
             &address,
             &state.tcp_config,
@@ -392,14 +396,21 @@ where
             state.tcp_recv_buffer,
             &state.dns_resolver,
         )
-        .await?;
+        .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = stream.shutdown().await;
+            return Err(e);
+        }
+    };
     record_target_connect_duration(connect_start.elapsed().as_secs_f64());
 
     let mut outbound_stream = match maybe_outbound_stream {
         Some(s) => s,
         None => {
-            // Reject: close the connection
             debug!(peer = %peer, target = ?address, "outbound: REJECT");
+            let _ = stream.shutdown().await;
             return Ok(());
         }
     };
@@ -407,8 +418,13 @@ where
     debug!(peer = %peer, target = ?address, "outbound connected");
 
     let payload_bytes = payload.len() as u64;
+    if !payload.is_empty()
+        && let Err(e) = outbound_stream.write_all(payload).await
+    {
+        let _ = stream.shutdown().await;
+        return Err(e.into());
+    }
     if !payload.is_empty() {
-        outbound_stream.write_all(payload).await?;
         record_bytes_sent(payload_bytes);
         record_target_bytes(&target_label, "sent", payload_bytes);
     }

@@ -46,6 +46,36 @@ pub async fn resolve_address(
     }
 }
 
+/// Resolve a trojan AddressRef to all candidate SocketAddrs. IP literals
+/// produce a single-element vector; Domain ATYPs produce one entry per
+/// resolved address, ordered with the preferred IP family first. Lets the
+/// caller try each in turn — without this, a domain that resolves to both
+/// `::1` and `127.0.0.1` will fail outright when the chosen family is
+/// unreachable, surfacing as bare EOF on the client.
+#[inline]
+pub async fn resolve_all_addresses(
+    address: &AddressRef<'_>,
+    resolver: &DnsResolver,
+) -> Result<Vec<SocketAddr>, ServerError> {
+    match address.host {
+        HostRef::Ipv4(ip) => Ok(vec![SocketAddr::from((ip, address.port))]),
+        HostRef::Ipv6(ip) => Ok(vec![SocketAddr::from((ip, address.port))]),
+        HostRef::Domain(domain) => {
+            let host = std::str::from_utf8(domain).map_err(|_| ServerError::Resolve)?;
+            let mut buf = StackString::<270>::new();
+            let _ = write!(buf, "{}:{}", host, address.port);
+
+            let start = Instant::now();
+            let result = resolver
+                .resolve_all(buf.as_str())
+                .await
+                .map_err(|_| ServerError::Resolve);
+            record_dns_resolve_duration(start.elapsed().as_secs_f64());
+            result
+        }
+    }
+}
+
 /// Stack-allocated string buffer to avoid heap allocation for small strings.
 struct StackString<const N: usize> {
     buf: [u8; N],

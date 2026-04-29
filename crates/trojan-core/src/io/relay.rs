@@ -14,7 +14,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::time::Instant as TokioInstant;
 
 /// Trait for recording relay metrics.
@@ -213,9 +213,9 @@ where
     let mut total_inbound: u64 = 0;
     let mut total_outbound: u64 = 0;
 
-    loop {
+    let bidi_result: io::Result<RelayStats> = loop {
         if a_done && b_done {
-            return Ok(RelayStats {
+            break Ok(RelayStats {
                 inbound: total_inbound,
                 outbound: total_outbound,
             });
@@ -284,19 +284,37 @@ where
 
         tokio::select! {
             result = both => {
-                let activity = result?;
-                if activity {
-                    idle_sleep.as_mut().reset(TokioInstant::now() + idle_timeout);
+                match result {
+                    Ok(activity) => {
+                        if activity {
+                            idle_sleep.as_mut().reset(TokioInstant::now() + idle_timeout);
+                        }
+                    }
+                    Err(e) => break Err(e),
                 }
             }
             _ = &mut idle_sleep => {
-                return Ok(RelayStats {
+                break Ok(RelayStats {
                     inbound: total_inbound,
                     outbound: total_outbound,
                 });
             }
         }
-    }
+    };
+
+    // Reunite the split halves and run a final shutdown on each. Critical
+    // for TLS streams: when the bidi loop errors out (e.g. target sent RST,
+    // or one direction's reader closed before the per-direction shutdown
+    // could complete), the underlying TCP socket would otherwise be dropped
+    // without a TLS alert and peers would see `UnexpectedEof` instead of a
+    // clean `Ok(0)`. Best-effort — ignore shutdown errors so they don't mask
+    // the original loop error.
+    let mut inbound = in_r.unsplit(in_w);
+    let mut outbound = out_r.unsplit(out_w);
+    let _ = inbound.shutdown().await;
+    let _ = outbound.shutdown().await;
+
+    bidi_result
 }
 
 #[cfg(test)]

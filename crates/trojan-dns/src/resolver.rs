@@ -78,40 +78,47 @@ impl DnsResolver {
     /// performing a DNS query. Otherwise, performs an async DNS lookup
     /// and selects an address based on `prefer_ipv4`.
     pub async fn resolve(&self, addr: &str) -> Result<SocketAddr, DnsError> {
-        // Fast path: already a SocketAddr
+        self.resolve_all(addr)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| DnsError::NoResults(addr.to_string()))
+    }
+
+    /// Resolve `"host:port"` to **all** candidate `SocketAddr`s, ordered with
+    /// the preferred IP family first. Useful for connect-fallthrough across
+    /// address families: callers can iterate this list and try each in turn,
+    /// avoiding a hard failure when the first family is unreachable (e.g.
+    /// the resolver returns `::1` but the target only listens on IPv4).
+    pub async fn resolve_all(&self, addr: &str) -> Result<Vec<SocketAddr>, DnsError> {
         if let Ok(sa) = addr.parse::<SocketAddr>() {
-            return Ok(sa);
+            return Ok(vec![sa]);
         }
 
-        // Split host:port
         let (host, port) = split_host_port(addr)?;
 
-        // Fast path: host is an IP literal
         if let Ok(ip) = host.parse::<IpAddr>() {
-            return Ok(SocketAddr::new(ip, port));
+            return Ok(vec![SocketAddr::new(ip, port)]);
         }
 
-        // DNS lookup
         let response = self.inner.resolver.lookup_ip(host).await?;
+        let mut all: Vec<SocketAddr> = response
+            .iter()
+            .map(|ip| SocketAddr::new(ip, port))
+            .collect();
 
-        let ip = if self.inner.prefer_ipv4 {
-            // Try IPv4 first, fall back to any
-            response
-                .iter()
-                .find(|ip| ip.is_ipv4())
-                .or_else(|| response.iter().next())
-        } else {
-            response.iter().next()
-        };
-
-        match ip {
-            Some(ip) => {
-                let sa = SocketAddr::new(ip, port);
-                debug!(host = %host, resolved = %sa, "dns resolved");
-                Ok(sa)
-            }
-            None => Err(DnsError::NoResults(addr.to_string())),
+        if all.is_empty() {
+            return Err(DnsError::NoResults(addr.to_string()));
         }
+
+        if self.inner.prefer_ipv4 {
+            // Stable sort: IPv4 (false → 0) before IPv6 (true → 1), preserves
+            // hickory's order within each family.
+            all.sort_by_key(|sa| !sa.is_ipv4());
+        }
+
+        debug!(host = %host, count = all.len(), "dns resolved");
+        Ok(all)
     }
 }
 

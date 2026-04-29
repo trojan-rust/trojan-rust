@@ -16,7 +16,7 @@ use trojan_config::{OutboundConfig, TcpConfig};
 use trojan_proto::AddressRef;
 
 use crate::error::ServerError;
-use crate::resolve::{resolve_address, resolve_sockaddr};
+use crate::resolve::{resolve_all_addresses, resolve_sockaddr};
 use crate::util::connect_with_buffers;
 use trojan_dns::DnsResolver;
 
@@ -182,13 +182,37 @@ impl Outbound {
     ) -> Result<Option<OutboundStream>, ServerError> {
         match self {
             Outbound::Direct { bind } => {
-                let target = resolve_address(address, resolver).await?;
-                let stream = if let Some(bind_ip) = bind {
-                    connect_with_bind(target, *bind_ip, send_buf, recv_buf, tcp_config).await?
-                } else {
-                    connect_with_buffers(target, send_buf, recv_buf, tcp_config).await?
-                };
-                Ok(Some(OutboundStream::Tcp(stream)))
+                // Try every resolved candidate so a domain that returns both
+                // IPv6 and IPv4 doesn't fail outright when one family is
+                // unreachable. With `bind` set, skip candidates whose family
+                // doesn't match the bind address.
+                let candidates = resolve_all_addresses(address, resolver).await?;
+                let mut last_err: Option<std::io::Error> = None;
+                for target in candidates {
+                    if let Some(bind_ip) = bind
+                        && bind_ip.is_ipv4() != target.is_ipv4()
+                    {
+                        continue;
+                    }
+                    let result = if let Some(bind_ip) = bind {
+                        connect_with_bind(target, *bind_ip, send_buf, recv_buf, tcp_config).await
+                    } else {
+                        connect_with_buffers(target, send_buf, recv_buf, tcp_config)
+                            .await
+                            .map_err(ServerError::Io)
+                    };
+                    match result {
+                        Ok(stream) => return Ok(Some(OutboundStream::Tcp(stream))),
+                        Err(ServerError::Io(e)) => last_err = Some(e),
+                        Err(other) => return Err(other),
+                    }
+                }
+                Err(ServerError::Io(last_err.unwrap_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::AddrNotAvailable,
+                        "no compatible address for outbound",
+                    )
+                })))
             }
             Outbound::Trojan {
                 addr,

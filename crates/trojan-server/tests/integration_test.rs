@@ -82,7 +82,11 @@ struct MockEchoServer {
 
 impl MockEchoServer {
     fn start() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        Self::start_on("127.0.0.1:0")
+    }
+
+    fn start_on<A: std::net::ToSocketAddrs>(bind: A) -> Self {
+        let listener = TcpListener::bind(bind).unwrap();
         let addr = listener.local_addr().unwrap();
 
         let handle = thread::spawn(move || {
@@ -1553,6 +1557,184 @@ async fn test_concurrent_connections() {
 }
 
 // ============================================================================
+// Intranet Access Tests
+//
+// Verify server behavior when used as an exit node for internal targets:
+// domain ATYPs resolving to loopback, targets that close immediately, and
+// unresolvable domains. The latter two reproduce the failure modes that
+// surface as plain "EOF" on the client side.
+// ============================================================================
+
+/// A TCP server that accepts a connection and immediately closes it with RST.
+/// Simulates an intranet target that completes the TCP handshake but rejects
+/// the request (wrong protocol, source-IP ACL, etc.) — the most common cause
+/// of "EOF on intranet" in the wild. `SO_LINGER=0` forces close to send RST
+/// instead of FIN, making test timing deterministic regardless of whether
+/// the client wrote payload before the drop.
+struct MockSilentServer {
+    addr: SocketAddr,
+    _handle: thread::JoinHandle<()>,
+}
+
+impl MockSilentServer {
+    fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let _ = socket2::SockRef::from(&stream).set_linger(Some(Duration::ZERO));
+                drop(stream);
+            }
+        });
+
+        Self {
+            addr,
+            _handle: handle,
+        }
+    }
+}
+
+/// CONNECT with a Domain ATYP that resolves to a loopback address — the
+/// standard "internal hostname → private IP" intranet flow. In production
+/// the exit node would resolve `gitlab.corp.local` via an internal resolver;
+/// here `localhost` plays the same role.
+#[tokio::test]
+async fn test_intranet_domain_resolves_to_loopback() {
+    use std::net::ToSocketAddrs;
+
+    // Bind the echo server on whichever IP family `localhost` actually
+    // resolves to on this host (system /etc/hosts may only have `::1` or
+    // only `127.0.0.1`). With the connect-fallthrough fix the server will
+    // try every resolved candidate, but on a host that returns only one
+    // family this is the only family the server will be able to reach.
+    let localhost_ip = ("localhost", 0u16)
+        .to_socket_addrs()
+        .unwrap()
+        .next()
+        .expect("localhost must resolve")
+        .ip();
+    let echo_server = MockEchoServer::start_on((localhost_ip, 0u16));
+    let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+    let server = TestServer::start(fallback.addr).await;
+
+    let tcp_stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+    let server_name = ServerName::try_from("localhost").unwrap();
+    let mut tls_stream = server
+        .tls_connector
+        .connect(server_name, tcp_stream)
+        .await
+        .unwrap();
+
+    let hash = server.hash();
+    let target_addr = AddressRef {
+        host: HostRef::Domain(b"localhost"),
+        port: echo_server.addr.port(),
+    };
+
+    let mut header = BytesMut::new();
+    write_request_header(&mut header, hash.as_bytes(), CMD_CONNECT, &target_addr).unwrap();
+    header.extend_from_slice(b"intranet ping");
+
+    tls_stream.write_all(&header).await.unwrap();
+    tls_stream.flush().await.unwrap();
+
+    let mut response = vec![0u8; 1024];
+    let n = tokio::time::timeout(Duration::from_secs(5), tls_stream.read(&mut response))
+        .await
+        .expect("read timeout")
+        .unwrap();
+
+    assert_eq!(&response[..n], b"intranet ping");
+}
+
+/// When an intranet target accepts the TCP connection then immediately
+/// closes it (often with TCP RST, since dropping a socket with unread data
+/// triggers RST on Linux), the relay reunites its split halves and runs an
+/// explicit shutdown on the inbound TLS stream so the client sees a clean
+/// `Ok(0)` close_notify rather than `UnexpectedEof`. Reproduces the most
+/// common "EOF on intranet" failure mode (target reachable but rejects the
+/// request post-handshake — wrong protocol, ACL, etc.).
+#[tokio::test]
+async fn test_intranet_target_immediate_close_yields_eof() {
+    let silent = MockSilentServer::start();
+    let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+    let server = TestServer::start(fallback.addr).await;
+
+    let tcp_stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+    let server_name = ServerName::try_from("localhost").unwrap();
+    let mut tls_stream = server
+        .tls_connector
+        .connect(server_name, tcp_stream)
+        .await
+        .unwrap();
+
+    let hash = server.hash();
+    let ip_addr: std::net::Ipv4Addr = match silent.addr.ip() {
+        std::net::IpAddr::V4(v4) => v4,
+        _ => panic!("expected IPv4"),
+    };
+    let target_addr = AddressRef {
+        host: HostRef::Ipv4(ip_addr.octets()),
+        port: silent.addr.port(),
+    };
+
+    let mut header = BytesMut::new();
+    write_request_header(&mut header, hash.as_bytes(), CMD_CONNECT, &target_addr).unwrap();
+    header.extend_from_slice(b"hello");
+
+    tls_stream.write_all(&header).await.unwrap();
+    tls_stream.flush().await.unwrap();
+
+    let mut response = vec![0u8; 1024];
+    let n = tokio::time::timeout(Duration::from_secs(5), tls_stream.read(&mut response))
+        .await
+        .expect("read timeout")
+        .expect("expected clean Ok(0) close_notify, not UnexpectedEof");
+
+    assert_eq!(n, 0, "expected close_notify after target closes");
+}
+
+/// When the intranet domain fails to resolve, the server's CONNECT handler
+/// calls TLS shutdown before returning the error so the client sees a clean
+/// `Ok(0)` close_notify instead of `UnexpectedEof`. Uses `.invalid` (reserved
+/// by RFC 2606) to guarantee NXDOMAIN without depending on external DNS.
+#[tokio::test]
+async fn test_intranet_unresolvable_domain_closes_cleanly() {
+    let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+    let server = TestServer::start(fallback.addr).await;
+
+    let tcp_stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+    let server_name = ServerName::try_from("localhost").unwrap();
+    let mut tls_stream = server
+        .tls_connector
+        .connect(server_name, tcp_stream)
+        .await
+        .unwrap();
+
+    let hash = server.hash();
+    let target_addr = AddressRef {
+        host: HostRef::Domain(b"nonexistent.intranet.invalid"),
+        port: 443,
+    };
+
+    let mut header = BytesMut::new();
+    write_request_header(&mut header, hash.as_bytes(), CMD_CONNECT, &target_addr).unwrap();
+    header.extend_from_slice(b"hello");
+
+    tls_stream.write_all(&header).await.unwrap();
+    tls_stream.flush().await.unwrap();
+
+    let mut response = vec![0u8; 1024];
+    let n = tokio::time::timeout(Duration::from_secs(15), tls_stream.read(&mut response))
+        .await
+        .expect("read timeout")
+        .expect("expected clean Ok(0) close_notify, not UnexpectedEof");
+
+    assert_eq!(n, 0, "expected close_notify after resolve failure");
+}
+
+// ============================================================================
 // Rule-Based Routing Tests
 // ============================================================================
 
@@ -2113,6 +2295,83 @@ mod rules_tests {
             b"order",
             "IP-CIDR rule should match before FINAL REJECT"
         );
+
+        server.stop().await;
+    }
+
+    /// When a request routes through a named outbound and the outbound's
+    /// `connect()` fails (here, ConnectionRefused on a closed port), the
+    /// handler must shut down the inbound TLS stream so the client receives
+    /// a clean `Ok(0)` close_notify rather than `UnexpectedEof`. Port 1 is
+    /// reliably closed on the loopback interface, giving a deterministic
+    /// connect failure without depending on DNS quirks.
+    #[tokio::test]
+    async fn test_rules_outbound_connect_refused_closes_cleanly() {
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+
+        let mut outbounds = HashMap::new();
+        outbounds.insert(
+            "intranet".to_string(),
+            OutboundConfig {
+                outbound_type: "direct".to_string(),
+                addr: None,
+                password: None,
+                sni: None,
+                bind: None,
+            },
+        );
+        let rules = vec![rule("FINAL", None, "intranet")];
+
+        let server = RulesTestServer::start(fallback.addr, outbounds, rules, HashMap::new()).await;
+
+        let unreachable = SocketAddr::from(([127, 0, 0, 1], 1));
+        let mut tls_stream = server.connect_to_ipv4(unreachable, b"").await;
+
+        let mut buf = vec![0u8; 1024];
+        let n = tokio::time::timeout(Duration::from_secs(5), tls_stream.read(&mut buf))
+            .await
+            .expect("read timeout")
+            .expect("expected clean Ok(0) close_notify, not UnexpectedEof");
+        assert_eq!(n, 0, "expected close_notify after outbound connect failure");
+
+        server.stop().await;
+    }
+
+    /// Rules-path counterpart of `test_intranet_target_immediate_close_yields_eof`.
+    /// When the request routes through a named outbound and the target
+    /// accepts then immediately drops the connection (RST), the relay
+    /// reunites its split halves and shuts down the inbound TLS cleanly.
+    #[tokio::test]
+    async fn test_rules_outbound_target_close_yields_clean_eof() {
+        let silent = MockSilentServer::start();
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+
+        let mut outbounds = HashMap::new();
+        outbounds.insert(
+            "intranet".to_string(),
+            OutboundConfig {
+                outbound_type: "direct".to_string(),
+                addr: None,
+                password: None,
+                sni: None,
+                bind: None,
+            },
+        );
+        let rules = vec![
+            rule("IP-CIDR", Some("127.0.0.0/8"), "intranet"),
+            rule("FINAL", None, "REJECT"),
+        ];
+
+        let server = RulesTestServer::start(fallback.addr, outbounds, rules, HashMap::new()).await;
+
+        let mut tls_stream = server.connect_to_ipv4(silent.addr, b"hello").await;
+
+        let mut buf = vec![0u8; 1024];
+        let n = tokio::time::timeout(Duration::from_secs(5), tls_stream.read(&mut buf))
+            .await
+            .expect("read timeout")
+            .expect("expected clean Ok(0) close_notify, not UnexpectedEof");
+        assert_eq!(n, 0, "expected close_notify after relay error");
 
         server.stop().await;
     }
