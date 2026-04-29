@@ -3,6 +3,12 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+## [0.10.2](https://github.com/trojan-rust/trojan-rust/compare/v0.10.1...v0.10.2) - 2026-04-29
+
+### Bug Fixes
+
+- deliver clean TLS close_notify on intranet failure paths
+
 ## [0.10.1](https://github.com/trojan-rust/trojan-rust/compare/v0.10.0...v0.10.1) - 2026-04-28
 
 ### Build
