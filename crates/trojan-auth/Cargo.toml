@@ -47,7 +47,7 @@ hex.workspace = true
 parking_lot.workspace = true
 
 # Optional SQLx dependency
-sqlx = { version = "0.8", default-features = false, features = [
+sqlx = { version = "0.9", default-features = false, features = [
     "runtime-tokio",
     "any",
 ], optional = true }
