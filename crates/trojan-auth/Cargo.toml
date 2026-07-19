@@ -47,7 +47,7 @@ hex.workspace = true
 parking_lot.workspace = true
 
 # Optional SQLx dependency
-sqlx = { version = "0.8", default-features = false, features = [
+sqlx = { version = "0.9", default-features = false, features = [
     "runtime-tokio",
     "any",
 ], optional = true }
@@ -68,7 +68,7 @@ tracing = { workspace = true, optional = true }
 
 # CLI dependencies (optional)
 clap = { workspace = true, features = ["derive", "env"], optional = true }
-tabled = { version = "0.20", optional = true }
+tabled = { version = "0.21", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
