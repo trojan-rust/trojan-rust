@@ -46,16 +46,25 @@ Client → A(entry) → B1(relay) → ... → C(trojan-server) → Target
 trojan (unified CLI binary)
 ├── trojan-server ← trojan-core, trojan-proto, trojan-auth, trojan-config, trojan-metrics
 ├── trojan-client ← trojan-proto, trojan-auth, trojan-config
-├── trojan-relay  ← trojan-transport, trojan-lb, trojan-core, trojan-proto
-└── trojan-dash   ← trojan-auth (protocol), trojan-core
+├── trojan-relay  ← trojan-transport, trojan-lb, trojan-core, trojan-proto, trojan-metrics
+└── trojan-dash   ← trojan-auth (protocol), trojan-protocol, trojan-core
 ```
 
 **Dashboard:** `trojan-dash` is the other end of `trojan-auth`'s HTTP backend —
 an axum + SQLite service holding users, node tokens, traffic and subscription
 templates. Both ends share one definition of the wire format
 (`trojan_auth::protocol`, behind the `protocol` feature), so the contract cannot
-drift. Its web UI lives in a separate repository and is served from `panel_dir`
-as static files.
+drift. It also serves `/ws/agent`, where `trojan-agent` registers with its node
+token, receives its service config, and reports heartbeats and per-user traffic
+(`trojan_protocol`, shared the same way). Its web UI lives in a separate
+repository and is served from `panel_dir` as static files.
+
+**Traffic accounting:** node-level totals are counted locally by every service
+(Prometheus, plus a `NodeStats` handle the agent drains into heartbeats).
+User-level accounting for a chain is attributed by the exit: entry and relay
+nodes never learn whose bytes they carry, so the entry prefixes each tunnel
+with a PROXY protocol v2 header (real client + chain node ids), and the exit
+credits each hop over `/traffic/chain` when it settles the user.
 
 **Standalone utility crates (no trojan internal dependencies):**
 - `trojan-transport` — `TransportAcceptor`/`TransportConnector` traits + plain/TLS/WS implementations
@@ -64,7 +73,7 @@ as static files.
 - `trojan-proto` — zero-copy Trojan protocol parser using `bytes::BytesMut`
 
 **Key trait abstractions:**
-- `AuthBackend` (trojan-auth) — `verify_password()`, `record_traffic()` with Memory/SQL/Reloadable impls
+- `AuthBackend` (trojan-auth) — `verify_password()`, `record_traffic()`, `record_chain_traffic()` with Memory/SQL/Reloadable impls
 - `TransportAcceptor`/`TransportConnector` (trojan-transport) — pluggable transport layer
 - `LbPolicy` (trojan-lb) — `fn select(&self, backends, peer_ip) -> Option<usize>`
 
