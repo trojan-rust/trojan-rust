@@ -73,9 +73,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y trojan
       # Kept out of the main test matrix because they need a client binary on
-      # PATH, which is why they carry #[ignore]. They fail loudly rather than
-      # skipping when one is missing, so this job cannot pass vacuously.
+      # PATH, which is why they carry #[ignore]. TROJAN_INTEROP_REQUIRED makes
+      # a missing binary fatal here, so this job cannot pass without having
+      # driven a real client; elsewhere the tests skip visibly instead, since
+      # the C++ client has no macOS build.
       - name: Run interop tests
+        env:
+          # Makes a missing client binary fatal here, so this job cannot pass
+          # without having actually driven one.
+          TROJAN_INTEROP_REQUIRED: 1
         run: cargo test -p trojan-server --test trojan_client_test -- --include-ignored --test-threads=1
 
   analytics:

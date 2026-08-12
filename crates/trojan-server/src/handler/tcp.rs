@@ -12,11 +12,16 @@ use trojan_metrics::{record_target_connect_duration, record_target_connection};
 use trojan_proto::AddressRef;
 
 use crate::error::ServerError;
+use crate::handler::AnalyticsEvent;
 use crate::relay::relay_with_counters;
 use crate::resolve::{resolve_all_addresses, target_to_label};
 use crate::state::ServerState;
 use crate::util::connect_with_buffers;
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one connection's worth of state; a struct here would only rename the fields"
+)]
 /// Handle TCP CONNECT command.
 #[instrument(level = "debug", skip(stream, payload, state, auth, user_id), fields(target = ?address))]
 pub async fn handle_connect<S, A>(
@@ -27,6 +32,7 @@ pub async fn handle_connect<S, A>(
     auth: Arc<A>,
     user_id: Option<&str>,
     peer: SocketAddr,
+    #[allow(unused_mut)] mut analytics: AnalyticsEvent,
 ) -> Result<(), ServerError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -82,6 +88,7 @@ where
     // through free on a server enforcing `traffic_limit`. The counters carry a
     // running total precisely so this does not depend on `RelayStats`.
     record_traffic_for_user(&*auth, user_id, counters.total_bytes(), peer).await;
+    finish_analytics(analytics, &counters, &result);
 
     result?;
     debug!(peer = %peer, target = %target, "relay finished");
@@ -145,5 +152,29 @@ pub(crate) async fn record_traffic_for_user<A: AuthBackend + ?Sized>(
         && let Err(e) = auth.record_traffic(uid, bytes).await
     {
         warn!(peer = %peer, user_id = uid, error = %e, "failed to record traffic");
+    }
+}
+
+/// Complete the connection's analytics event.
+///
+/// Byte counts come from the relay counters rather than `RelayStats`, so an
+/// aborted session still reports what it moved, and the close reason
+/// distinguishes a clean end from a failure. Without this the event shipped
+/// with its byte fields at zero.
+#[allow(unused_variables)]
+pub(crate) fn finish_analytics(
+    analytics: crate::handler::AnalyticsEvent,
+    counters: &trojan_metrics::RelayCounters,
+    result: &Result<trojan_core::io::RelayStats, ServerError>,
+) {
+    #[cfg(feature = "analytics")]
+    if let Some(mut event) = analytics {
+        // `add_to_target` is the client → target direction, which the event
+        // records as bytes sent.
+        event.add_bytes(counters.sent_to_target(), counters.sent_to_client());
+        event.finish(match result {
+            Ok(_) => trojan_analytics::CloseReason::Normal,
+            Err(_) => trojan_analytics::CloseReason::Error,
+        });
     }
 }

@@ -13,12 +13,24 @@ use trojan_metrics::{record_bytes_received, record_bytes_sent, record_udp_packet
 use trojan_proto::{ParseResult, parse_udp_packet, write_udp_packet};
 
 use crate::error::ServerError;
+use crate::handler::AnalyticsEvent;
 use crate::handler::tcp::record_traffic_for_user;
 use crate::resolve::{address_from_socket, resolve_address};
 use crate::state::ServerState;
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one connection's worth of state; a struct here would only rename the fields"
+)]
 /// Handle UDP ASSOCIATE command.
 #[inline]
+#[cfg_attr(
+    not(feature = "analytics"),
+    allow(
+        unused_variables,
+        reason = "the analytics event is a unit value when the feature is off"
+    )
+)]
 pub async fn handle_udp_associate<S, A>(
     mut stream: S,
     initial: &[u8],
@@ -26,6 +38,7 @@ pub async fn handle_udp_associate<S, A>(
     auth: Arc<A>,
     user_id: Option<&str>,
     peer: SocketAddr,
+    #[allow(unused_mut)] mut analytics: AnalyticsEvent,
 ) -> Result<(), ServerError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -155,6 +168,16 @@ where
     };
 
     record_traffic_for_user(&*auth, user_id, total_bytes, peer).await;
+
+    #[cfg(feature = "analytics")]
+    if let Some(mut event) = analytics {
+        event.add_bytes(total_bytes, 0);
+        event.add_packets(packets_out, packets_in);
+        event.finish(match result {
+            Ok(()) => trojan_analytics::CloseReason::Normal,
+            Err(_) => trojan_analytics::CloseReason::Error,
+        });
+    }
 
     result
 }

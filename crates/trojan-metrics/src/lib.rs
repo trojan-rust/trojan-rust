@@ -351,6 +351,9 @@ pub struct RelayCounters {
     ///
     /// Shared across clones so they observe one running total.
     total: Arc<AtomicU64>,
+    /// Per-direction splits, for callers that report them separately.
+    to_target: Arc<AtomicU64>,
+    to_client: Arc<AtomicU64>,
 }
 
 impl RelayCounters {
@@ -362,6 +365,8 @@ impl RelayCounters {
             target_sent: None,
             target_received: None,
             total: Arc::new(AtomicU64::new(0)),
+            to_target: Arc::new(AtomicU64::new(0)),
+            to_client: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -391,6 +396,8 @@ impl RelayCounters {
                 "direction" => "received"
             )),
             total: Arc::new(AtomicU64::new(0)),
+            to_target: Arc::new(AtomicU64::new(0)),
+            to_client: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -402,10 +409,23 @@ impl RelayCounters {
         self.total.load(Ordering::Relaxed)
     }
 
+    /// Bytes carried client → target.
+    #[inline]
+    pub fn sent_to_target(&self) -> u64 {
+        self.to_target.load(Ordering::Relaxed)
+    }
+
+    /// Bytes carried target → client.
+    #[inline]
+    pub fn sent_to_client(&self) -> u64 {
+        self.to_client.load(Ordering::Relaxed)
+    }
+
     /// Record bytes flowing client → target.
     #[inline]
     pub fn add_to_target(&self, bytes: u64) {
         self.total.fetch_add(bytes, Ordering::Relaxed);
+        self.to_target.fetch_add(bytes, Ordering::Relaxed);
         self.received.increment(bytes);
         if let Some(ref per_target) = self.target_sent {
             per_target.increment(bytes);
@@ -416,6 +436,7 @@ impl RelayCounters {
     #[inline]
     pub fn add_to_client(&self, bytes: u64) {
         self.total.fetch_add(bytes, Ordering::Relaxed);
+        self.to_client.fetch_add(bytes, Ordering::Relaxed);
         self.sent.increment(bytes);
         if let Some(ref per_target) = self.target_received {
             per_target.increment(bytes);

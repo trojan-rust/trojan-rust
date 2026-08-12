@@ -376,7 +376,7 @@ pub async fn run_with_shutdown(
                                         Ok(Ok(tls)) => {
                                             let tls_duration = tls_start.elapsed().as_secs_f64();
                                             record_tls_handshake_duration(tls_duration);
-                                            crate::handler::handle_ws_only(tls, state, auth, peer).await
+                                            crate::handler::handle_ws_only(tls, state, auth, peer, conn_id).await
                                         }
                                         Ok(Err(err)) => {
                                             record_error(ERROR_TLS_HANDSHAKE);
@@ -490,7 +490,7 @@ pub async fn run_with_shutdown(
                                     let tls_duration = tls_start.elapsed().as_secs_f64();
                                     record_tls_handshake_duration(tls_duration);
                                     debug!(duration_ms = tls_duration * 1000.0, "TLS handshake completed");
-                                    handle_conn(tls, state, auth, peer).await
+                                    handle_conn(tls, state, auth, peer, conn_id).await
                                 }
                                 Ok(Err(err)) => {
                                     record_error(ERROR_TLS_HANDSHAKE);

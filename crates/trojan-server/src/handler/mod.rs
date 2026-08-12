@@ -33,6 +33,13 @@ use crate::state::ServerState;
 #[cfg(feature = "ws")]
 use crate::ws::{INITIAL_BUFFER_SIZE, WsInspect, WsIo, accept_ws, inspect_mixed, send_reject};
 
+/// The in-flight analytics event for a connection, or `()` when the feature is
+/// off. Aliased so the handler signatures do not need duplicating per feature.
+#[cfg(feature = "analytics")]
+pub(crate) type AnalyticsEvent = Option<trojan_analytics::ConnectionEventBuilder>;
+#[cfg(not(feature = "analytics"))]
+pub(crate) type AnalyticsEvent = ();
+
 /// Handle a new connection after TLS handshake.
 #[instrument(level = "debug", skip(stream, state, auth))]
 pub async fn handle_conn<S, A>(
@@ -40,6 +47,7 @@ pub async fn handle_conn<S, A>(
     state: Arc<ServerState>,
     auth: Arc<A>,
     peer: SocketAddr,
+    conn_id: u64,
 ) -> Result<(), ServerError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -47,9 +55,9 @@ where
 {
     #[cfg(feature = "ws")]
     if state.websocket.enabled && state.websocket.mode == "mixed" {
-        return handle_conn_mixed_ws(stream, state, auth, peer).await;
+        return handle_conn_mixed_ws(stream, state, auth, peer, conn_id).await;
     }
-    handle_trojan_stream(stream, BytesMut::new(), state, auth, peer).await
+    handle_trojan_stream(stream, BytesMut::new(), state, auth, peer, conn_id).await
 }
 
 #[cfg(feature = "ws")]
@@ -58,6 +66,7 @@ async fn handle_conn_mixed_ws<S, A>(
     state: Arc<ServerState>,
     auth: Arc<A>,
     peer: SocketAddr,
+    conn_id: u64,
 ) -> Result<(), ServerError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -80,7 +89,7 @@ where
                 continue;
             }
             WsInspect::NotHttp => {
-                return handle_trojan_stream(stream, buf, state, auth, peer).await;
+                return handle_trojan_stream(stream, buf, state, auth, peer, conn_id).await;
             }
             WsInspect::HttpFallback => {
                 record_fallback();
@@ -93,18 +102,26 @@ where
             WsInspect::Upgrade => {
                 let ws = accept_ws(stream, buf.freeze(), &state.websocket).await?;
                 let ws = WsIo::new(ws);
-                return handle_trojan_stream(ws, BytesMut::new(), state, auth, peer).await;
+                return handle_trojan_stream(ws, BytesMut::new(), state, auth, peer, conn_id).await;
             }
         }
     }
 }
 
+#[cfg_attr(
+    not(feature = "analytics"),
+    allow(
+        unused_variables,
+        reason = "conn_id is only read when building the analytics event"
+    )
+)]
 pub(crate) async fn handle_trojan_stream<S, A>(
     mut stream: S,
     mut buf: BytesMut,
     state: Arc<ServerState>,
     auth: Arc<A>,
     peer: SocketAddr,
+    conn_id: u64,
 ) -> Result<(), ServerError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -198,17 +215,48 @@ where
                     // The builder sends the event on drop with duration auto-filled.
                     #[cfg(feature = "analytics")]
                     #[allow(unused_mut)]
-                    let _analytics_builder = state.analytics.as_ref().and_then(|collector| {
-                        if !collector.should_sample(None) {
-                            return None;
-                        }
-                        let mut builder = collector.connection(0, peer);
-                        #[cfg(feature = "geoip")]
-                        if let Some(geo) = analytics_geo {
-                            builder = builder.geo(geo, &collector.privacy().geo_precision);
-                        }
-                        Some(builder)
-                    });
+                    let analytics_event: AnalyticsEvent =
+                        state.analytics.as_ref().and_then(|collector| {
+                            if !collector.should_sample(user_id.as_deref()) {
+                                return None;
+                            }
+                            let mut builder = collector.connection(conn_id, peer);
+
+                            // Everything the request already tells us. Left
+                            // unset these ship as empty strings and zeroes,
+                            // which is what the event looked like before.
+                            let (host, target_type) = match req.address.host {
+                                trojan_proto::HostRef::Ipv4(v4) => (
+                                    std::net::Ipv4Addr::from(v4).to_string(),
+                                    trojan_analytics::TargetType::Ipv4,
+                                ),
+                                trojan_proto::HostRef::Ipv6(v6) => (
+                                    std::net::Ipv6Addr::from(v6).to_string(),
+                                    trojan_analytics::TargetType::Ipv6,
+                                ),
+                                trojan_proto::HostRef::Domain(d) => (
+                                    String::from_utf8_lossy(d).into_owned(),
+                                    trojan_analytics::TargetType::Domain,
+                                ),
+                            };
+                            builder = builder
+                                .target(host, req.address.port, target_type)
+                                .protocol(if req.command == CMD_UDP_ASSOCIATE {
+                                    trojan_analytics::Protocol::Udp
+                                } else {
+                                    trojan_analytics::Protocol::Tcp
+                                });
+                            if let Some(ref uid) = user_id {
+                                builder = builder.user(uid.clone());
+                            }
+                            #[cfg(feature = "geoip")]
+                            if let Some(geo) = analytics_geo {
+                                builder = builder.geo(geo, &collector.privacy().geo_precision);
+                            }
+                            Some(builder)
+                        });
+                    #[cfg(not(feature = "analytics"))]
+                    let analytics_event: AnalyticsEvent = ();
 
                     // Rule-based routing: match target against rules
                     #[cfg(feature = "rules")]
@@ -296,6 +344,7 @@ where
                                             auth,
                                             user_id.as_deref(),
                                             peer,
+                                            analytics_event,
                                         )
                                         .await;
                                     }
@@ -325,6 +374,7 @@ where
                                 auth,
                                 user_id.as_deref(),
                                 peer,
+                                analytics_event,
                             )
                             .await
                         }
@@ -337,6 +387,7 @@ where
                                 auth,
                                 user_id.as_deref(),
                                 peer,
+                                analytics_event,
                             )
                             .await
                         }
@@ -377,6 +428,7 @@ async fn handle_connect_via_outbound<S, A>(
     auth: Arc<A>,
     user_id: Option<&str>,
     peer: SocketAddr,
+    #[allow(unused_mut)] mut analytics: AnalyticsEvent,
 ) -> Result<(), ServerError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -448,6 +500,7 @@ where
 
     // Settle the account however the relay ended — see `handler::tcp`.
     tcp::record_traffic_for_user(&*auth, user_id, counters.total_bytes(), peer).await;
+    tcp::finish_analytics(analytics, &counters, &result);
 
     result?;
     debug!(peer = %peer, target = ?address, "outbound relay finished");

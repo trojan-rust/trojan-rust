@@ -525,34 +525,61 @@ async fn analytics_rows_land_in_clickhouse() {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 
-    // The row must carry the event's own fields, not merely exist.
+    // The row must carry the connection's own fields, not defaults.
     let row = clickhouse_exec(
         &url,
         &format!(
-            "SELECT peer_ip, protocol, duration_ms >= 0 FROM trojan.connections \
-             WHERE server_id = '{server_id}' LIMIT 1 FORMAT TSV"
+            "SELECT peer_ip, protocol, target_host, target_port, conn_id > 0, \
+             bytes_sent > 0, bytes_recv > 0, close_reason \
+             FROM trojan.connections WHERE server_id = '{server_id}' LIMIT 1 FORMAT TSV"
         ),
     )
     .await;
-    let fields: Vec<&str> = row.trim().split('\t').collect();
+    let f: Vec<&str> = row.trim().split('\t').collect();
 
     // Proves the IpAddr-as-IPv6 mapping: loopback arrives IPv4-mapped rather
     // than as a serde enum variant, which the column would have rejected.
     assert_eq!(
-        fields.first().copied(),
+        f.first().copied(),
         Some("::ffff:127.0.0.1"),
         "peer_ip did not survive as an IPv4-mapped address: {row:?}"
     );
     assert_eq!(
-        fields.get(1).copied(),
+        f.get(1).copied(),
         Some("tcp"),
         "protocol enum did not round-trip through Enum8: {row:?}"
     );
 
-    // NOT asserted, because the server never sets them: the analytics builder
-    // in `handle_trojan_stream` is created and dropped without `.target()`,
-    // `.user()` or `.add_bytes()` ever being called, so target_host,
-    // target_port, user_id, conn_id and the byte counters are all written at
-    // their defaults. Wiring those through the CONNECT handlers is a change to
-    // the connection path, not to this test.
+    // The event used to ship with these at their defaults because the
+    // connection handler never populated the builder.
+    assert_eq!(
+        f.get(2).copied(),
+        Some("127.0.0.1"),
+        "target_host was not recorded: {row:?}"
+    );
+    assert_eq!(
+        f.get(3).copied(),
+        Some(echo.addr.port().to_string().as_str()),
+        "target_port was not recorded: {row:?}"
+    );
+    assert_eq!(
+        f.get(4).copied(),
+        Some("1"),
+        "conn_id was left at 0: {row:?}"
+    );
+    assert_eq!(
+        f.get(5).copied(),
+        Some("1"),
+        "bytes_sent was not recorded: {row:?}"
+    );
+    assert_eq!(
+        f.get(6).copied(),
+        Some("1"),
+        "bytes_recv was not recorded: {row:?}"
+    );
+    assert_eq!(
+        f.get(7).copied(),
+        Some("normal"),
+        "close_reason should be normal for a cleanly closed session: {row:?}"
+    );
 }

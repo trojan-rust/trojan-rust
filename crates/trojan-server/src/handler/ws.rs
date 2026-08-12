@@ -19,6 +19,7 @@ pub async fn handle_ws_only<S, A>(
     state: Arc<ServerState>,
     auth: Arc<A>,
     peer: SocketAddr,
+    conn_id: u64,
 ) -> Result<(), ServerError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -42,7 +43,7 @@ where
             WsInspect::Upgrade => {
                 let ws = accept_ws(stream, buf.freeze(), &state.websocket).await?;
                 let ws = WsIo::new(ws);
-                return handle_trojan_stream(ws, BytesMut::new(), state, auth, peer).await;
+                return handle_trojan_stream(ws, BytesMut::new(), state, auth, peer, conn_id).await;
             }
             WsInspect::Reject(reason) => {
                 return send_reject(stream, reason).await;

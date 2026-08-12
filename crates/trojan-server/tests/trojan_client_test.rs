@@ -386,6 +386,27 @@ impl Drop for TrojanClient {
     }
 }
 
+/// Whether a missing client binary is fatal.
+///
+/// CI sets `TROJAN_INTEROP_REQUIRED=1` so its interop job cannot pass without
+/// actually running a client — the original silent `return` reported "ok"
+/// while starting nothing. Locally the binary may legitimately be absent
+/// (the C++ client has no nixpkgs build for macOS), and failing there would
+/// only train people to ignore the result.
+fn interop_required() -> bool {
+    std::env::var("TROJAN_INTEROP_REQUIRED").is_ok_and(|v| v != "0")
+}
+
+/// Report a missing client. Returns `true` when the caller should stop.
+fn skip_or_fail(client: &str, reason: &str) -> bool {
+    assert!(
+        !interop_required(),
+        "{client} interop test cannot run: {reason} (TROJAN_INTEROP_REQUIRED is set)"
+    );
+    eprintln!("SKIP: {client} interop test — {reason}");
+    true
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -414,16 +435,18 @@ async fn test_with_trojan_go_client() {
     let server = TestServer::start(fallback.addr).await;
 
     // Start trojan-go client
-    // Deliberately fatal rather than a silent skip: a test that reports "ok"
-    // without the client it exists to exercise is worse than no test. The dev
-    // shell and the CI interop job both provide the binary.
-    let client = TrojanClient::start(
+    let client = match TrojanClient::start(
         TrojanClientType::TrojanGo,
         server.addr,
         &server.password,
         None,
-    )
-    .unwrap_or_else(|e| panic!("trojan-go interop test cannot run: {e}"));
+    ) {
+        Ok(client) => client,
+        Err(reason) => {
+            skip_or_fail("trojan-go", &reason);
+            return;
+        }
+    };
 
     // Connect through SOCKS5 proxy to echo server
     let mut stream = client
@@ -463,14 +486,18 @@ async fn test_with_trojan_client() {
     println!("Server started on {}", server.addr);
 
     // Start trojan client
-    // Fatal for the same reason as the trojan-go test above.
-    let client = TrojanClient::start(
+    let client = match TrojanClient::start(
         TrojanClientType::Trojan,
         server.addr,
         &server.password,
         None,
-    )
-    .unwrap_or_else(|e| panic!("trojan interop test cannot run: {e}"));
+    ) {
+        Ok(client) => client,
+        Err(reason) => {
+            skip_or_fail("trojan", &reason);
+            return;
+        }
+    };
     println!("Client SOCKS5 proxy on {}", client.socks_addr);
 
     // Connect through SOCKS5 proxy to echo server
