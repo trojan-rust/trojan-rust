@@ -3,6 +3,94 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+## [0.11.0](https://github.com/trojan-rust/trojan-rust/compare/v0.10.1...v0.11.0) - 2026-08-12
+
+### Bug Fixes
+
+- send close_notify when rejecting a WebSocket upgrade
+
+- send close_notify when the initial payload write fails
+
+- saturate socket sizing instead of narrowing with as
+
+- account for traffic when a connection ends in error
+
+- deliver clean TLS close_notify on intranet failure paths
+
+- make the ClickHouse writer actually work
+
+
+### CI
+
+- also run the C++ trojan client tests
+
+
+### Chores
+
+- add Nix dev shell pinned to the CI toolchain
+
+- give every lint suppression a documented reason
+
+- write the shell banner to stderr
+
+
+### Features
+
+- aggregate daily traffic for the dashboard chart
+
+- populate the connection event, and stop skipping silently
+
+- replace the Cloudflare Worker with a native service
+
+
+### Performance
+
+- reserve the header buffer so the trojan header arrives in one read
+
+- enable TLS session resumption
+
+- resolve relay counter handles once per session
+
+
+### Refactoring
+
+- give the HTTP auth protocol its own module
+
+- convert counters once at the storage boundary
+
+
+### Tests
+
+- cover multi-worker reuse_port, half-close, and UDP framing
+
+- cover the WebSocket transport end to end
+
+- cover the server config surface end to end
+
+- cover the metrics endpoint and the per_target knob
+
+- cover resource limits and the ip-hash policy
+
+- cover the HTTP auth backend against a mock worker
+
+- cover the HTTP rule provider
+
+- cover custom DNS nameserver resolution
+
+- smoke-test the TCP socket options
+
+- cover the Cloudflare DDNS updater
+
+- cover stream integrity and TLS resumption end to end
+
+- actually run the trojan-go client tests
+
+- cover analytics delivery, and build non-default features in CI
+
+- drive the SQL auth backend through a running server
+
+- cover GeoIP routing with a generated database
+
 ## [0.10.1](https://github.com/trojan-rust/trojan-rust/compare/v0.10.0...v0.10.1) - 2026-04-28
 
 ### Build
