@@ -1,5 +1,10 @@
 [workspace]
-release_always = false
+# Publish from any master commit whose manifest version is not yet on
+# crates.io, not only from a release PR merge. v0.12.0 showed why: the release
+# job failed partway, five crates went out and ten did not, and because the
+# version bump was already on master there was no release PR left to retry —
+# the workspace stayed half-published with no way to finish it.
+release_always = true
 changelog_update = false
 git_release_enable = false
 git_tag_enable = false
