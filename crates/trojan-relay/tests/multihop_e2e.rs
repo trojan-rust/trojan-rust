@@ -138,6 +138,7 @@ async fn run_chain(transport: TransportType, hop_count: usize, payloads: &[&[u8]
         .iter()
         .map(|(addr, pw)| ChainNodeConfig {
             addr: addr.to_string(),
+            node_id: None,
             password: Some(pw.clone()),
             transport: transport.clone(),
             sni: "test.local".to_string(),
@@ -147,6 +148,7 @@ async fn run_chain(transport: TransportType, hop_count: usize, payloads: &[&[u8]
     let mut chains = HashMap::new();
     chains.insert("test-chain".to_string(), ChainConfig { nodes: chain_nodes });
     let entry_cfg = EntryConfig {
+        node_id: None,
         chains,
         rules: vec![RuleConfig {
             name: "test-rule".to_string(),
@@ -155,6 +157,7 @@ async fn run_chain(transport: TransportType, hop_count: usize, payloads: &[&[u8]
             dest: vec![echo.to_string()],
             strategy: Default::default(),
             failover_cooldown_secs: 30,
+            proxy_protocol: false,
         }],
         timeouts: TimeoutConfig::default(),
         dns: Default::default(),
@@ -204,6 +207,7 @@ async fn spawn_entry_with_dests(
     chains.insert("direct".to_string(), ChainConfig { nodes: vec![] });
 
     let cfg = EntryConfig {
+        node_id: None,
         chains,
         rules: vec![RuleConfig {
             name: "lb-rule".to_string(),
@@ -212,6 +216,7 @@ async fn spawn_entry_with_dests(
             dest: dests,
             strategy,
             failover_cooldown_secs: 30,
+            proxy_protocol: false,
         }],
         timeouts: TimeoutConfig::default(),
         dns: Default::default(),
@@ -467,4 +472,114 @@ async fn multihop_chain_2_relays_ws() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn multihop_chain_3_relays_ws() {
     run_chain(TransportType::Ws, 3, &[b"three-hop-ws-payload"]).await;
+}
+
+// ── Chain announcement ──
+
+/// The entry's PROXY header reaches the destination through the whole chain.
+///
+/// Relays are supposed to be blind to it — to them it is payload — so this
+/// runs through two of them and asserts the destination still recovers the
+/// real client address and the ids of every hop that carried the connection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn entry_announces_the_client_and_chain_to_the_destination() {
+    init_crypto();
+
+    // Destination: read the header, then report what it saw back down the
+    // stream so the client can assert on it. Serves every connection, since
+    // `wait_ready` opens one of its own before the client does.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dest = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                let accepted = trojan_core::proxy_protocol::accept(&mut sock)
+                    .await
+                    .unwrap();
+                let header = accepted.header.expect("destination saw no PROXY header");
+                let report = format!(
+                    "{}|{}",
+                    header.source().expect("header carried no client"),
+                    header.chain.nodes.join(",")
+                );
+                sock.write_all(report.as_bytes()).await.unwrap();
+                sock.flush().await.unwrap();
+            });
+        }
+    });
+
+    let shutdown = CancellationToken::new();
+    let mut relays: Vec<(SocketAddr, String, String)> = Vec::new();
+    for i in 0..2 {
+        relays.push((pick_addr().await, format!("pw-b{i}"), format!("relay-{i}")));
+    }
+    for (addr, pw, _) in &relays {
+        let cfg = relay_cfg(*addr, pw, TransportType::Plain);
+        let sd = shutdown.clone();
+        tokio::spawn(async move {
+            let _ = trojan_relay::relay::run(cfg, sd).await;
+        });
+    }
+    for (addr, _, _) in &relays {
+        wait_ready(*addr).await;
+    }
+
+    let entry_addr = pick_addr().await;
+    let mut chains = HashMap::new();
+    chains.insert(
+        "announced".to_string(),
+        ChainConfig {
+            nodes: relays
+                .iter()
+                .map(|(addr, pw, id)| ChainNodeConfig {
+                    addr: addr.to_string(),
+                    node_id: Some(id.clone()),
+                    password: Some(pw.clone()),
+                    transport: TransportType::Plain,
+                    sni: "test.local".to_string(),
+                })
+                .collect(),
+        },
+    );
+    let entry_cfg = EntryConfig {
+        node_id: Some("entry-1".to_string()),
+        chains,
+        rules: vec![RuleConfig {
+            name: "announced-rule".to_string(),
+            listen: entry_addr,
+            chain: "announced".to_string(),
+            dest: vec![dest.to_string()],
+            strategy: Default::default(),
+            failover_cooldown_secs: 30,
+            proxy_protocol: true,
+        }],
+        timeouts: TimeoutConfig::default(),
+        dns: Default::default(),
+        metrics: Default::default(),
+    };
+    {
+        let sd = shutdown.clone();
+        tokio::spawn(async move {
+            let _ = trojan_relay::entry::run(entry_cfg, sd).await;
+        });
+    }
+    wait_ready(entry_addr).await;
+
+    let mut sock = TcpStream::connect(entry_addr).await.unwrap();
+    let client_addr = sock.local_addr().unwrap();
+    let mut report = String::new();
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        tokio::io::AsyncReadExt::read_to_string(&mut sock, &mut report),
+    )
+    .await
+    .expect("destination never reported the header")
+    .unwrap();
+
+    assert_eq!(report, format!("{client_addr}|entry-1,relay-0,relay-1"));
+
+    shutdown.cancel();
 }

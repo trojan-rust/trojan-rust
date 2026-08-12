@@ -34,6 +34,9 @@ pub enum RelayError {
 
     #[error("load balancer: {0}")]
     LoadBalancer(#[from] trojan_lb::LbError),
+
+    #[error("proxy protocol: {0}")]
+    ProxyProtocol(#[from] trojan_core::proxy_protocol::ProxyProtocolError),
 }
 
 impl From<trojan_transport::error::TransportError> for RelayError {

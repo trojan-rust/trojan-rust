@@ -13,10 +13,11 @@
 //! The last hop to the trojan-server is always plain TCP — the trojan client
 //! performs its own end-to-end TLS handshake through the relay tunnel.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{Instrument, debug, error, info, info_span};
 
@@ -156,7 +157,8 @@ impl RuleListener {
                     let session = EntrySession {
                         chain: route.chain.clone(),
                         lb: route.lb.clone(),
-                        peer_ip: peer_addr.ip(),
+                        peer: peer_addr,
+                        announce_client: route.rule.proxy_protocol,
                         connectors: self.shared.connectors.clone(),
                         timeouts: self.shared.timeouts.clone(),
                         counters: RelayCounters::with_rule(&self.rule)
@@ -191,7 +193,10 @@ impl RuleListener {
 struct EntrySession {
     chain: Arc<CompiledChain>,
     lb: Arc<LoadBalancer>,
-    peer_ip: IpAddr,
+    peer: SocketAddr,
+    /// Whether to tell the destination who the client is and which hops
+    /// carried the connection (`proxy_protocol` on the rule).
+    announce_client: bool,
     connectors: Connectors,
     timeouts: TimeoutConfig,
     /// Byte counters for this session: global, per-rule, and node-wide.
@@ -203,8 +208,22 @@ impl EntrySession {
     async fn handle(self, client_stream: TcpStream) -> Result<(), RelayError> {
         let nodes = &self.chain.config().nodes;
 
+        // The destination only ever sees the last hop, so the header has to
+        // carry both ends of the original connection. `local_addr` is what the
+        // client actually reached, which a wildcard listener does not tell us.
+        let preamble = if self.announce_client {
+            let local = client_stream.local_addr()?;
+            Some(
+                trojan_core::proxy_protocol::ProxyHeader::new(self.peer, local)
+                    .with_chain(self.chain.path().clone())
+                    .encode()?,
+            )
+        } else {
+            None
+        };
+
         // Select destination via load balancer
-        let selection = self.lb.select(self.peer_ip)?;
+        let selection = self.lb.select(self.peer.ip())?;
         let selected_dest = selection.addr;
         // Hold the guard alive for the connection lifetime (tracks active connections)
         let _conn_guard = selection.guard;
@@ -231,6 +250,7 @@ impl EntrySession {
             idle_timeout: Duration::from_secs(self.timeouts.idle_timeout_secs),
             relay_buffer_size: self.timeouts.relay_buffer_size,
             counters: &self.counters,
+            preamble: preamble.as_deref(),
         };
         let outcome = match first_transport {
             TransportType::Tls => {
@@ -301,6 +321,9 @@ struct TunnelParams<'a> {
     idle_timeout: Duration,
     relay_buffer_size: usize,
     counters: &'a RelayCounters,
+    /// Bytes to send through the finished tunnel before the client's own, if
+    /// the rule asked the destination to be told about the client.
+    preamble: Option<&'a [u8]>,
 }
 
 /// Which phase an attempt ended in.
@@ -327,7 +350,7 @@ where
     C: TransportConnector,
     C::Stream: TransportStream,
 {
-    let tunnel =
+    let mut tunnel =
         match tokio::time::timeout(params.connect_timeout, build_tunnel(chain, dest, connector))
             .await
         {
@@ -337,6 +360,15 @@ where
             Ok(Err(err)) => return TunnelOutcome::ConnectFailed(err),
             Ok(Ok(tunnel)) => tunnel,
         };
+
+    // Goes in ahead of anything the client sends, since the destination reads
+    // it before the TLS handshake it precedes. A failure here means the tunnel
+    // broke on its first write, which is a dead destination, not a dead relay.
+    if let Some(preamble) = params.preamble
+        && let Err(e) = tunnel.write_all(preamble).await
+    {
+        return TunnelOutcome::ConnectFailed(RelayError::Io(e));
+    }
 
     debug!("tunnel established, starting relay");
     TunnelOutcome::Relayed(

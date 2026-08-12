@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use trojan_core::proxy_protocol::ChainInfo;
 use trojan_lb::LoadBalancer;
 
 use crate::config::{ChainConfig, EntryConfig, RuleConfig};
@@ -21,11 +22,19 @@ use crate::handshake;
 pub struct CompiledChain {
     config: ChainConfig,
     password_hashes: Vec<String>,
+    path: ChainInfo,
 }
 
 impl CompiledChain {
     /// Hash every hop's password, failing if any hop has none configured.
-    fn new(name: &str, config: ChainConfig) -> Result<Self, RelayError> {
+    ///
+    /// `entry_node_id` is this node's own id, which leads the path reported to
+    /// the exit — the entry carries every byte the chain does.
+    fn new(
+        name: &str,
+        config: ChainConfig,
+        entry_node_id: Option<&str>,
+    ) -> Result<Self, RelayError> {
         let password_hashes = config
             .nodes
             .iter()
@@ -42,9 +51,21 @@ impl CompiledChain {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
+        // Hops with no id are left out rather than held a place: the list is
+        // only ever used to credit traffic, and an id is what makes a hop
+        // creditable.
+        let path = ChainInfo::new(
+            entry_node_id
+                .into_iter()
+                .chain(config.nodes.iter().filter_map(|n| n.node_id.as_deref()))
+                .map(str::to_owned)
+                .collect(),
+        );
+
         Ok(Self {
             config,
             password_hashes,
+            path,
         })
     }
 
@@ -58,6 +79,11 @@ impl CompiledChain {
     /// Always the same length as `self.config().nodes`.
     pub fn password_hashes(&self) -> &[String] {
         &self.password_hashes
+    }
+
+    /// The hops to credit for traffic through this chain, entry node first.
+    pub fn path(&self) -> &ChainInfo {
+        &self.path
     }
 }
 
@@ -127,7 +153,7 @@ impl Router {
             .chains
             .iter()
             .map(|(name, chain)| {
-                CompiledChain::new(name, chain.clone())
+                CompiledChain::new(name, chain.clone(), config.node_id.as_deref())
                     .map(|compiled| (name.clone(), Arc::new(compiled)))
             })
             .collect::<Result<HashMap<_, _>, _>>()?;

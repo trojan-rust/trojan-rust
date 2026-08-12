@@ -54,9 +54,12 @@ entry::run(config, CancellationToken::new()).await?;
 ### Entry Node
 
 ```toml
+# Id this node is known by on the panel, for chain traffic attribution.
+node_id = "entry-sh"
+
 [chains.jp]
 nodes = [
-  { addr = "relay-hk:443", password = "secret", transport = "tls", sni = "crates.io" },
+  { addr = "relay-hk:443", node_id = "relay-hk", password = "secret", transport = "tls", sni = "crates.io" },
 ]
 
 [[rules]]
@@ -64,6 +67,10 @@ name = "japan"
 listen = "127.0.0.1:1080"
 chain = "jp"
 dest = "trojan-jp:443"
+# Tell the exit who the client is and which hops carried the connection.
+# The exit must have `proxy_protocol` enabled, or it reads the header as a
+# broken TLS handshake.
+proxy_protocol = true
 
 # Optional: serve /metrics, /health and /ready.
 [metrics]
@@ -102,6 +109,12 @@ belongs to — the client's trojan handshake is inside end-to-end TLS that only
 the exit server terminates — so per-user accounting for a chain is attributed
 by the exit, which knows both the user and (via the entry's PROXY protocol
 header) the chain the connection came through.
+
+That header is what `proxy_protocol = true` on a rule turns on. The entry
+prefixes the tunnel with a PROXY v2 header naming the real client and listing
+`node_id` for itself and every hop in the chain; relays forward it as ordinary
+payload, and the exit reads it before the TLS handshake it precedes. Hops with
+no `node_id` are left out of the list and go uncredited.
 
 ## License
 

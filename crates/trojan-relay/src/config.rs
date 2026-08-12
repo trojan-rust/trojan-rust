@@ -14,6 +14,14 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// Top-level entry node configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntryConfig {
+    /// Id this node is known by on the panel.
+    ///
+    /// Sent to the exit in the chain header so per-user traffic through this
+    /// node can be credited to it. Absent = this hop goes unnamed and is not
+    /// billed for what it carries.
+    #[serde(default)]
+    pub node_id: Option<String>,
+
     /// Named chains: name → chain definition.
     #[serde(default)]
     pub chains: HashMap<String, ChainConfig>,
@@ -53,6 +61,12 @@ pub struct ChainConfig {
 pub struct ChainNodeConfig {
     /// Relay node address (host:port).
     pub addr: String,
+
+    /// Id this hop is known by on the panel, for chain traffic attribution.
+    ///
+    /// Absent = the hop goes unnamed and is not billed for what it carries.
+    #[serde(default)]
+    pub node_id: Option<String>,
 
     /// Relay password for this node.
     #[serde(default)]
@@ -96,6 +110,15 @@ pub struct RuleConfig {
     /// Only used when `strategy = "failover"`.
     #[serde(default = "default_failover_cooldown")]
     pub failover_cooldown_secs: u64,
+
+    /// Prefix each tunnel with a PROXY protocol v2 header.
+    ///
+    /// Tells the destination who the client really is and which chain carried
+    /// the connection — without it the exit sees only the last hop's address.
+    /// Off by default and opt-in per rule, because a destination that does not
+    /// expect the header will read it as a broken TLS handshake.
+    #[serde(default)]
+    pub proxy_protocol: bool,
 }
 
 impl RuleConfig {
