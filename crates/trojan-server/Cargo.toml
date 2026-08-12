@@ -82,6 +82,15 @@ arc-swap = { workspace = true, optional = true }
 libc = "0.2"
 
 [dev-dependencies]
+# sql-sqlite is test-only: it lets the SQL auth backend be driven through a
+# real server without adding a database driver to release builds.
+trojan-auth = { workspace = true, features = ["http", "sql-sqlite"] }
+# Seeding and inspecting the test database. Mirrors trojan-auth's own spec so
+# both resolve to the same sqlx build.
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "any",
+] }
 ctor.workspace = true
 rcgen.workspace = true
 tempfile.workspace = true
