@@ -18,6 +18,7 @@ trojan-proto = { workspace = true }
 trojan-transport = { workspace = true }
 trojan-dns = { workspace = true }
 trojan-lb = { workspace = true }
+trojan-metrics = { workspace = true }
 
 tokio = { workspace = true, features = [
     "rt-multi-thread",

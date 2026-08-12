@@ -4,13 +4,14 @@
 //! including connection counts, bytes transferred, and error rates.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
-use metrics::{Counter, counter, gauge, histogram};
+use metrics::{counter, gauge, histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
-use trojan_core::io::RelayMetrics;
+
+mod counters;
+
+pub use counters::{ActiveConnection, NodeSnapshot, NodeStats, RelayCounters};
 
 /// Initialize metrics server with Prometheus exporter and health check endpoints.
 ///
@@ -139,6 +140,8 @@ pub const CONNECTION_QUEUE_DEPTH: &str = "trojan_connection_queue_depth";
 pub const TARGET_CONNECTIONS_TOTAL: &str = "trojan_target_connections_total";
 /// Per-target bytes transferred.
 pub const TARGET_BYTES_TOTAL: &str = "trojan_target_bytes_total";
+/// Per-rule bytes transferred on an entry node.
+pub const ENTRY_RULE_BYTES_TOTAL: &str = "trojan_entry_rule_bytes_total";
 /// Current size of the fallback warm pool.
 pub const FALLBACK_POOL_SIZE: &str = "trojan_fallback_pool_size";
 /// Total number of warm-fill connection failures.
@@ -312,148 +315,6 @@ pub fn record_bytes_with_geo(country: &str, direction: &'static str, bytes: u64)
 #[inline]
 pub fn record_auth_failure_with_geo(country: &str) {
     counter!(AUTH_FAILURE_BY_COUNTRY, "country" => country.to_owned()).increment(1);
-}
-
-// ============================================================================
-// Relay Session Counters
-// ============================================================================
-
-/// Counter handles resolved once for the lifetime of a relay session.
-///
-/// Resolving a metric through `counter!` builds its key — which allocates a
-/// `Vec` and a `String` when a label value is dynamic — and hashes that key
-/// against the recorder registry. The relay reports bytes once per *flush*
-/// rather than once per connection (see `trojan_core::io::relay`), so doing
-/// that work per report puts an allocation and a registry lookup directly in
-/// the data path. Resolving the handles at session start reduces each report
-/// to an atomic add.
-///
-/// Handles are resolved against whichever recorder is installed at
-/// construction time; build them after `init_metrics_server`, otherwise they
-/// bind to the no-op recorder for the whole session.
-#[derive(Debug, Clone)]
-pub struct RelayCounters {
-    /// Global bytes received from clients.
-    received: Counter,
-    /// Global bytes sent to clients.
-    sent: Counter,
-    /// Per-target bytes, `direction="sent"` (client → target).
-    target_sent: Option<Counter>,
-    /// Per-target bytes, `direction="received"` (target → client).
-    target_received: Option<Counter>,
-    /// Bytes reported in either direction so far.
-    ///
-    /// The relay returns its `RelayStats` only on success, so a session that
-    /// ends in error takes its byte counts with it. Accumulating here instead
-    /// lets a caller settle the account however the relay ended — which is
-    /// what traffic-limited deployments need, since an aborted connection is
-    /// the common case, not the exception.
-    ///
-    /// Shared across clones so they observe one running total.
-    total: Arc<AtomicU64>,
-    /// Per-direction splits, for callers that report them separately.
-    to_target: Arc<AtomicU64>,
-    to_client: Arc<AtomicU64>,
-}
-
-impl RelayCounters {
-    /// Handles for the global byte counters only.
-    pub fn global() -> Self {
-        Self {
-            received: counter!(BYTES_RECEIVED_TOTAL),
-            sent: counter!(BYTES_SENT_TOTAL),
-            target_sent: None,
-            target_received: None,
-            total: Arc::new(AtomicU64::new(0)),
-            to_target: Arc::new(AtomicU64::new(0)),
-            to_client: Arc::new(AtomicU64::new(0)),
-        }
-    }
-
-    /// Handles for the global byte counters plus a per-target breakdown.
-    ///
-    /// An empty `target` behaves like [`global`](Self::global).
-    ///
-    /// Each distinct `target` adds two time series that live as long as the
-    /// process. Deployments with an unbounded destination set should prefer
-    /// [`global`](Self::global) — see `metrics.per_target` in the server
-    /// config.
-    pub fn with_target(target: &str) -> Self {
-        if target.is_empty() {
-            return Self::global();
-        }
-        Self {
-            received: counter!(BYTES_RECEIVED_TOTAL),
-            sent: counter!(BYTES_SENT_TOTAL),
-            target_sent: Some(counter!(
-                TARGET_BYTES_TOTAL,
-                "target" => target.to_owned(),
-                "direction" => "sent"
-            )),
-            target_received: Some(counter!(
-                TARGET_BYTES_TOTAL,
-                "target" => target.to_owned(),
-                "direction" => "received"
-            )),
-            total: Arc::new(AtomicU64::new(0)),
-            to_target: Arc::new(AtomicU64::new(0)),
-            to_client: Arc::new(AtomicU64::new(0)),
-        }
-    }
-
-    /// Bytes reported in either direction since this handle was built.
-    ///
-    /// Valid whether the relay succeeded or failed, unlike `RelayStats`.
-    #[inline]
-    pub fn total_bytes(&self) -> u64 {
-        self.total.load(Ordering::Relaxed)
-    }
-
-    /// Bytes carried client → target.
-    #[inline]
-    pub fn sent_to_target(&self) -> u64 {
-        self.to_target.load(Ordering::Relaxed)
-    }
-
-    /// Bytes carried target → client.
-    #[inline]
-    pub fn sent_to_client(&self) -> u64 {
-        self.to_client.load(Ordering::Relaxed)
-    }
-
-    /// Record bytes flowing client → target.
-    #[inline]
-    pub fn add_to_target(&self, bytes: u64) {
-        self.total.fetch_add(bytes, Ordering::Relaxed);
-        self.to_target.fetch_add(bytes, Ordering::Relaxed);
-        self.received.increment(bytes);
-        if let Some(ref per_target) = self.target_sent {
-            per_target.increment(bytes);
-        }
-    }
-
-    /// Record bytes flowing target → client.
-    #[inline]
-    pub fn add_to_client(&self, bytes: u64) {
-        self.total.fetch_add(bytes, Ordering::Relaxed);
-        self.to_client.fetch_add(bytes, Ordering::Relaxed);
-        self.sent.increment(bytes);
-        if let Some(ref per_target) = self.target_received {
-            per_target.increment(bytes);
-        }
-    }
-}
-
-impl RelayMetrics for RelayCounters {
-    #[inline]
-    fn record_inbound(&self, bytes: u64) {
-        self.add_to_target(bytes);
-    }
-
-    #[inline]
-    fn record_outbound(&self, bytes: u64) {
-        self.add_to_client(bytes);
-    }
 }
 
 // ============================================================================

@@ -98,6 +98,7 @@ fn relay_cfg(listen: SocketAddr, password: &str, transport: TransportType) -> Re
             timeouts: TimeoutConfig::default(),
             dns: Default::default(),
         },
+        metrics: Default::default(),
     }
 }
 
@@ -157,6 +158,7 @@ async fn run_chain(transport: TransportType, hop_count: usize, payloads: &[&[u8]
         }],
         timeouts: TimeoutConfig::default(),
         dns: Default::default(),
+        metrics: Default::default(),
     };
     {
         let sd = shutdown.clone();
@@ -213,6 +215,7 @@ async fn spawn_entry_with_dests(
         }],
         timeouts: TimeoutConfig::default(),
         dns: Default::default(),
+        metrics: Default::default(),
     };
 
     let sd = shutdown.clone();

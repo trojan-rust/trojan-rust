@@ -64,6 +64,10 @@ name = "japan"
 listen = "127.0.0.1:1080"
 chain = "jp"
 dest = "trojan-jp:443"
+
+# Optional: serve /metrics, /health and /ready.
+[metrics]
+listen = "127.0.0.1:9101"
 ```
 
 ### Relay Node
@@ -78,7 +82,26 @@ password = "secret"
 
 [relay.outbound]
 sni = "crates.io"
+
+[metrics]
+listen = "127.0.0.1:9102"
 ```
+
+## Traffic accounting
+
+Both node types count the bytes they carry. Totals go to two places: the
+Prometheus exporter above (`trojan_bytes_received_total`,
+`trojan_bytes_sent_total`, `trojan_connections_active`, plus
+`trojan_entry_rule_bytes_total{rule,direction}` on entry nodes), and an
+in-process `NodeStats` handle that `entry::run_with_stats` /
+`relay::run_with_stats` accumulate into, which the panel agent drains for its
+heartbeats.
+
+This is node-level only. Entry and relay nodes never see who the traffic
+belongs to — the client's trojan handshake is inside end-to-end TLS that only
+the exit server terminates — so per-user accounting for a chain is attributed
+by the exit, which knows both the user and (via the entry's PROXY protocol
+header) the chain the connection came through.
 
 ## License
 

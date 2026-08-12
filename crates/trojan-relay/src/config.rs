@@ -29,6 +29,10 @@ pub struct EntryConfig {
     /// DNS resolver settings.
     #[serde(default)]
     pub dns: trojan_dns::DnsConfig,
+
+    /// Prometheus exporter settings.
+    #[serde(default)]
+    pub metrics: MetricsConfig,
 }
 
 /// A named relay chain — an ordered list of relay nodes.
@@ -108,6 +112,10 @@ impl RuleConfig {
 pub struct RelayNodeConfig {
     /// Relay listener settings.
     pub relay: RelayListenerConfig,
+
+    /// Prometheus exporter settings.
+    #[serde(default)]
+    pub metrics: MetricsConfig,
 }
 
 /// Relay listener configuration.
@@ -195,6 +203,17 @@ pub enum TransportType {
 }
 
 // ── Shared ──
+
+/// Prometheus exporter configuration shared by entry and relay nodes.
+///
+/// Node-level totals are always accounted for; this only decides whether they
+/// are also exposed for scraping.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MetricsConfig {
+    /// Address to serve `/metrics`, `/health` and `/ready` on. Absent = off.
+    #[serde(default)]
+    pub listen: Option<SocketAddr>,
+}
 
 /// Timeout and buffer configuration shared by entry and relay nodes.
 #[derive(Debug, Clone, Serialize, Deserialize)]

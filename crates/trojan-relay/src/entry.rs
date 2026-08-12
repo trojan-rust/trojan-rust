@@ -13,14 +13,17 @@
 //! The last hop to the trojan-server is always plain TCP — the trojan client
 //! performs its own end-to-end TLS handshake through the relay tunnel.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{Instrument, debug, error, info, info_span};
 
 use trojan_lb::LoadBalancer;
+use trojan_metrics::{
+    NodeStats, RelayCounters, record_connection_accepted, record_connection_closed,
+};
 
 use crate::config::{ChainConfig, EntryConfig, TimeoutConfig, TransportType};
 use crate::error::RelayError;
@@ -31,28 +34,47 @@ use crate::transport::tls::TlsTransportConnector;
 use crate::transport::ws::WsTransportConnector;
 use crate::transport::{TransportConnector, TransportStream};
 
-use trojan_core::io::{NoOpMetrics, relay_bidirectional};
+use trojan_core::io::relay_bidirectional;
 
 /// Run the entry node server.
 pub async fn run(
     config: EntryConfig,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<(), RelayError> {
+    run_with_stats(config, NodeStats::new(), shutdown).await
+}
+
+/// Run the entry node server, accumulating its totals into `stats`.
+///
+/// Same as [`run`], for callers that report node traffic themselves — the
+/// panel agent reads these totals for its heartbeats, which have no scraper to
+/// diff Prometheus samples for them.
+pub async fn run_with_stats(
+    config: EntryConfig,
+    stats: Arc<NodeStats>,
+    shutdown: tokio_util::sync::CancellationToken,
+) -> Result<(), RelayError> {
+    crate::metrics::start_exporter(&config.metrics);
+
     let router = Arc::new(Router::new(&config)?);
-    let timeouts = config.timeouts.clone();
 
     // Build DNS resolver from config
     let resolver = trojan_dns::DnsResolver::new(&config.dns)
         .map_err(|e| RelayError::Config(format!("dns resolver: {e}")))?;
     info!(dns = ?config.dns.strategy, "dns resolver initialized");
 
-    let connectors = Connectors {
-        tls: TlsTransportConnector::new_insecure_with_resolver(
-            "crates.io".to_string(),
-            resolver.clone(),
-        ),
-        plain: PlainTransportConnector::with_resolver(resolver.clone()),
-        ws: WsTransportConnector::with_resolver(resolver),
+    let shared = SharedState {
+        router: router.clone(),
+        connectors: Connectors {
+            tls: TlsTransportConnector::new_insecure_with_resolver(
+                "crates.io".to_string(),
+                resolver.clone(),
+            ),
+            plain: PlainTransportConnector::with_resolver(resolver.clone()),
+            ws: WsTransportConnector::with_resolver(resolver),
+        },
+        timeouts: config.timeouts.clone(),
+        stats,
     };
 
     // Spawn a listener task for each rule
@@ -69,25 +91,15 @@ pub async fn run(
             "entry rule started"
         );
 
-        let router = router.clone();
-        let connectors = connectors.clone();
-        let timeouts = timeouts.clone();
-        let listen_addr = rule.listen;
-        let rule_name = rule.name.clone();
+        let rule_listener = RuleListener {
+            listener,
+            addr: rule.listen,
+            rule: rule.name.clone(),
+            shared: shared.clone(),
+        };
         let shutdown = shutdown.clone();
 
-        handles.push(tokio::spawn(async move {
-            run_listener(
-                listener,
-                listen_addr,
-                &rule_name,
-                router,
-                connectors,
-                timeouts,
-                shutdown,
-            )
-            .await
-        }));
+        handles.push(tokio::spawn(rule_listener.serve(shutdown)));
     }
 
     // Wait for all listener tasks
@@ -100,134 +112,173 @@ pub async fn run(
     Ok(())
 }
 
-async fn run_listener(
-    listener: TcpListener,
-    listen_addr: std::net::SocketAddr,
-    rule_name: &str,
+/// State every listener on this node shares.
+#[derive(Clone)]
+struct SharedState {
     router: Arc<Router>,
     connectors: Connectors,
     timeouts: TimeoutConfig,
-    shutdown: tokio_util::sync::CancellationToken,
-) -> Result<(), RelayError> {
-    loop {
-        tokio::select! {
-            biased;
-            _ = shutdown.cancelled() => {
-                info!(rule = %rule_name, "entry listener shutting down");
-                return Ok(());
-            }
-            accept_result = listener.accept() => {
-                let (tcp_stream, peer_addr) = accept_result?;
-                let _ = tcp_stream.set_nodelay(true);
+    stats: Arc<NodeStats>,
+}
 
-                let route = match router.resolve(&listen_addr) {
-                    Some(r) => r,
-                    None => {
-                        error!(listen = %listen_addr, "no rule matched");
-                        continue;
-                    }
-                };
+/// One rule's accept loop.
+struct RuleListener {
+    listener: TcpListener,
+    /// The address `listener` is bound to, used to resolve the rule per accept.
+    addr: SocketAddr,
+    /// Rule name, for spans and the per-rule byte counters.
+    rule: String,
+    shared: SharedState,
+}
 
-                let chain = route.chain.clone();
-                let lb = route.lb.clone();
-                let connectors = connectors.clone();
-                let timeouts = timeouts.clone();
-                let rule_name = route.rule.name.clone();
+impl RuleListener {
+    /// Accept until the shutdown token fires.
+    async fn serve(self, shutdown: tokio_util::sync::CancellationToken) -> Result<(), RelayError> {
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => {
+                    info!(rule = %self.rule, "entry listener shutting down");
+                    return Ok(());
+                }
+                accept_result = self.listener.accept() => {
+                    let (tcp_stream, peer_addr) = accept_result?;
+                    let _ = tcp_stream.set_nodelay(true);
 
-                tokio::spawn(
-                    async move {
-                        if let Err(e) = handle_entry_connection(
-                            tcp_stream,
-                            &chain,
-                            lb,
-                            peer_addr.ip(),
-                            connectors,
-                            &timeouts,
-                        ).await {
-                            debug!(error = %e, "entry connection error");
+                    let route = match self.shared.router.resolve(&self.addr) {
+                        Some(r) => r,
+                        None => {
+                            error!(listen = %self.addr, "no rule matched");
+                            continue;
                         }
-                    }
-                    .instrument(info_span!("entry", rule = %rule_name, peer = %peer_addr)),
-                );
+                    };
+
+                    let session = EntrySession {
+                        chain: route.chain.clone(),
+                        lb: route.lb.clone(),
+                        peer_ip: peer_addr.ip(),
+                        connectors: self.shared.connectors.clone(),
+                        timeouts: self.shared.timeouts.clone(),
+                        counters: RelayCounters::with_rule(&self.rule)
+                            .with_node_stats(self.shared.stats.clone()),
+                    };
+                    let rule_name = route.rule.name.clone();
+                    // Taken here rather than inside the task so the node's
+                    // active count follows the accept, not the scheduler.
+                    let active = self.shared.stats.connection_started();
+
+                    tokio::spawn(
+                        async move {
+                            let _active = active;
+                            record_connection_accepted();
+                            let started = Instant::now();
+
+                            if let Err(e) = session.handle(tcp_stream).await {
+                                debug!(error = %e, "entry connection error");
+                            }
+
+                            record_connection_closed(started.elapsed().as_secs_f64());
+                        }
+                        .instrument(info_span!("entry", rule = %rule_name, peer = %peer_addr)),
+                    );
+                }
             }
         }
     }
 }
 
-/// Handle a single client connection: build tunnel through chain, then relay.
-async fn handle_entry_connection(
-    client_stream: TcpStream,
-    chain: &CompiledChain,
+/// One accepted client connection, after its rule resolved.
+struct EntrySession {
+    chain: Arc<CompiledChain>,
     lb: Arc<LoadBalancer>,
     peer_ip: IpAddr,
     connectors: Connectors,
-    timeouts: &TimeoutConfig,
-) -> Result<(), RelayError> {
-    let connect_timeout = Duration::from_secs(timeouts.connect_timeout_secs);
-    let idle_timeout = Duration::from_secs(timeouts.idle_timeout_secs);
-    let relay_buffer_size = timeouts.relay_buffer_size;
-    let nodes = &chain.config().nodes;
+    timeouts: TimeoutConfig,
+    /// Byte counters for this session: global, per-rule, and node-wide.
+    counters: RelayCounters,
+}
 
-    // Select destination via load balancer
-    let selection = lb.select(peer_ip)?;
-    let selected_dest = selection.addr;
-    // Hold the guard alive for the connection lifetime (tracks active connections)
-    let _conn_guard = selection.guard;
+impl EntrySession {
+    /// Build a tunnel through the chain, then relay the client through it.
+    async fn handle(self, client_stream: TcpStream) -> Result<(), RelayError> {
+        let nodes = &self.chain.config().nodes;
 
-    debug!(dest = %selected_dest, "selected destination");
+        // Select destination via load balancer
+        let selection = self.lb.select(self.peer_ip)?;
+        let selected_dest = selection.addr;
+        // Hold the guard alive for the connection lifetime (tracks active connections)
+        let _conn_guard = selection.guard;
 
-    // Determine the first hop's transport and SNI.
-    // - Empty chain (direct): plain TCP to dest (client does its own TLS to trojan-server)
-    // - Non-empty chain: use nodes[0].transport/sni to connect to first relay
-    let first_transport = if nodes.is_empty() {
-        &TransportType::Plain
-    } else {
-        &nodes[0].transport
-    };
-    let first_sni = if nodes.is_empty() {
-        ""
-    } else {
-        nodes[0].sni.as_str()
-    };
+        debug!(dest = %selected_dest, "selected destination");
 
-    // Build tunnel and relay — dispatch on first hop transport type
-    let params = TunnelParams {
-        connect_timeout,
-        idle_timeout,
-        relay_buffer_size,
-    };
-    let outcome = match first_transport {
-        TransportType::Tls => {
-            let tls_connector = connectors.tls.with_sni(first_sni.to_string());
-            connect_and_relay(client_stream, chain, &selected_dest, &tls_connector, params).await
-        }
-        TransportType::Plain => {
-            connect_and_relay(
-                client_stream,
-                chain,
-                &selected_dest,
-                &connectors.plain,
-                params,
-            )
-            .await
-        }
-        TransportType::Ws => {
-            connect_and_relay(client_stream, chain, &selected_dest, &connectors.ws, params).await
-        }
-    };
+        // Determine the first hop's transport and SNI.
+        // - Empty chain (direct): plain TCP to dest (client does its own TLS to trojan-server)
+        // - Non-empty chain: use nodes[0].transport/sni to connect to first relay
+        let first_transport = if nodes.is_empty() {
+            &TransportType::Plain
+        } else {
+            &nodes[0].transport
+        };
+        let first_sni = if nodes.is_empty() {
+            ""
+        } else {
+            nodes[0].sni.as_str()
+        };
 
-    match outcome {
-        // The destination was never reached, so take it out of rotation.
-        // Errors from the relay itself do not count: the tunnel was up, and a
-        // backend that merely saw a stream end is still healthy.
-        TunnelOutcome::ConnectFailed(err) => {
-            if lb.is_failover() {
-                debug!(dest = %selected_dest, error = %err, "marking backend unhealthy");
-                lb.mark_unhealthy(&selected_dest);
+        // Build tunnel and relay — dispatch on first hop transport type
+        let params = TunnelParams {
+            connect_timeout: Duration::from_secs(self.timeouts.connect_timeout_secs),
+            idle_timeout: Duration::from_secs(self.timeouts.idle_timeout_secs),
+            relay_buffer_size: self.timeouts.relay_buffer_size,
+            counters: &self.counters,
+        };
+        let outcome = match first_transport {
+            TransportType::Tls => {
+                let tls_connector = self.connectors.tls.with_sni(first_sni.to_string());
+                connect_and_relay(
+                    client_stream,
+                    &self.chain,
+                    &selected_dest,
+                    &tls_connector,
+                    params,
+                )
+                .await
             }
-            Err(err)
+            TransportType::Plain => {
+                connect_and_relay(
+                    client_stream,
+                    &self.chain,
+                    &selected_dest,
+                    &self.connectors.plain,
+                    params,
+                )
+                .await
+            }
+            TransportType::Ws => {
+                connect_and_relay(
+                    client_stream,
+                    &self.chain,
+                    &selected_dest,
+                    &self.connectors.ws,
+                    params,
+                )
+                .await
+            }
+        };
+
+        match outcome {
+            // The destination was never reached, so take it out of rotation.
+            // Errors from the relay itself do not count: the tunnel was up, and a
+            // backend that merely saw a stream end is still healthy.
+            TunnelOutcome::ConnectFailed(err) => {
+                if self.lb.is_failover() {
+                    debug!(dest = %selected_dest, error = %err, "marking backend unhealthy");
+                    self.lb.mark_unhealthy(&selected_dest);
+                }
+                Err(err)
+            }
+            TunnelOutcome::Relayed(result) => result,
         }
-        TunnelOutcome::Relayed(result) => result,
     }
 }
 
@@ -243,12 +294,13 @@ struct Connectors {
     ws: WsTransportConnector,
 }
 
-/// Timeouts and buffer sizing for one tunnel attempt.
+/// Timeouts, buffer sizing and counters for one tunnel attempt.
 #[derive(Clone, Copy)]
-struct TunnelParams {
+struct TunnelParams<'a> {
     connect_timeout: Duration,
     idle_timeout: Duration,
     relay_buffer_size: usize,
+    counters: &'a RelayCounters,
 }
 
 /// Which phase an attempt ended in.
@@ -269,7 +321,7 @@ async fn connect_and_relay<C>(
     chain: &CompiledChain,
     dest: &str,
     connector: &C,
-    params: TunnelParams,
+    params: TunnelParams<'_>,
 ) -> TunnelOutcome
 where
     C: TransportConnector,
@@ -293,7 +345,7 @@ where
             tunnel,
             params.idle_timeout,
             params.relay_buffer_size,
-            &NoOpMetrics,
+            params.counters,
         )
         .await
         .map(|_stats| ())
@@ -308,7 +360,7 @@ where
 /// handshakes through the tunnel to build nested connections.
 ///
 /// Each handshake includes metadata telling the relay node what transport
-/// and SNI to use for its outbound connection to the next hop.
+/// and SNI to use for its outbound connection.
 async fn build_tunnel<C>(
     chain: &CompiledChain,
     dest: &str,

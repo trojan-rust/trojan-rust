@@ -4409,6 +4409,7 @@ dependencies = [
  "trojan-core",
  "trojan-dns",
  "trojan-lb",
+ "trojan-metrics",
  "trojan-proto",
  "trojan-transport",
 ]
