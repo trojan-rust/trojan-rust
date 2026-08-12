@@ -204,76 +204,102 @@ async fn handle_entry_connection(
     };
 
     // Build tunnel and relay — dispatch on first hop transport type
-    let build_result = match first_transport {
+    let params = TunnelParams {
+        connect_timeout,
+        idle_timeout,
+        relay_buffer_size,
+    };
+    let outcome = match first_transport {
         TransportType::Tls => {
             let tls_connector = base_tls_connector.with_sni(first_sni.to_string());
-            let tunnel = tokio::time::timeout(
-                connect_timeout,
-                build_tunnel(chain, &selected_dest, &tls_connector),
-            )
-            .await
-            .map_err(|_| RelayError::ConnectTimeout(selected_dest.clone()))??;
-
-            debug!("tunnel established, starting relay");
-            relay_bidirectional(
-                client_stream,
-                tunnel,
-                idle_timeout,
-                relay_buffer_size,
-                &NoOpMetrics,
-            )
-            .await
+            connect_and_relay(client_stream, chain, &selected_dest, &tls_connector, params).await
         }
         TransportType::Plain => {
-            let tunnel = tokio::time::timeout(
-                connect_timeout,
-                build_tunnel(chain, &selected_dest, &plain_connector),
-            )
-            .await
-            .map_err(|_| RelayError::ConnectTimeout(selected_dest.clone()))??;
-
-            debug!("tunnel established, starting relay");
-            relay_bidirectional(
+            connect_and_relay(
                 client_stream,
-                tunnel,
-                idle_timeout,
-                relay_buffer_size,
-                &NoOpMetrics,
+                chain,
+                &selected_dest,
+                &plain_connector,
+                params,
             )
             .await
         }
         TransportType::Ws => {
-            let tunnel = tokio::time::timeout(
-                connect_timeout,
-                build_tunnel(chain, &selected_dest, &ws_connector),
-            )
-            .await
-            .map_err(|_| RelayError::ConnectTimeout(selected_dest.clone()))??;
-
-            debug!("tunnel established, starting relay");
-            relay_bidirectional(
-                client_stream,
-                tunnel,
-                idle_timeout,
-                relay_buffer_size,
-                &NoOpMetrics,
-            )
-            .await
+            connect_and_relay(client_stream, chain, &selected_dest, &ws_connector, params).await
         }
     };
 
-    // For failover: mark backend unhealthy on tunnel build failure.
-    // Note: errors from relay_bidirectional (post-connection) do NOT mark unhealthy —
-    // the connection was successfully established.
-    if let Err(ref e) = build_result
-        && lb.is_failover()
-    {
-        debug!(dest = %selected_dest, error = %e, "marking backend unhealthy");
-        lb.mark_unhealthy(&selected_dest);
+    match outcome {
+        // The destination was never reached, so take it out of rotation.
+        // Errors from the relay itself do not count: the tunnel was up, and a
+        // backend that merely saw a stream end is still healthy.
+        TunnelOutcome::ConnectFailed(err) => {
+            if lb.is_failover() {
+                debug!(dest = %selected_dest, error = %err, "marking backend unhealthy");
+                lb.mark_unhealthy(&selected_dest);
+            }
+            Err(err)
+        }
+        TunnelOutcome::Relayed(result) => result,
     }
+}
 
-    build_result?;
-    Ok(())
+/// Timeouts and buffer sizing for one tunnel attempt.
+#[derive(Clone, Copy)]
+struct TunnelParams {
+    connect_timeout: Duration,
+    idle_timeout: Duration,
+    relay_buffer_size: usize,
+}
+
+/// Which phase an attempt ended in.
+///
+/// Failover needs to tell "this destination is unreachable" apart from "the
+/// stream through it ended badly"; collapsing both into one `Result` is what
+/// previously left dead backends in rotation.
+enum TunnelOutcome {
+    /// The tunnel was never established.
+    ConnectFailed(RelayError),
+    /// The tunnel was established; this is what the relay returned.
+    Relayed(Result<(), RelayError>),
+}
+
+/// Build a tunnel to `dest` and relay `client_stream` through it.
+async fn connect_and_relay<C>(
+    client_stream: TcpStream,
+    chain: &CompiledChain,
+    dest: &str,
+    connector: &C,
+    params: TunnelParams,
+) -> TunnelOutcome
+where
+    C: TransportConnector,
+    C::Stream: TransportStream,
+{
+    let tunnel =
+        match tokio::time::timeout(params.connect_timeout, build_tunnel(chain, dest, connector))
+            .await
+        {
+            Err(_) => {
+                return TunnelOutcome::ConnectFailed(RelayError::ConnectTimeout(dest.to_string()));
+            }
+            Ok(Err(err)) => return TunnelOutcome::ConnectFailed(err),
+            Ok(Ok(tunnel)) => tunnel,
+        };
+
+    debug!("tunnel established, starting relay");
+    TunnelOutcome::Relayed(
+        relay_bidirectional(
+            client_stream,
+            tunnel,
+            params.idle_timeout,
+            params.relay_buffer_size,
+            &NoOpMetrics,
+        )
+        .await
+        .map(|_stats| ())
+        .map_err(RelayError::from),
+    )
 }
 
 /// Build a tunnel through the chain to the destination.
