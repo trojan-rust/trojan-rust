@@ -94,6 +94,11 @@ sqlx = { version = "0.8", default-features = false, features = [
 # Generates a real .mmdb in-test, so the geoip paths can be exercised without
 # committing a binary fixture or depending on a MaxMind download.
 maxminddb-writer = "0.1"
+# Drives ClickHouse's HTTP interface directly in the analytics tests, to set up
+# the table and read rows back.
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+] }
 ctor.workspace = true
 rcgen.workspace = true
 tempfile.workspace = true

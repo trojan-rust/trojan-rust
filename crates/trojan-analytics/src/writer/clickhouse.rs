@@ -19,10 +19,11 @@ pub fn create_client(config: &ClickHouseConfig) -> Result<Client, AnalyticsError
         client = client.with_password(password);
     }
 
-    client = client.with_setting(
-        "connect_timeout",
-        format!("{}s", config.connect_timeout_secs),
-    );
+    // Plain seconds, with no unit suffix: ClickHouse parses `connect_timeout`
+    // as a number, and a trailing "s" makes it reject *every* query with
+    // "Cannot parse input: expected 'eof' before: 's'" — which meant no
+    // analytics event ever reached the server.
+    client = client.with_setting("connect_timeout", config.connect_timeout_secs.to_string());
 
     Ok(client)
 }
@@ -64,6 +65,17 @@ CREATE TABLE IF NOT EXISTS trojan.connections
     transport Enum8('direct' = 1, 'websocket' = 2),
     close_reason Enum8('normal' = 1, 'timeout' = 2, 'error' = 3, 'reset' = 4, 'shutdown' = 5),
     is_fallback UInt8,
+
+    -- Client geography (empty/zero when no GeoIP database is configured).
+    -- These must stay in step with `ConnectionEvent`: the client maps struct
+    -- fields to columns by name, and a missing column fails every insert.
+    peer_country LowCardinality(String),
+    peer_region LowCardinality(String),
+    peer_city String CODEC(ZSTD(1)),
+    peer_asn UInt32,
+    peer_org String CODEC(ZSTD(1)),
+    peer_longitude Float64,
+    peer_latitude Float64,
 
     -- Server information
     server_id LowCardinality(String),

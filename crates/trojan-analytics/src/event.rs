@@ -6,6 +6,34 @@ use clickhouse::Row;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+/// Ser/de [`IpAddr`] as a ClickHouse `IPv6` column.
+///
+/// One column holds every client address, with IPv4 stored in its
+/// IPv4-mapped form — which is what the `IPv6` type is for. Serialising
+/// `IpAddr` directly emits a Rust enum variant instead, and the column
+/// rejects it, failing every insert.
+mod ip_as_ipv6 {
+    use std::net::{IpAddr, Ipv6Addr};
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(addr: &IpAddr, serializer: S) -> Result<S::Ok, S::Error> {
+        let mapped = match addr {
+            IpAddr::V4(v4) => v4.to_ipv6_mapped(),
+            IpAddr::V6(v6) => *v6,
+        };
+        mapped.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<IpAddr, D::Error> {
+        let mapped = Ipv6Addr::deserialize(deserializer)?;
+        Ok(match mapped.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => IpAddr::V6(mapped),
+        })
+    }
+}
+
 /// A connection event representing the full lifecycle of a single connection.
 #[derive(Debug, Clone, Row, Serialize, Deserialize)]
 pub struct ConnectionEvent {
@@ -22,6 +50,7 @@ pub struct ConnectionEvent {
     pub conn_id: u64,
 
     /// Client IP address.
+    #[serde(with = "ip_as_ipv6")]
     pub peer_ip: IpAddr,
 
     /// Client port.
@@ -136,8 +165,7 @@ impl ConnectionEvent {
 }
 
 /// Authentication result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthResult {
     /// Authentication succeeded.
     Success,
@@ -158,8 +186,7 @@ impl From<AuthResult> for &'static str {
 }
 
 /// Target address type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetType {
     /// IPv4 address.
     Ipv4,
@@ -180,8 +207,7 @@ impl From<TargetType> for &'static str {
 }
 
 /// Connection protocol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
     /// TCP connection.
     Tcp,
@@ -199,8 +225,7 @@ impl From<Protocol> for &'static str {
 }
 
 /// Transport layer type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
     /// Direct TLS connection.
     Direct,
@@ -218,8 +243,7 @@ impl From<Transport> for &'static str {
 }
 
 /// Connection close reason.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseReason {
     /// Normal close.
     Normal,
@@ -340,3 +364,84 @@ mod tests {
         assert_eq!(back, Transport::WebSocket);
     }
 }
+
+/// Give an enum both representations it needs.
+///
+/// ClickHouse's RowBinary encoder has no encoding for a unit variant — it
+/// panics — so `Enum8` columns need the numeric discriminant. The fallback
+/// writer, meanwhile, emits JSON that a human is expected to read. Branching
+/// on `is_human_readable` keeps strings there and sends numbers to ClickHouse.
+///
+/// Discriminants must match the `Enum8(...)` mapping in `CREATE_TABLE_SQL`,
+/// and the labels serde's `snake_case` naming, which the JSON form used
+/// before.
+macro_rules! clickhouse_enum8 {
+    ($name:ident { $($variant:ident = $value:expr => $label:literal),+ $(,)? }) => {
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                if serializer.is_human_readable() {
+                    serializer.serialize_str(match self {
+                        $($name::$variant => $label,)+
+                    })
+                } else {
+                    serializer.serialize_i8(match self {
+                        $($name::$variant => $value,)+
+                    })
+                }
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(
+                deserializer: D,
+            ) -> Result<Self, D::Error> {
+                use serde::de::Error as _;
+                if deserializer.is_human_readable() {
+                    let label = String::deserialize(deserializer)?;
+                    match label.as_str() {
+                        $($label => Ok($name::$variant),)+
+                        other => Err(D::Error::custom(format!(
+                            concat!("unknown ", stringify!($name), ": {}"),
+                            other
+                        ))),
+                    }
+                } else {
+                    let value = i8::deserialize(deserializer)?;
+                    match value {
+                        $($value => Ok($name::$variant),)+
+                        other => Err(D::Error::custom(format!(
+                            concat!("unknown ", stringify!($name), " discriminant: {}"),
+                            other
+                        ))),
+                    }
+                }
+            }
+        }
+    };
+}
+
+clickhouse_enum8!(AuthResult {
+    Success = 1 => "success",
+    Failed = 2 => "failed",
+    Skipped = 3 => "skipped",
+});
+clickhouse_enum8!(TargetType {
+    Ipv4 = 1 => "ipv4",
+    Ipv6 = 2 => "ipv6",
+    Domain = 3 => "domain",
+});
+clickhouse_enum8!(Protocol {
+    Tcp = 1 => "tcp",
+    Udp = 2 => "udp",
+});
+clickhouse_enum8!(Transport {
+    Direct = 1 => "direct",
+    WebSocket = 2 => "web_socket",
+});
+clickhouse_enum8!(CloseReason {
+    Normal = 1 => "normal",
+    Timeout = 2 => "timeout",
+    Error = 3 => "error",
+    Reset = 4 => "reset",
+    ServerShutdown = 5 => "server_shutdown",
+});

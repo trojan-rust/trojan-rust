@@ -38,6 +38,10 @@ use trojan_server::{CancellationToken, run_with_shutdown};
 
 const PASSWORD: &str = "analytics-test-password";
 
+/// Set to a running ClickHouse (e.g. `http://127.0.0.1:8123`) to run the
+/// tests that write real rows.
+const CLICKHOUSE_URL_ENV: &str = "TROJAN_TEST_CLICKHOUSE_URL";
+
 #[ctor::ctor]
 fn init_crypto() {
     rustls::crypto::aws_lc_rs::default_provider()
@@ -204,6 +208,8 @@ impl MockClickHouse {
 
 struct TestServer {
     addr: SocketAddr,
+    /// Unique per instance, so concurrent runs do not read each other's rows.
+    server_id: String,
     tls_connector: TlsConnector,
     shutdown: CancellationToken,
     _handle: tokio::task::JoinHandle<()>,
@@ -212,6 +218,10 @@ struct TestServer {
 
 impl TestServer {
     async fn start(clickhouse_addr: SocketAddr, sample_rate: f64) -> Self {
+        Self::start_with_url(&format!("http://{clickhouse_addr}"), sample_rate).await
+    }
+
+    async fn start_with_url(clickhouse_url: &str, sample_rate: f64) -> Self {
         let (cert_pem, key_pem) = generate_test_certs();
         let temp_dir = tempfile::Builder::new()
             .prefix("trojan-analytics-")
@@ -238,6 +248,8 @@ impl TestServer {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener);
+        // Derived from the listen port, which is unique while this test runs.
+        let server_id = format!("test-node-{}", addr.port());
         let fallback = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let fallback_addr = fallback.local_addr().unwrap();
         drop(fallback);
@@ -283,7 +295,7 @@ impl TestServer {
             analytics: AnalyticsConfig {
                 enabled: true,
                 clickhouse: Some(ClickHouseConfig {
-                    url: format!("http://{clickhouse_addr}"),
+                    url: clickhouse_url.to_string(),
                     database: "trojan".to_string(),
                     table: "connections".to_string(),
                     username: None,
@@ -304,7 +316,7 @@ impl TestServer {
                     always_record_users: vec![],
                 },
                 privacy: Default::default(),
-                server_id: Some("test-node".to_string()),
+                server_id: Some(server_id.clone()),
                 geoip: None,
             },
             logging: LoggingConfig {
@@ -325,6 +337,7 @@ impl TestServer {
 
         Self {
             addr,
+            server_id,
             tls_connector,
             shutdown,
             _handle: handle,
@@ -433,4 +446,113 @@ async fn analytics_sampling_rate_zero_records_nothing() {
         0,
         "events were written despite a 0.0 sampling rate"
     );
+}
+
+// ── Against a real ClickHouse ──
+//
+// The mock above stops at the first request: the `clickhouse` crate opens an
+// insert with `DESCRIBE TABLE` to learn the schema, and answers are LZ4-framed
+// with a CityHash checksum, so faking one would mean reimplementing the wire
+// protocol and then testing that reimplementation. A real server is both less
+// work and worth more. CI provides one as a service container; locally, set
+// TROJAN_TEST_CLICKHOUSE_URL.
+
+fn clickhouse_url() -> String {
+    std::env::var(CLICKHOUSE_URL_ENV).unwrap_or_else(|_| {
+        panic!(
+            "{CLICKHOUSE_URL_ENV} is not set. These tests are #[ignore]d for that reason; \
+             they fail rather than skip so a CI job cannot pass without a server."
+        )
+    })
+}
+
+/// Issue a statement over ClickHouse's HTTP interface.
+async fn clickhouse_exec(url: &str, sql: &str) -> String {
+    let response = reqwest::Client::new()
+        .post(url)
+        .body(sql.to_string())
+        .send()
+        .await
+        .expect("clickhouse request");
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    assert!(status.is_success(), "clickhouse rejected {sql:?}: {body}");
+    body
+}
+
+/// A relayed connection lands as a row in ClickHouse.
+///
+/// This is the half the mock cannot reach: the schema handshake, the
+/// RowBinary encoding of `ConnectionEvent`, and the insert itself all run
+/// against a real server.
+#[tokio::test]
+#[ignore = "needs a ClickHouse server; run via the analytics CI job or set TROJAN_TEST_CLICKHOUSE_URL"]
+async fn analytics_rows_land_in_clickhouse() {
+    // The writer reports insert failures through `tracing`; without a
+    // subscriber they vanish and this test can only say "no row arrived".
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_test_writer()
+        .try_init();
+
+    let url = clickhouse_url();
+    let echo = MockEchoServer::start();
+
+    // Isolate from other runs: a table of our own, dropped and recreated.
+    clickhouse_exec(&url, "CREATE DATABASE IF NOT EXISTS trojan").await;
+    clickhouse_exec(&url, "DROP TABLE IF EXISTS trojan.connections").await;
+    clickhouse_exec(&url, trojan_analytics::writer::clickhouse::CREATE_TABLE_SQL).await;
+
+    let server = TestServer::start_with_url(&url, 1.0).await;
+    let server_id = server.server_id.clone();
+    server.relay(echo.addr).await;
+
+    // The writer batches; poll until the row appears.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let count = clickhouse_exec(
+            &url,
+            &format!("SELECT count() FROM trojan.connections WHERE server_id = '{server_id}'"),
+        )
+        .await;
+        if count.trim() != "0" {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no analytics row reached ClickHouse"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    // The row must carry the event's own fields, not merely exist.
+    let row = clickhouse_exec(
+        &url,
+        &format!(
+            "SELECT peer_ip, protocol, duration_ms >= 0 FROM trojan.connections \
+             WHERE server_id = '{server_id}' LIMIT 1 FORMAT TSV"
+        ),
+    )
+    .await;
+    let fields: Vec<&str> = row.trim().split('\t').collect();
+
+    // Proves the IpAddr-as-IPv6 mapping: loopback arrives IPv4-mapped rather
+    // than as a serde enum variant, which the column would have rejected.
+    assert_eq!(
+        fields.first().copied(),
+        Some("::ffff:127.0.0.1"),
+        "peer_ip did not survive as an IPv4-mapped address: {row:?}"
+    );
+    assert_eq!(
+        fields.get(1).copied(),
+        Some("tcp"),
+        "protocol enum did not round-trip through Enum8: {row:?}"
+    );
+
+    // NOT asserted, because the server never sets them: the analytics builder
+    // in `handle_trojan_stream` is created and dropped without `.target()`,
+    // `.user()` or `.add_bytes()` ever being called, so target_host,
+    // target_port, user_id, conn_id and the byte counters are all written at
+    // their defaults. Wiring those through the CONNECT handlers is a change to
+    // the connection path, not to this test.
 }

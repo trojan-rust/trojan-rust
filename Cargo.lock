@@ -4413,6 +4413,7 @@ dependencies = [
  "metrics-exporter-prometheus",
  "parking_lot",
  "rcgen",
+ "reqwest",
  "rustls",
  "rustls-pemfile",
  "rustls-pki-types",

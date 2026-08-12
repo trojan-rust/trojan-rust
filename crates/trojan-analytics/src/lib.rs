@@ -33,7 +33,11 @@
 mod collector;
 mod error;
 mod event;
-mod writer;
+/// Backend writers.
+///
+/// Public so integration tests can reuse the shipped table schema instead of
+/// keeping a second copy that could drift from it.
+pub mod writer;
 
 pub use collector::{ConnectionEventBuilder, EventCollector};
 pub use error::AnalyticsError;

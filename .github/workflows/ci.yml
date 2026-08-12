@@ -78,6 +78,32 @@ jobs:
       - name: Run interop tests
         run: cargo test -p trojan-server --test trojan_client_test -- --include-ignored --test-threads=1
 
+  analytics:
+    name: Analytics (ClickHouse)
+    runs-on: ubuntu-latest
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:24.8-alpine
+        ports:
+          - 8123:8123
+        env:
+          # Leaves the default user without a password, which is what the
+          # tests connect as.
+          CLICKHOUSE_SKIP_USER_SETUP: 1
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # #[ignore]d so the main matrix does not need a database. They panic
+      # rather than skip when the URL is unset, so this job cannot pass
+      # without a server. The mock-based tests in the same file cannot reach
+      # the insert path: the client opens one with DESCRIBE TABLE and answers
+      # are LZ4-framed, so only a real server exercises it.
+      - name: Run analytics tests
+        env:
+          TROJAN_TEST_CLICKHOUSE_URL: http://127.0.0.1:8123
+        run: cargo test -p trojan-server --features analytics --test analytics_clickhouse -- --include-ignored --test-threads=1
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
