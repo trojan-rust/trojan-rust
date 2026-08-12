@@ -1735,6 +1735,202 @@ async fn test_intranet_unresolvable_domain_closes_cleanly() {
 }
 
 // ============================================================================
+// Stream Integrity Tests
+// ============================================================================
+//
+// The relay is a buffered, poll-driven state machine, so its failure mode is
+// not a wrong answer but a stall or a silently truncated stream — the class of
+// bug seen in 0.8/0.9 (missing flushes leaving data in TLS buffers, and
+// `read_handshake` dropping over-read bytes). The other tests here send a
+// header and a small payload in one write, which never exercises a header
+// split across reads or a transfer spanning many flushes.
+
+/// Build a CONNECT header for an IPv4 target.
+fn connect_header(hash: &str, target: SocketAddr) -> BytesMut {
+    let ip = match target.ip() {
+        std::net::IpAddr::V4(v4) => v4,
+        other => panic!("expected IPv4 target, got {other}"),
+    };
+    let address = AddressRef {
+        host: HostRef::Ipv4(ip.octets()),
+        port: target.port(),
+    };
+    let mut header = BytesMut::new();
+    write_request_header(&mut header, hash.as_bytes(), CMD_CONNECT, &address).unwrap();
+    header
+}
+
+/// Index of the first differing byte, for asserting on large buffers without
+/// dumping megabytes into the failure output.
+fn first_difference(a: &[u8], b: &[u8]) -> Option<usize> {
+    a.iter().zip(b).position(|(x, y)| x != y).or_else(|| {
+        if a.len() == b.len() {
+            None
+        } else {
+            Some(a.len().min(b.len()))
+        }
+    })
+}
+
+/// The header must still parse when it arrives a few bytes at a time.
+///
+/// The server accumulates into a `BytesMut` and re-parses on every read. A
+/// `read_buf` is only offered the buffer's spare capacity, so the very first
+/// read can land far below the 68-byte minimum header — a regression in the
+/// incomplete-parse loop or the buffer sizing shows up here as a stall or an
+/// unwanted fallback, not as a wrong byte.
+#[tokio::test]
+async fn test_header_fragmented_across_reads() {
+    let echo_server = MockEchoServer::start();
+    let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+    let server = TestServer::start(fallback.addr).await;
+
+    let tcp_stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+    let server_name = ServerName::try_from("localhost").unwrap();
+    let mut tls_stream = server
+        .tls_connector
+        .connect(server_name, tcp_stream)
+        .await
+        .unwrap();
+
+    let header = connect_header(&server.hash(), echo_server.addr);
+    let payload = b"fragmented-header-payload";
+
+    // 7 bytes per TLS record, each flushed separately, so the server sees a
+    // partial header on several consecutive reads.
+    for chunk in header.chunks(7) {
+        tls_stream.write_all(chunk).await.unwrap();
+        tls_stream.flush().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    tls_stream.write_all(payload).await.unwrap();
+    tls_stream.flush().await.unwrap();
+
+    let mut response = vec![0u8; payload.len()];
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        tls_stream.read_exact(&mut response),
+    )
+    .await
+    .expect("timed out — a fragmented header stalled the request")
+    .unwrap();
+
+    assert_eq!(&response[..], payload);
+}
+
+/// A transfer far larger than one relay buffer must round-trip byte-exact.
+///
+/// 4 MiB against a 32 KiB relay buffer spans many read/write/flush cycles in
+/// both directions, which is what exercises the deferred-flush state machine
+/// and the per-flush byte reporting. Reads run concurrently with writes so
+/// the test cannot pass by accident on socket buffering alone.
+#[tokio::test]
+async fn test_large_transfer_round_trip() {
+    const TRANSFER_BYTES: usize = 4 * 1024 * 1024;
+
+    let echo_server = MockEchoServer::start();
+    let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+    let server = TestServer::start(fallback.addr).await;
+
+    let tcp_stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+    let server_name = ServerName::try_from("localhost").unwrap();
+    let tls_stream = server
+        .tls_connector
+        .connect(server_name, tcp_stream)
+        .await
+        .unwrap();
+
+    let header = connect_header(&server.hash(), echo_server.addr);
+    // Position-dependent bytes: a dropped or reordered chunk shifts the
+    // pattern and is caught, which a constant fill would hide. The period is
+    // coprime with every power-of-two buffer size in the path, so a whole
+    // buffer going missing cannot realign the stream.
+    let payload: Vec<u8> = (0..=250u8).cycle().take(TRANSFER_BYTES).collect();
+
+    let (mut reader, mut writer) = tokio::io::split(tls_stream);
+    let to_send = payload.clone();
+    let writer_task = tokio::spawn(async move {
+        writer.write_all(&header).await.unwrap();
+        writer.write_all(&to_send).await.unwrap();
+        writer.flush().await.unwrap();
+    });
+
+    let mut received = vec![0u8; TRANSFER_BYTES];
+    tokio::time::timeout(Duration::from_secs(120), reader.read_exact(&mut received))
+        .await
+        .expect("timed out — relay stalled mid-transfer")
+        .expect("stream truncated before the full payload arrived");
+
+    writer_task.await.unwrap();
+
+    assert_eq!(
+        first_difference(&received, &payload),
+        None,
+        "payload corrupted in transit"
+    );
+}
+
+/// A second connection reusing the client's session cache must resume.
+///
+/// Guards the server's resumption config as a whole: with no ticketer and no
+/// session storage the second handshake silently falls back to a full one,
+/// which costs a signature and a key exchange per connection but breaks
+/// nothing visible.
+///
+/// TLS 1.3 sends NewSessionTicket after the handshake, so the first
+/// connection has to actually read before the ticket reaches the client.
+#[tokio::test]
+async fn test_tls_session_resumption() {
+    let echo_server = MockEchoServer::start();
+    let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+    let server = TestServer::start(fallback.addr).await;
+    let server_name = ServerName::try_from("localhost").unwrap();
+
+    let header = connect_header(&server.hash(), echo_server.addr);
+    let payload = b"resume-me";
+
+    // First connection: full handshake, then a round trip so the client
+    // processes the NewSessionTicket that follows it.
+    let tcp = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+    let mut first = server
+        .tls_connector
+        .connect(server_name.clone(), tcp)
+        .await
+        .unwrap();
+    assert_eq!(
+        first.get_ref().1.handshake_kind(),
+        Some(rustls::HandshakeKind::Full),
+        "first handshake should be full"
+    );
+
+    first.write_all(&header).await.unwrap();
+    first.write_all(payload).await.unwrap();
+    first.flush().await.unwrap();
+    let mut echo = vec![0u8; payload.len()];
+    tokio::time::timeout(Duration::from_secs(10), first.read_exact(&mut echo))
+        .await
+        .expect("read timeout")
+        .unwrap();
+    assert_eq!(&echo[..], payload);
+    drop(first);
+
+    // Second connection over the same client config, whose session cache now
+    // holds the ticket.
+    let tcp = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+    let second = server
+        .tls_connector
+        .connect(server_name, tcp)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        second.get_ref().1.handshake_kind(),
+        Some(rustls::HandshakeKind::Resumed),
+        "second handshake should resume; the server is not offering resumable sessions"
+    );
+}
+
+// ============================================================================
 // Rule-Based Routing Tests
 // ============================================================================
 

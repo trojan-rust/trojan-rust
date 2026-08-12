@@ -154,3 +154,39 @@ pub const MIN_HEADER_BYTES: usize = HASH_LEN + 2 + 1 + 1 + 4 + 2 + 2;
 /// read and one allocation. The buffer still grows on demand up to
 /// `server.max_header_bytes`.
 pub const DEFAULT_HEADER_BUFFER_SIZE: usize = 1024;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::{BufMut, BytesMut};
+
+    /// Largest header a client can send: hash + CRLF + cmd + atyp + domain
+    /// length byte + a 255-byte domain + port + CRLF.
+    const MAX_HEADER_BYTES: usize = HASH_LEN + 2 + 1 + 1 + 1 + 255 + 2 + 2;
+
+    /// Pins the premise behind [`DEFAULT_HEADER_BUFFER_SIZE`].
+    ///
+    /// `read_buf` is offered only a `BytesMut`'s spare capacity, and an
+    /// exhausted `BytesMut` grows by 64 bytes — below the smallest valid
+    /// header, so a zero-capacity buffer can never take a header in one read.
+    /// If `bytes` ever changes that growth policy this fails, telling us the
+    /// reserve in `handle_trojan_stream` is no longer load-bearing.
+    #[test]
+    fn empty_buffer_cannot_take_a_minimal_header_in_one_read() {
+        let mut buf = BytesMut::new();
+        let spare = buf.chunk_mut().len();
+        assert!(
+            spare < MIN_HEADER_BYTES,
+            "an empty BytesMut now offers {spare} bytes, at or above the \
+             {MIN_HEADER_BYTES}-byte minimum header"
+        );
+    }
+
+    /// The reserved buffer must take any legal header in a single read.
+    #[test]
+    fn reserved_buffer_takes_the_largest_header_in_one_read() {
+        let mut buf = BytesMut::new();
+        buf.reserve(DEFAULT_HEADER_BUFFER_SIZE);
+        assert!(buf.chunk_mut().len() >= MAX_HEADER_BYTES);
+    }
+}

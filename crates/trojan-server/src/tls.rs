@@ -152,3 +152,42 @@ fn load_private_key(path: &str) -> Result<rustls::pki_types::PrivateKeyDer<'stat
     }
     Err(ServerError::Config("no private key found".into()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The end-to-end resumption test also passes on rustls' default stateful
+    /// cache, so it does not pin down *how* sessions resume. Stateless tickets
+    /// are what lets resumption survive past that cache's 256-entry bound, so
+    /// assert the ticketer directly.
+    #[test]
+    fn server_config_issues_stateless_tickets() {
+        use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
+
+        let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let cert = CertificateParams::default().self_signed(&key_pair).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        std::fs::write(&cert_path, cert.pem()).unwrap();
+        std::fs::write(&key_path, key_pair.serialize_pem()).unwrap();
+
+        let cfg = TlsConfig {
+            cert: cert_path.to_string_lossy().into_owned(),
+            key: key_path.to_string_lossy().into_owned(),
+            alpn: vec![],
+            min_version: "tls12".to_string(),
+            max_version: "tls13".to_string(),
+            client_ca: None,
+            cipher_suites: vec![],
+        };
+
+        let server_config = load_tls_config(&cfg).expect("load tls config");
+        assert!(
+            server_config.ticketer.enabled(),
+            "server must issue stateless session tickets"
+        );
+    }
+}
