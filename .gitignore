@@ -31,6 +31,11 @@ config.local.*
 *.log
 logs/
 
+# Claude Code: transient state only. Shared project config — settings.json,
+# agents/, skills/ — stays committable, so this does not ignore .claude wholesale.
+.claude/worktrees/
+.claude/settings.local.json
+
 # IDE
 .idea/
 .vscode/
