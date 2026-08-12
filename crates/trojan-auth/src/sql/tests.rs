@@ -135,17 +135,17 @@ async fn test_verify_disabled_user() {
 }
 
 #[tokio::test]
-#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 async fn test_verify_expired_user() {
     let auth = setup_test_db().await;
     create_schema(&auth).await;
 
     // Set expires_at to 1 second ago
-    let expired_time = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
-        - 1;
+    let expired_time = crate::store::to_storage_i64(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    ) - 1;
 
     insert_user(
         &auth,

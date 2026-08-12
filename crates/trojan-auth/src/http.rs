@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol;
 use crate::store::{
     FlushFn, StoreAuth, StoreAuthConfig, TrafficRecorder, TrafficRecordingMode, UserRecord,
-    UserStore,
+    UserStore, to_storage_i64,
 };
 use crate::{AuthBackend, AuthError, AuthResult};
 
@@ -179,11 +179,6 @@ impl HttpStore {
 
 #[async_trait]
 impl UserStore for HttpStore {
-    #[allow(
-        clippy::cast_possible_wrap,
-        clippy::cast_sign_loss,
-        clippy::cast_possible_truncation
-    )]
     async fn find_by_hash(&self, hash: &str) -> Result<Option<UserRecord>, AuthError> {
         let req = protocol::VerifyRequest {
             hash: hash.to_owned(),
@@ -195,9 +190,9 @@ impl UserStore for HttpStore {
                 let meta = auth_result.metadata.as_ref();
                 Ok(Some(UserRecord {
                     user_id: auth_result.user_id,
-                    traffic_limit: meta.map_or(0, |m| m.traffic_limit as i64),
-                    traffic_used: meta.map_or(0, |m| m.traffic_used as i64),
-                    expires_at: meta.map_or(0, |m| m.expires_at as i64),
+                    traffic_limit: meta.map_or(0, |m| to_storage_i64(m.traffic_limit)),
+                    traffic_used: meta.map_or(0, |m| to_storage_i64(m.traffic_used)),
+                    expires_at: meta.map_or(0, |m| to_storage_i64(m.expires_at)),
                     enabled: meta.is_none_or(|m| m.enabled),
                 }))
             }

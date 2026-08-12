@@ -294,10 +294,11 @@ async fn init_database(url: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Parse traffic size string (e.g., "10GB", "500MB") to bytes.
-#[allow(
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_truncation
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "sizes are parsed as f64 to accept \"1.5GB\"; discarding the \
+              fractional byte is the point, and f64->i64 saturates rather \
+              than wrapping"
 )]
 fn parse_traffic(s: &str) -> Result<i64, Box<dyn std::error::Error>> {
     let s = s.trim().to_uppercase();
@@ -324,12 +325,15 @@ fn parse_traffic(s: &str) -> Result<i64, Box<dyn std::error::Error>> {
     Ok((value * unit as f64) as i64)
 }
 
+/// Current unix timestamp, as the signed form the user records use.
+fn now_unix_secs() -> Result<i64, Box<dyn std::error::Error>> {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    Ok(i64::try_from(secs)?)
+}
+
 /// Parse expiration string to unix timestamp.
-#[allow(
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_truncation
-)]
 fn parse_expires(s: &str) -> Result<i64, Box<dyn std::error::Error>> {
     let s = s.trim();
     if s == "0" || s.is_empty() {
@@ -339,26 +343,17 @@ fn parse_expires(s: &str) -> Result<i64, Box<dyn std::error::Error>> {
     // Check for relative duration (e.g., "30d", "1y")
     if s.ends_with('d') || s.ends_with('D') {
         let days: i64 = s[..s.len() - 1].parse()?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs() as i64;
-        return Ok(now + days * 24 * 60 * 60);
+        return Ok(now_unix_secs()? + days * 24 * 60 * 60);
     }
 
     if s.ends_with('m') || s.ends_with('M') {
         let months: i64 = s[..s.len() - 1].parse()?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs() as i64;
-        return Ok(now + months * 30 * 24 * 60 * 60);
+        return Ok(now_unix_secs()? + months * 30 * 24 * 60 * 60);
     }
 
     if s.ends_with('y') || s.ends_with('Y') {
         let years: i64 = s[..s.len() - 1].parse()?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs() as i64;
-        return Ok(now + years * 365 * 24 * 60 * 60);
+        return Ok(now_unix_secs()? + years * 365 * 24 * 60 * 60);
     }
 
     // Try parsing as date (YYYY-MM-DD)
@@ -375,11 +370,6 @@ fn parse_expires(s: &str) -> Result<i64, Box<dyn std::error::Error>> {
 }
 
 /// Simple date parsing (YYYY-MM-DD) without chrono dependency.
-#[allow(
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_truncation
-)]
 fn chrono_parse_date(s: &str) -> Result<i64, Box<dyn std::error::Error>> {
     let parts: Vec<&str> = s.split('-').collect();
     if parts.len() != 3 {

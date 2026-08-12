@@ -131,17 +131,15 @@ impl<S: UserStore> StoreAuth<S> {
     }
 
     /// Get current unix timestamp.
+    ///
+    /// Saturates rather than wrapping: a clock far enough past the epoch to
+    /// overflow `i64` would otherwise wrap negative, and a negative "now"
+    /// makes every `expires_at` comparison read as not-yet-expired.
     #[inline]
-    #[allow(
-        clippy::cast_possible_wrap,
-        clippy::cast_sign_loss,
-        clippy::cast_possible_truncation
-    )]
     fn now_unix() -> i64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
     }
 
     /// Validate a [`UserRecord`] against business rules.
@@ -193,16 +191,16 @@ impl<S: UserStore> StoreAuth<S> {
     }
 
     /// Build an [`AuthResult`] from a validated [`UserRecord`].
-    #[allow(
-        clippy::cast_possible_wrap,
-        clippy::cast_sign_loss,
-        clippy::cast_possible_truncation
-    )]
+    ///
+    /// The record's counters are `i64` to match the DB columns, while the
+    /// metadata exposes them as `u64`. Negative values clamp to 0 — the
+    /// documented "unlimited"/"never expires" sentinel — instead of casting
+    /// into an absurd number near `u64::MAX`.
     fn record_to_result(record: &UserRecord) -> AuthResult {
         let metadata = AuthMetadata {
-            traffic_limit: record.traffic_limit as u64,
-            traffic_used: record.traffic_used as u64,
-            expires_at: record.expires_at as u64,
+            traffic_limit: u64::try_from(record.traffic_limit).unwrap_or(0),
+            traffic_used: u64::try_from(record.traffic_used).unwrap_or(0),
+            expires_at: u64::try_from(record.expires_at).unwrap_or(0),
             enabled: record.enabled,
         };
 
@@ -396,5 +394,64 @@ impl<S: UserStore + std::fmt::Debug> std::fmt::Debug for StoreAuth<S> {
             .field("traffic_mode", &self.traffic_mode)
             .field("cache_enabled", &self.auth_cache.is_some())
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{StoreAuth, UserRecord, UserStore};
+    use crate::AuthError;
+
+    #[derive(Debug)]
+    struct UnusedStore;
+
+    #[async_trait::async_trait]
+    impl UserStore for UnusedStore {
+        async fn find_by_hash(&self, _hash: &str) -> Result<Option<UserRecord>, AuthError> {
+            unreachable!("record_to_result does not touch the store")
+        }
+        async fn add_traffic(&self, _user_id: &str, _bytes: u64) -> Result<(), AuthError> {
+            unreachable!("record_to_result does not touch the store")
+        }
+    }
+
+    /// A panel that writes -1 for "unlimited" used to surface as a limit of
+    /// `u64::MAX` bytes; it must read as the documented 0 sentinel instead.
+    #[test]
+    fn negative_counters_clamp_to_the_zero_sentinel() {
+        let record = UserRecord {
+            user_id: Some("u1".to_owned()),
+            traffic_limit: -1,
+            traffic_used: -1,
+            expires_at: -1,
+            enabled: true,
+        };
+
+        let meta = StoreAuth::<UnusedStore>::record_to_result(&record)
+            .metadata
+            .expect("record_to_result always attaches metadata");
+
+        assert_eq!(meta.traffic_limit, 0);
+        assert_eq!(meta.traffic_used, 0);
+        assert_eq!(meta.expires_at, 0);
+    }
+
+    #[test]
+    fn non_negative_counters_pass_through() {
+        let record = UserRecord {
+            user_id: Some("u1".to_owned()),
+            traffic_limit: 1024,
+            traffic_used: 512,
+            expires_at: 1_700_000_000,
+            enabled: true,
+        };
+
+        let meta = StoreAuth::<UnusedStore>::record_to_result(&record)
+            .metadata
+            .expect("record_to_result always attaches metadata");
+
+        assert_eq!(meta.traffic_limit, 1024);
+        assert_eq!(meta.traffic_used, 512);
+        assert_eq!(meta.expires_at, 1_700_000_000);
     }
 }

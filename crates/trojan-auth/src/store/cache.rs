@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
 
+use super::record::to_storage_i64;
+
 /// Result of a cache lookup with stale-while-revalidate support.
 #[derive(Debug)]
 pub enum CacheLookup {
@@ -210,12 +212,12 @@ impl AuthCache {
     ///
     /// Called by `StoreAuth::record_traffic()` so that subsequent
     /// cache hits reflect the accumulated traffic.
-    #[allow(clippy::cast_possible_wrap)]
     pub fn add_traffic_delta(&self, user_id: &str, bytes: u64) {
+        let delta_bytes = to_storage_i64(bytes);
         // Fast path: read lock + atomic add (no write lock needed)
         let deltas = self.traffic_deltas.read();
         if let Some(delta) = deltas.get(user_id) {
-            delta.fetch_add(bytes as i64, Ordering::Relaxed);
+            delta.fetch_add(delta_bytes, Ordering::Relaxed);
             return;
         }
         drop(deltas);
@@ -224,7 +226,7 @@ impl AuthCache {
             .write()
             .entry(user_id.to_string())
             .or_insert_with(|| AtomicI64::new(0))
-            .fetch_add(bytes as i64, Ordering::Relaxed);
+            .fetch_add(delta_bytes, Ordering::Relaxed);
     }
 
     /// Read the accumulated traffic delta for a user.
@@ -254,13 +256,12 @@ impl AuthCache {
     /// the cache would briefly under-count traffic by the in-flight amount,
     /// letting users exceed their limit by up to `batch_flush_interval` worth
     /// of bytes after every revalidation.
-    #[allow(clippy::cast_possible_wrap)]
     pub fn reset_traffic_delta(&self, user_id: &str, value: u64) {
         let mut deltas = self.traffic_deltas.write();
         if value == 0 {
             deltas.remove(user_id);
         } else {
-            deltas.insert(user_id.to_string(), AtomicI64::new(value as i64));
+            deltas.insert(user_id.to_string(), AtomicI64::new(to_storage_i64(value)));
         }
     }
 

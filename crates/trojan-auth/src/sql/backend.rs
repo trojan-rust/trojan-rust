@@ -10,6 +10,7 @@ use sqlx::{AnyPool, Row};
 use crate::error::AuthError;
 use crate::store::{
     FlushFn, StoreAuth, TrafficRecorder, TrafficRecordingMode, UserRecord, UserStore,
+    to_storage_i64,
 };
 
 use super::config::SqlAuthConfig;
@@ -89,11 +90,6 @@ impl SqlStore {
     }
 
     /// Flush batched traffic updates to database.
-    #[allow(
-        clippy::cast_possible_wrap,
-        clippy::cast_sign_loss,
-        clippy::cast_possible_truncation
-    )]
     async fn flush_traffic_batch(
         pool: &AnyPool,
         db_type: DatabaseType,
@@ -112,7 +108,7 @@ impl SqlStore {
 
         for (user_id, bytes) in batch {
             sqlx::query(query)
-                .bind(bytes as i64)
+                .bind(to_storage_i64(bytes))
                 .bind(&user_id)
                 .execute(&mut *tx)
                 .await?;
@@ -142,11 +138,6 @@ impl UserStore for SqlStore {
         }
     }
 
-    #[allow(
-        clippy::cast_possible_wrap,
-        clippy::cast_sign_loss,
-        clippy::cast_possible_truncation
-    )]
     async fn add_traffic(&self, user_id: &str, bytes: u64) -> Result<(), AuthError> {
         let query = match self.db_type {
             DatabaseType::PostgreSQL => queries::UPDATE_TRAFFIC_PG,
@@ -154,7 +145,7 @@ impl UserStore for SqlStore {
         };
 
         sqlx::query(query)
-            .bind(bytes as i64)
+            .bind(to_storage_i64(bytes))
             .bind(user_id)
             .execute(&self.pool)
             .await?;
