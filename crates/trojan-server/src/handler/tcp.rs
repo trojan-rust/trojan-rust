@@ -52,7 +52,14 @@ where
 
     let payload_bytes = payload.len() as u64;
     if !payload.is_empty() {
-        outbound.write_all(payload).await?;
+        // A target that closes as soon as it accepts makes this write fail,
+        // and returning straight out would drop the TLS stream without a
+        // close_notify — the client then cannot tell a refused target from a
+        // truncation. Same contract as the dial failure above.
+        if let Err(e) = outbound.write_all(payload).await {
+            let _ = stream.shutdown().await;
+            return Err(e.into());
+        }
         // Client → target, the same direction the relay loop reports as
         // inbound. Previously counted against the "bytes sent to client"
         // global, which contradicted how the relay attributes the rest of
