@@ -2505,6 +2505,493 @@ mod multi_worker_tests {
 }
 
 // ============================================================================
+// Config Surface Tests
+// ============================================================================
+//
+// Knobs that change how connections are accepted or bounded. Each is a
+// documented option that a deployment can turn on and, until now, discover
+// broken in production rather than in CI.
+
+mod config_surface_tests {
+    use super::*;
+    use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+    use trojan_config::{FallbackPoolConfig, UserEntry};
+    use trojan_server::{CancellationToken, run_with_shutdown};
+
+    const PASSWORD: &str = "test_password_123";
+
+    /// A server whose `Config` is adjusted by the caller before start, so each
+    /// test exercises one knob without restating the whole thing.
+    struct ConfiguredServer {
+        addr: SocketAddr,
+        cert_der: Vec<u8>,
+        shutdown: CancellationToken,
+        _handle: tokio::task::JoinHandle<()>,
+        _temp_dir: tempfile::TempDir,
+    }
+
+    impl ConfiguredServer {
+        /// `adjust` also receives the temp directory, for options that need a
+        /// file on disk (a client CA, say).
+        async fn start(
+            fallback_addr: SocketAddr,
+            adjust: impl FnOnce(&mut Config, &std::path::Path),
+        ) -> Self {
+            let (cert_pem, key_pem) = generate_test_certs();
+            let temp_dir = tempfile::Builder::new()
+                .prefix("trojan-config-test-")
+                .tempdir()
+                .unwrap();
+            let cert_path = temp_dir.path().join("cert.pem");
+            let key_path = temp_dir.path().join("key.pem");
+            fs::write(&cert_path, &cert_pem).unwrap();
+            fs::write(&key_path, &key_pem).unwrap();
+
+            let cert_der = rustls_pemfile::certs(&mut cert_pem.as_bytes())
+                .next()
+                .unwrap()
+                .unwrap()
+                .to_vec();
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            drop(listener);
+
+            let mut config = Config {
+                server: ServerConfig {
+                    listen: addr.to_string(),
+                    fallback: fallback_addr.to_string(),
+                    tcp_idle_timeout_secs: 30,
+                    udp_timeout_secs: 30,
+                    max_udp_payload: 8192,
+                    max_udp_buffer_bytes: 65536,
+                    max_header_bytes: 8192,
+                    max_connections: None,
+                    rate_limit: None,
+                    fallback_pool: None,
+                    resource_limits: None,
+                    tcp: TcpConfig::default(),
+                    outbounds: Default::default(),
+                    rule_providers: Default::default(),
+                    rules: Default::default(),
+                    geoip: None,
+                },
+                tls: TlsConfig {
+                    cert: cert_path.to_string_lossy().into_owned(),
+                    key: key_path.to_string_lossy().into_owned(),
+                    alpn: vec![],
+                    min_version: "tls12".to_string(),
+                    max_version: "tls13".to_string(),
+                    client_ca: None,
+                    cipher_suites: vec![],
+                },
+                auth: AuthConfig {
+                    passwords: vec![PASSWORD.to_string()],
+                    users: vec![],
+                    ..Default::default()
+                },
+                websocket: WebSocketConfig::default(),
+                metrics: MetricsConfig {
+                    listen: None,
+                    ..Default::default()
+                },
+                analytics: AnalyticsConfig::default(),
+                logging: LoggingConfig {
+                    level: Some("warn".to_string()),
+                    ..Default::default()
+                },
+                dns: Default::default(),
+                ddns: Default::default(),
+            };
+            adjust(&mut config, temp_dir.path());
+
+            let mut passwords = config.auth.passwords.clone();
+            passwords.extend(config.auth.users.iter().map(|u| u.password.clone()));
+            let auth = MemoryAuth::from_passwords(&passwords);
+
+            let shutdown = CancellationToken::new();
+            let token = shutdown.clone();
+            let handle = tokio::spawn(async move {
+                let _ = run_with_shutdown(config, auth, token).await;
+            });
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            Self {
+                addr,
+                cert_der,
+                shutdown,
+                _handle: handle,
+                _temp_dir: temp_dir,
+            }
+        }
+
+        fn root_store(&self) -> RootCertStore {
+            let mut store = RootCertStore::empty();
+            store
+                .add(CertificateDer::from(self.cert_der.clone()))
+                .unwrap();
+            store
+        }
+
+        fn connector(&self) -> TlsConnector {
+            TlsConnector::from(Arc::new(
+                ClientConfig::builder()
+                    .with_root_certificates(self.root_store())
+                    .with_no_client_auth(),
+            ))
+        }
+
+        async fn tcp(&self) -> tokio::net::TcpStream {
+            tokio::net::TcpStream::connect(self.addr).await.unwrap()
+        }
+
+        async fn tls(&self) -> tokio_rustls::client::TlsStream<tokio::net::TcpStream> {
+            let name = ServerName::try_from("localhost").unwrap();
+            self.connector()
+                .connect(name, self.tcp().await)
+                .await
+                .unwrap()
+        }
+    }
+
+    impl Drop for ConfiguredServer {
+        fn drop(&mut self) {
+            self.shutdown.cancel();
+        }
+    }
+
+    /// Relay a payload and assert it comes back, to prove a connection is fully
+    /// usable and not merely established.
+    async fn assert_relay_works<S>(stream: &mut S, hash: &str, target: SocketAddr)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        let payload = b"config-surface-probe";
+        let mut header = connect_header(hash, target);
+        header.extend_from_slice(payload);
+        stream.write_all(&header).await.unwrap();
+        stream.flush().await.unwrap();
+
+        let mut echoed = vec![0u8; payload.len()];
+        tokio::time::timeout(Duration::from_secs(10), stream.read_exact(&mut echoed))
+            .await
+            .expect("relay timeout")
+            .unwrap();
+        assert_eq!(&echoed[..], payload);
+    }
+
+    // ── mTLS ──
+
+    struct ClientPki {
+        ca_pem: String,
+        chain: Vec<CertificateDer<'static>>,
+        key: PrivateKeyDer<'static>,
+    }
+
+    /// A CA plus a client certificate it signed.
+    fn generate_client_pki() -> ClientPki {
+        use rcgen::{
+            BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair, KeyUsagePurpose,
+            PKCS_ECDSA_P256_SHA256,
+        };
+
+        let ca_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let mut ca_params = CertificateParams::default();
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+
+        let client_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let mut client_params = CertificateParams::default();
+        client_params.subject_alt_names =
+            vec![rcgen::SanType::DnsName("test-client".try_into().unwrap())];
+        let issuer = Issuer::from_params(&ca_params, &ca_key);
+        let client_cert = client_params.signed_by(&client_key, &issuer).unwrap();
+
+        ClientPki {
+            ca_pem: ca_cert.pem(),
+            chain: vec![CertificateDer::from(client_cert.der().to_vec())],
+            key: PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(client_key.serialize_der())),
+        }
+    }
+
+    /// With `tls.client_ca` set, a client holding a certificate from that CA is
+    /// admitted and can relay.
+    #[tokio::test]
+    async fn test_mtls_accepts_certificate_from_configured_ca() {
+        let echo = MockEchoServer::start();
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+        let pki = generate_client_pki();
+        let ca_pem = pki.ca_pem.clone();
+
+        let server = ConfiguredServer::start(fallback.addr, move |config, dir| {
+            let ca_path = dir.join("client-ca.pem");
+            fs::write(&ca_path, &ca_pem).unwrap();
+            config.tls.client_ca = Some(ca_path.to_string_lossy().into_owned());
+        })
+        .await;
+
+        let client_config = ClientConfig::builder()
+            .with_root_certificates(server.root_store())
+            .with_client_auth_cert(pki.chain, pki.key)
+            .unwrap();
+        let connector = TlsConnector::from(Arc::new(client_config));
+        let name = ServerName::try_from("localhost").unwrap();
+        let mut tls = connector.connect(name, server.tcp().await).await.unwrap();
+
+        assert_relay_works(&mut tls, &sha224_hex(PASSWORD), echo.addr).await;
+    }
+
+    /// The same server must turn away a client that presents no certificate —
+    /// otherwise `client_ca` is decorative.
+    #[tokio::test]
+    async fn test_mtls_rejects_client_without_certificate() {
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+        let pki = generate_client_pki();
+        let ca_pem = pki.ca_pem.clone();
+
+        let server = ConfiguredServer::start(fallback.addr, move |config, dir| {
+            let ca_path = dir.join("client-ca.pem");
+            fs::write(&ca_path, &ca_pem).unwrap();
+            config.tls.client_ca = Some(ca_path.to_string_lossy().into_owned());
+        })
+        .await;
+
+        // A TLS 1.3 client finishes its side before the server validates, so
+        // the rejection can surface either at handshake or on first use. The
+        // outer timeout matters: if the server were to accept the connection,
+        // the read would simply block, and without it this would hang rather
+        // than fail.
+        let name = ServerName::try_from("localhost").unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(10), async {
+            let mut tls = server
+                .connector()
+                .connect(name, server.tcp().await)
+                .await
+                .map_err(|e| e.to_string())?;
+            tls.write_all(b"x").await.map_err(|e| e.to_string())?;
+            tls.flush().await.map_err(|e| e.to_string())?;
+            let mut buf = [0u8; 1];
+            tls.read_exact(&mut buf).await.map_err(|e| e.to_string())?;
+            Ok::<(), String>(())
+        })
+        .await
+        .expect("a client with no certificate was served instead of rejected");
+
+        outcome.expect_err("a client with no certificate must not be served");
+    }
+
+    // ── TLS negotiation knobs ──
+
+    /// Configured ALPN protocols are offered and negotiated.
+    #[tokio::test]
+    async fn test_alpn_protocol_is_negotiated() {
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+        let server = ConfiguredServer::start(fallback.addr, |config, _dir| {
+            config.tls.alpn = vec!["h2".to_string(), "http/1.1".to_string()];
+        })
+        .await;
+
+        let mut client_config = ClientConfig::builder()
+            .with_root_certificates(server.root_store())
+            .with_no_client_auth();
+        client_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+
+        let connector = TlsConnector::from(Arc::new(client_config));
+        let name = ServerName::try_from("localhost").unwrap();
+        let tls = connector.connect(name, server.tcp().await).await.unwrap();
+
+        assert_eq!(
+            tls.get_ref().1.alpn_protocol(),
+            Some(b"http/1.1".as_slice()),
+            "server did not negotiate the ALPN protocol it advertises"
+        );
+    }
+
+    /// `tls.cipher_suites` restricts the handshake to what it names.
+    ///
+    /// Deliberately picks ChaCha20, which sits *third* in rustls' default
+    /// preference order: were the setting ignored, AES-256 would win and this
+    /// would fail. Asserting the default-first suite would prove nothing.
+    #[tokio::test]
+    async fn test_cipher_suite_restriction_is_honoured() {
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+        let server = ConfiguredServer::start(fallback.addr, |config, _dir| {
+            config.tls.min_version = "tls13".to_string();
+            config.tls.cipher_suites = vec!["TLS13_CHACHA20_POLY1305_SHA256".to_string()];
+        })
+        .await;
+
+        let tls = server.tls().await;
+        let suite = tls
+            .get_ref()
+            .1
+            .negotiated_cipher_suite()
+            .expect("a suite must be negotiated");
+
+        assert_eq!(
+            format!("{:?}", suite.suite()),
+            "TLS13_CHACHA20_POLY1305_SHA256",
+            "server negotiated a suite outside the configured list"
+        );
+    }
+
+    // ── Bounds ──
+
+    /// A header that keeps growing past `max_header_bytes` is handed to the
+    /// fallback rather than buffered without limit.
+    #[tokio::test]
+    async fn test_header_over_max_falls_back() {
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback OK");
+        let server = ConfiguredServer::start(fallback.addr, |config, _dir| {
+            config.server.max_header_bytes = 200;
+        })
+        .await;
+
+        let mut tls = server.tls().await;
+
+        // Valid hex hash and CRLF, then a domain ATYP promising 255 bytes of
+        // which only some arrive. The parse stays *Incomplete* — never
+        // Invalid — so the only thing that can end this is the size limit.
+        // Sending enough to complete or corrupt the header instead would make
+        // this pass for the wrong reason.
+        let mut header = Vec::new();
+        header.extend_from_slice(sha224_hex(PASSWORD).as_bytes());
+        header.extend_from_slice(b"\r\n");
+        header.push(0x01); // CONNECT
+        header.push(0x03); // domain
+        header.push(0xFF); // promises 255 bytes
+        header.extend_from_slice(&[b'a'; 150]); // ...only 150 arrive
+        assert!(
+            header.len() > 200,
+            "the probe must exceed max_header_bytes to trigger the limit"
+        );
+
+        tls.write_all(&header).await.unwrap();
+        tls.flush().await.unwrap();
+
+        let mut body = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), tls.read_to_end(&mut body))
+            .await
+            .expect("timed out — an oversized header was buffered instead of falling back")
+            .unwrap();
+
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("Fallback OK"), "unexpected body: {body:?}");
+    }
+
+    /// A UDP frame claiming more than `max_udp_payload` ends the association
+    /// instead of being relayed.
+    #[tokio::test]
+    async fn test_udp_payload_over_max_ends_association() {
+        let udp_echo = MockUdpEchoServer::start();
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+        let server = ConfiguredServer::start(fallback.addr, |config, _dir| {
+            config.server.max_udp_payload = 512;
+        })
+        .await;
+
+        let mut tls = server.tls().await;
+        let ip = match udp_echo.addr.ip() {
+            std::net::IpAddr::V4(v4) => v4,
+            other => panic!("expected IPv4, got {other}"),
+        };
+        let target = AddressRef {
+            host: HostRef::Ipv4(ip.octets()),
+            port: udp_echo.addr.port(),
+        };
+
+        let mut header = BytesMut::new();
+        write_request_header(
+            &mut header,
+            sha224_hex(PASSWORD).as_bytes(),
+            CMD_UDP_ASSOCIATE,
+            &target,
+        )
+        .unwrap();
+        tls.write_all(&header).await.unwrap();
+
+        let mut oversized = BytesMut::new();
+        write_udp_packet(&mut oversized, &target, &vec![0u8; 4096]).unwrap();
+        tls.write_all(&oversized).await.unwrap();
+        tls.flush().await.unwrap();
+
+        let mut sink = Vec::new();
+        let result = tokio::time::timeout(Duration::from_secs(10), tls.read_to_end(&mut sink))
+            .await
+            .expect("timed out — an oversized UDP payload was neither relayed nor refused");
+
+        // Either a clean close or an abrupt one is acceptable; being echoed
+        // back is not.
+        match result {
+            Ok(_) => assert!(
+                sink.is_empty(),
+                "oversized UDP payload should not be relayed, got {} bytes",
+                sink.len()
+            ),
+            Err(_) => { /* connection torn down — also a refusal */ }
+        }
+    }
+
+    // ── Optional subsystems ──
+
+    /// With a warm fallback pool configured, fallback traffic is still served
+    /// correctly across enough connections to exhaust and refill the pool.
+    #[tokio::test]
+    async fn test_fallback_pool_serves_repeated_fallbacks() {
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nPooled Fallback");
+        let server = ConfiguredServer::start(fallback.addr, |config, _dir| {
+            config.server.fallback_pool = Some(FallbackPoolConfig {
+                max_idle: 2,
+                max_age_secs: 60,
+                fill_batch: 2,
+                fill_delay_ms: 0,
+            });
+        })
+        .await;
+
+        let request =
+            b"GET /this-is-a-long-path-to-make-the-request-longer HTTP/1.1\r\nHost: localhost\r\n\r\n";
+
+        for i in 0..5 {
+            let mut tls = server.tls().await;
+            tls.write_all(request).await.unwrap();
+            tls.flush().await.unwrap();
+
+            let mut body = Vec::new();
+            tokio::time::timeout(Duration::from_secs(10), tls.read_to_end(&mut body))
+                .await
+                .unwrap_or_else(|_| panic!("fallback {i} timed out"))
+                .unwrap();
+            let body = String::from_utf8_lossy(&body);
+            assert!(
+                body.contains("Pooled Fallback"),
+                "fallback {i} returned {body:?}"
+            );
+        }
+    }
+
+    /// Passwords declared under `auth.users` authenticate like plain ones —
+    /// this is the path that carries a user id for traffic accounting.
+    #[tokio::test]
+    async fn test_auth_user_entry_password_is_accepted() {
+        let echo = MockEchoServer::start();
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+        let server = ConfiguredServer::start(fallback.addr, |config, _dir| {
+            config.auth.passwords.clear();
+            config.auth.users = vec![UserEntry {
+                id: "alice".to_string(),
+                password: "alice-secret".to_string(),
+            }];
+        })
+        .await;
+
+        let mut tls = server.tls().await;
+        assert_relay_works(&mut tls, &sha224_hex("alice-secret"), echo.addr).await;
+    }
+}
+
+// ============================================================================
 // WebSocket Transport Tests
 // ============================================================================
 //
