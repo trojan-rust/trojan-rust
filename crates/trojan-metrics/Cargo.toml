@@ -19,5 +19,12 @@ metrics-exporter-prometheus.workspace = true
 axum.workspace = true
 tokio = { workspace = true, features = ["rt", "net"] }
 
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "relay_counters"
+harness = false
+
 [lints]
 workspace = true

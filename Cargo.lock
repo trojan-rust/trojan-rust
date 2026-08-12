@@ -4292,6 +4292,7 @@ name = "trojan-metrics"
 version = "0.10.1"
 dependencies = [
  "axum",
+ "criterion",
  "metrics",
  "metrics-exporter-prometheus",
  "tokio",

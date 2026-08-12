@@ -55,6 +55,18 @@ pub const DEFAULT_TCP_PREFER_IPV4: bool = false;
 pub const DEFAULT_CONNECTION_BACKLOG: u32 = 1024;
 
 // ============================================================================
+// Metrics Defaults
+// ============================================================================
+
+/// Emit per-destination byte counters (`trojan_target_bytes_total`).
+///
+/// Each distinct destination is a label value, so this metric's cardinality
+/// grows with the number of destinations a deployment reaches and never
+/// shrinks. Enabled by default for backward compatibility; turn it off on
+/// servers with an unbounded destination set.
+pub const DEFAULT_METRICS_PER_TARGET: bool = true;
+
+// ============================================================================
 // Rate Limit Defaults
 // ============================================================================
 

@@ -29,6 +29,13 @@ This crate instruments the trojan server with counters, gauges, and histograms e
 | `trojan_tls_handshake_duration_seconds` | Histogram | TLS handshake time |
 | `trojan_dns_resolve_duration_seconds` | Histogram | DNS resolution time |
 | `trojan_target_connect_duration_seconds` | Histogram | Target connection time |
+| `trojan_target_connections_total` | Counter | Connections, labelled by destination |
+| `trojan_target_bytes_total` | Counter | Bytes, labelled by destination and direction |
+
+The `target`-labelled metrics carry one time series per destination the server
+has ever reached, and those series live for the life of the process. Set
+`metrics.per_target = false` to drop `trojan_target_bytes_total` on servers
+with an unbounded destination set.
 
 ## Usage
 

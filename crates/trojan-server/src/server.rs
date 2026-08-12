@@ -262,6 +262,7 @@ pub async fn run_with_shutdown(
         tcp_config: config.server.tcp.clone(),
         websocket: config.websocket.clone(),
         dns_resolver,
+        per_target_metrics: config.metrics.per_target,
         #[cfg(feature = "analytics")]
         analytics,
         #[cfg(feature = "rules")]

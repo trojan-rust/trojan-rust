@@ -7,6 +7,7 @@ use std::time::Duration;
 use crate::pool::ConnectionPool;
 use trojan_config::{TcpConfig, WebSocketConfig};
 use trojan_dns::DnsResolver;
+use trojan_metrics::RelayCounters;
 
 /// Shared server state for all connections.
 #[derive(Clone)]
@@ -24,6 +25,9 @@ pub struct ServerState {
     pub tcp_config: TcpConfig,
     pub websocket: WebSocketConfig,
     pub dns_resolver: DnsResolver,
+    /// Whether to label relay byte counters with the destination host.
+    /// See `metrics.per_target` — this is unbounded-cardinality when on.
+    pub per_target_metrics: bool,
     /// Analytics event collector (only available when analytics feature is enabled).
     #[cfg(feature = "analytics")]
     pub analytics: Option<trojan_analytics::EventCollector>,
@@ -40,4 +44,18 @@ pub struct ServerState {
     /// Shared GeoIP database for analytics geo fields (city-level).
     #[cfg(all(feature = "geoip", feature = "analytics"))]
     pub geoip_analytics: Option<Arc<trojan_rules::geoip_db::GeoipDb>>,
+}
+
+impl ServerState {
+    /// Resolve the counter handles for one relay session.
+    ///
+    /// Done once per connection rather than per flush; see [`RelayCounters`].
+    /// Falls back to global-only counters when `metrics.per_target` is off.
+    pub fn relay_counters(&self, target_label: &str) -> RelayCounters {
+        if self.per_target_metrics {
+            RelayCounters::with_target(target_label)
+        } else {
+            RelayCounters::global()
+        }
+    }
 }

@@ -43,6 +43,7 @@ default_fns! {
     default_pool_fill_delay_ms    => DEFAULT_POOL_FILL_DELAY_MS: u64,
     default_relay_buffer_size     => DEFAULT_RELAY_BUFFER_SIZE: usize,
     default_connection_backlog    => DEFAULT_CONNECTION_BACKLOG: u32,
+    default_metrics_per_target    => DEFAULT_METRICS_PER_TARGET: bool,
     default_ws_enabled            => DEFAULT_WS_ENABLED: bool,
     default_ws_max_frame_bytes    => DEFAULT_WS_MAX_FRAME_BYTES: usize,
     // TCP socket options

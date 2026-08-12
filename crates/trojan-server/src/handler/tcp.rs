@@ -8,14 +8,11 @@ use tokio::net::TcpStream;
 use tokio::time::Instant;
 use tracing::{debug, instrument, warn};
 use trojan_auth::AuthBackend;
-use trojan_metrics::{
-    record_bytes_sent, record_target_bytes, record_target_connect_duration,
-    record_target_connection,
-};
+use trojan_metrics::{record_target_connect_duration, record_target_connection};
 use trojan_proto::AddressRef;
 
 use crate::error::ServerError;
-use crate::relay::relay_with_idle_timeout_and_metrics_per_target;
+use crate::relay::relay_with_counters;
 use crate::resolve::{resolve_all_addresses, target_to_label};
 use crate::state::ServerState;
 use crate::util::connect_with_buffers;
@@ -37,6 +34,8 @@ where
 {
     let target_label = target_to_label(&address);
     record_target_connection(&target_label);
+    // Resolved once here rather than per flush inside the relay loop.
+    let counters = state.relay_counters(&target_label);
 
     // Resolve + connect with fallthrough across address families. On any
     // pre-relay failure, send TLS close_notify before dropping the stream so
@@ -54,16 +53,19 @@ where
     let payload_bytes = payload.len() as u64;
     if !payload.is_empty() {
         outbound.write_all(payload).await?;
-        record_bytes_sent(payload_bytes);
-        record_target_bytes(&target_label, "sent", payload_bytes);
+        // Client → target, the same direction the relay loop reports as
+        // inbound. Previously counted against the "bytes sent to client"
+        // global, which contradicted how the relay attributes the rest of
+        // that stream.
+        counters.add_to_target(payload_bytes);
         debug!(peer = %peer, target = %target, bytes = payload.len(), "initial payload sent");
     }
-    let stats = relay_with_idle_timeout_and_metrics_per_target(
+    let stats = relay_with_counters(
         stream,
         outbound,
         state.tcp_idle_timeout,
         state.relay_buffer_size,
-        &target_label,
+        &counters,
     )
     .await?;
     debug!(peer = %peer, target = %target, "relay finished");

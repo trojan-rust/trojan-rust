@@ -375,13 +375,12 @@ where
     A: AuthBackend + ?Sized,
 {
     use tokio::io::AsyncWriteExt;
-    use trojan_metrics::{
-        record_bytes_sent, record_target_bytes, record_target_connect_duration,
-        record_target_connection,
-    };
+    use trojan_metrics::{record_target_connect_duration, record_target_connection};
 
     let target_label = crate::resolve::target_to_label(&address);
     record_target_connection(&target_label);
+    // Resolved once here rather than per flush inside the relay loop.
+    let counters = state.relay_counters(&target_label);
 
     // Connect via the outbound. Any pre-relay failure (resolve, connect, or
     // initial payload write) drops the TLS stream — call shutdown first so
@@ -425,16 +424,17 @@ where
         return Err(e.into());
     }
     if !payload.is_empty() {
-        record_bytes_sent(payload_bytes);
-        record_target_bytes(&target_label, "sent", payload_bytes);
+        // Client → target, matching how the relay loop attributes the rest
+        // of this stream.
+        counters.add_to_target(payload_bytes);
     }
 
-    let stats = crate::relay::relay_with_idle_timeout_and_metrics_per_target(
+    let stats = crate::relay::relay_with_counters(
         stream,
         outbound_stream,
         state.tcp_idle_timeout,
         state.relay_buffer_size,
-        &target_label,
+        &counters,
     )
     .await?;
 

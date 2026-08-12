@@ -6,8 +6,9 @@
 use std::net::SocketAddr;
 
 use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
-use metrics::{counter, gauge, histogram};
+use metrics::{Counter, counter, gauge, histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use trojan_core::io::RelayMetrics;
 
 /// Initialize metrics server with Prometheus exporter and health check endpoints.
 ///
@@ -246,22 +247,13 @@ pub fn set_connection_queue_depth(depth: f64) {
 }
 
 /// Record a connection to a target (by destination host).
+///
 /// The target should be sanitized (e.g., IP address or domain without port).
-/// Note: This function allocates a String for the label. For hot paths with repeated calls,
-/// consider caching the String at the call site.
+/// Called once per connection, so resolving the labelled key here is fine;
+/// for anything recorded more often than that use [`RelayCounters`].
 #[inline]
 pub fn record_target_connection(target: &str) {
     counter!(TARGET_CONNECTIONS_TOTAL, "target" => target.to_owned()).increment(1);
-}
-
-/// Record bytes transferred to/from a target.
-/// Direction: "sent" or "received".
-/// Note: This function allocates a String for the label. For hot paths with repeated calls,
-/// consider caching the String at the call site.
-#[inline]
-pub fn record_target_bytes(target: &str, direction: &'static str, bytes: u64) {
-    counter!(TARGET_BYTES_TOTAL, "target" => target.to_owned(), "direction" => direction)
-        .increment(bytes);
 }
 
 /// Set current fallback pool size.
@@ -318,6 +310,105 @@ pub fn record_bytes_with_geo(country: &str, direction: &'static str, bytes: u64)
 #[inline]
 pub fn record_auth_failure_with_geo(country: &str) {
     counter!(AUTH_FAILURE_BY_COUNTRY, "country" => country.to_owned()).increment(1);
+}
+
+// ============================================================================
+// Relay Session Counters
+// ============================================================================
+
+/// Counter handles resolved once for the lifetime of a relay session.
+///
+/// Resolving a metric through `counter!` builds its key — which allocates a
+/// `Vec` and a `String` when a label value is dynamic — and hashes that key
+/// against the recorder registry. The relay reports bytes once per *flush*
+/// rather than once per connection (see `trojan_core::io::relay`), so doing
+/// that work per report puts an allocation and a registry lookup directly in
+/// the data path. Resolving the handles at session start reduces each report
+/// to an atomic add.
+///
+/// Handles are resolved against whichever recorder is installed at
+/// construction time; build them after `init_metrics_server`, otherwise they
+/// bind to the no-op recorder for the whole session.
+#[derive(Debug, Clone)]
+pub struct RelayCounters {
+    /// Global bytes received from clients.
+    received: Counter,
+    /// Global bytes sent to clients.
+    sent: Counter,
+    /// Per-target bytes, `direction="sent"` (client → target).
+    target_sent: Option<Counter>,
+    /// Per-target bytes, `direction="received"` (target → client).
+    target_received: Option<Counter>,
+}
+
+impl RelayCounters {
+    /// Handles for the global byte counters only.
+    pub fn global() -> Self {
+        Self {
+            received: counter!(BYTES_RECEIVED_TOTAL),
+            sent: counter!(BYTES_SENT_TOTAL),
+            target_sent: None,
+            target_received: None,
+        }
+    }
+
+    /// Handles for the global byte counters plus a per-target breakdown.
+    ///
+    /// An empty `target` behaves like [`global`](Self::global).
+    ///
+    /// Each distinct `target` adds two time series that live as long as the
+    /// process. Deployments with an unbounded destination set should prefer
+    /// [`global`](Self::global) — see `metrics.per_target` in the server
+    /// config.
+    pub fn with_target(target: &str) -> Self {
+        if target.is_empty() {
+            return Self::global();
+        }
+        Self {
+            received: counter!(BYTES_RECEIVED_TOTAL),
+            sent: counter!(BYTES_SENT_TOTAL),
+            target_sent: Some(counter!(
+                TARGET_BYTES_TOTAL,
+                "target" => target.to_owned(),
+                "direction" => "sent"
+            )),
+            target_received: Some(counter!(
+                TARGET_BYTES_TOTAL,
+                "target" => target.to_owned(),
+                "direction" => "received"
+            )),
+        }
+    }
+
+    /// Record bytes flowing client → target.
+    #[inline]
+    pub fn add_to_target(&self, bytes: u64) {
+        self.received.increment(bytes);
+        if let Some(ref per_target) = self.target_sent {
+            per_target.increment(bytes);
+        }
+    }
+
+    /// Record bytes flowing target → client.
+    #[inline]
+    pub fn add_to_client(&self, bytes: u64) {
+        self.sent.increment(bytes);
+        if let Some(ref per_target) = self.target_received {
+            per_target.increment(bytes);
+        }
+    }
+}
+
+impl RelayMetrics for RelayCounters {
+    #[inline]
+    fn record_inbound(&self, bytes: u64) {
+        self.add_to_target(bytes);
+    }
+
+    #[inline]
+    fn record_outbound(&self, bytes: u64) {
+        self.add_to_client(bytes);
+    }
 }
 
 // ============================================================================

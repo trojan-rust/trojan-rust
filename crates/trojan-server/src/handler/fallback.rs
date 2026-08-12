@@ -7,8 +7,10 @@ use bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tracing::debug;
 
+use trojan_metrics::RelayCounters;
+
 use crate::error::ServerError;
-use crate::relay::relay_with_idle_timeout_and_metrics;
+use crate::relay::relay_with_counters;
 use crate::state::ServerState;
 use crate::util::connect_with_buffers;
 
@@ -42,11 +44,13 @@ where
         backend.write_all(&buffered).await?;
         backend.flush().await?;
     }
-    relay_with_idle_timeout_and_metrics(
+    // Fallback traffic has no trojan target to attribute, so global only.
+    relay_with_counters(
         stream,
         backend,
         state.tcp_idle_timeout,
         state.relay_buffer_size,
+        &RelayCounters::global(),
     )
     .await?;
     debug!(peer = %peer, fallback = %state.fallback_addr, "fallback relay finished");
