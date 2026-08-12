@@ -4297,6 +4297,7 @@ dependencies = [
  "bytes",
  "criterion",
  "futures-util",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite",
 ]

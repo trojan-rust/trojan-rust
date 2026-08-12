@@ -10,6 +10,7 @@
 pub mod defaults;
 pub mod errors;
 pub mod io;
+pub mod proxy_protocol;
 pub mod transport;
 
 // Re-export commonly used items at crate root
