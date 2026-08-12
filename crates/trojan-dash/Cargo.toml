@@ -10,6 +10,7 @@ documentation.workspace = true
 description = "Dashboard service for trojan-rs — user management, node tokens, traffic accounting, subscriptions"
 keywords = ["trojan", "dashboard", "panel", "management"]
 categories = ["network-programming"]
+readme = "README.md"
 
 [dependencies]
 trojan-auth = { workspace = true, features = ["protocol"] }

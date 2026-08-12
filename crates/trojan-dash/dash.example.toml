@@ -1,0 +1,26 @@
+# trojan dash -c dash.toml
+
+# Bind to localhost when a reverse proxy fronts this service on the same host.
+# A proxy elsewhere means binding an address it can reach — and firewalling the
+# port to it, since anything that reaches this port bypasses the proxy.
+listen = "127.0.0.1:8080"
+
+# SQLite. A bare path works too; the file is created if missing.
+database_url = "sqlite:///var/lib/trojan-dash/dash.db?mode=rwc"
+
+# Guards /admin/*. Prefer TROJAN_DASH_ADMIN_TOKEN in the unit file over
+# writing the secret here.
+# admin_token = "..."
+
+# Where the built panel lives. Omit to serve the API alone.
+static_dir = "/var/lib/trojan-dash/panel"
+
+# Seconds between last_seen writes for a node. Nodes call continuously; without
+# this every call would be a write.
+node_last_seen_ttl = 180
+
+# How long a verified user and a subscription template stay cached.
+verify_cache_ttl = 3600
+sub_cache_ttl = 3600
+
+# log_level = "info"

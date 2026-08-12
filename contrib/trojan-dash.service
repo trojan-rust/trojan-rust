@@ -1,0 +1,30 @@
+[Unit]
+Description=Trojan dashboard — users, node tokens, traffic accounting, subscriptions
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/lib/trojan-dash
+ExecStart=/usr/local/bin/trojan dash -c /etc/trojan/dash.toml
+Restart=on-failure
+RestartSec=3
+
+# Keep the admin token out of the config file, which the panel directory sits
+# next to and a backup may copy.
+Environment=TROJAN_DASH_ADMIN_TOKEN=
+# Better still, replace the line above with a file readable only by root:
+# EnvironmentFile=/etc/trojan/dash.env
+
+StandardOutput=journal
+StandardError=journal
+LimitNOFILE=65535
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# SQLite writes the database plus its -wal and -shm siblings.
+ReadWritePaths=/var/lib/trojan-dash
+
+[Install]
+WantedBy=multi-user.target
