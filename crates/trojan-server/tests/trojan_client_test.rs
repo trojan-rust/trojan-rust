@@ -241,7 +241,7 @@ impl TrojanClient {
         let socks_addr = socks_listener.local_addr().map_err(|e| e.to_string())?;
         drop(socks_listener);
 
-        let process = match client_type {
+        let mut process = match client_type {
             TrojanClientType::TrojanGo => {
                 Self::start_trojan_go(&temp_dir, server_addr, socks_addr, password)?
             }
@@ -250,14 +250,69 @@ impl TrojanClient {
             }
         };
 
-        // Wait for client to start
-        thread::sleep(Duration::from_secs(1));
+        Self::await_socks_ready(&mut process, socks_addr)?;
 
         Ok(Self {
             process,
             socks_addr,
             _temp_dir: temp_dir,
         })
+    }
+
+    /// Block until the client's SOCKS5 port accepts a connection.
+    ///
+    /// A fixed sleep used to stand in for this, which made every startup
+    /// failure surface later as a bare `ConnectionRefused` from the first
+    /// SOCKS5 connect — with the client's own explanation sitting unread in a
+    /// pipe. A `go install`ed trojan-go that rejects `-config` and exits
+    /// immediately looked exactly like a client that was merely slow.
+    fn await_socks_ready(process: &mut Child, socks_addr: SocketAddr) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+
+        loop {
+            // An exited client will never listen, so report why it exited
+            // instead of waiting out the deadline.
+            if let Ok(Some(status)) = process.try_wait() {
+                return Err(format!(
+                    "client exited before listening on {socks_addr} (status {status}){}",
+                    Self::drain_output(process)
+                ));
+            }
+
+            if TcpStream::connect_timeout(&socks_addr, Duration::from_millis(200)).is_ok() {
+                return Ok(());
+            }
+
+            if std::time::Instant::now() >= deadline {
+                let _ = process.kill();
+                return Err(format!(
+                    "client never listened on {socks_addr} within 15s{}",
+                    Self::drain_output(process)
+                ));
+            }
+
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Whatever the client wrote to stdout/stderr, for the failure message.
+    fn drain_output(process: &mut Child) -> String {
+        let mut out = String::new();
+        if let Some(mut stdout) = process.stdout.take() {
+            let mut buf = String::new();
+            if stdout.read_to_string(&mut buf).is_ok() && !buf.trim().is_empty() {
+                out.push_str("\n--- client stdout ---\n");
+                out.push_str(buf.trim_end());
+            }
+        }
+        if let Some(mut stderr) = process.stderr.take() {
+            let mut buf = String::new();
+            if stderr.read_to_string(&mut buf).is_ok() && !buf.trim().is_empty() {
+                out.push_str("\n--- client stderr ---\n");
+                out.push_str(buf.trim_end());
+            }
+        }
+        out
     }
 
     fn start_trojan_go(

@@ -25,6 +25,38 @@ use trojan_dash::DashConfig;
 
 const ADMIN_TOKEN: &str = "test-admin-token";
 
+/// Build the service config for a temp database.
+///
+/// The path goes through `toml::Value` rather than straight into the string: a
+/// Windows temp path is full of backslashes, and TOML basic strings read those
+/// as escapes, so an interpolated `C:\Users\...` fails to parse as an invalid
+/// `\U` unicode escape. Letting toml quote its own value is correct on every
+/// platform without hand-rolling the escaping.
+fn config_toml(port: u16, database: &std::path::Path) -> String {
+    let database = toml::Value::from(database.display().to_string());
+    format!(
+        r#"
+        listen = "127.0.0.1:{port}"
+        database = {database}
+        admin_token = "{ADMIN_TOKEN}"
+        "#
+    )
+}
+
+/// A Windows path must survive into the config unchanged.
+///
+/// This ran green on Linux and macOS while every dash test failed on Windows,
+/// because only a Windows temp path contains the backslashes that TOML treats
+/// as escapes.
+#[test]
+fn config_accepts_a_windows_style_database_path() {
+    let raw = r"C:\Users\RUNNER~1\AppData\Local\Temp\.tmpZY3AhE\dash.db";
+    let config: DashConfig = toml::from_str(&config_toml(8080, std::path::Path::new(raw)))
+        .expect("a backslashed path must not be read as a unicode escape");
+
+    assert_eq!(config.database, raw);
+}
+
 /// A running service, torn down when dropped.
 struct Dash {
     base: String,
@@ -52,15 +84,7 @@ impl Dash {
             .unwrap()
             .port();
 
-        let config: DashConfig = toml::from_str(&format!(
-            r#"
-            listen = "127.0.0.1:{port}"
-            database = "{}"
-            admin_token = "{ADMIN_TOKEN}"
-            "#,
-            database.display()
-        ))
-        .unwrap();
+        let config: DashConfig = toml::from_str(&config_toml(port, &database)).unwrap();
 
         let shutdown = CancellationToken::new();
         let token = shutdown.clone();

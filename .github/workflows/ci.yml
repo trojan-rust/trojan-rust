@@ -66,12 +66,30 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # trojan-go comes from its release archive, not `go install`: the module
+      # builds its optional features behind build tags, so `go install ...@latest`
+      # yields a binary that knows only `-version` and rejects `-config`. That
+      # still starts, so the old install looked fine and the failure only showed
+      # up as a refused SOCKS5 connect inside the test. The release archive is
+      # also what users actually run, and matches the dev shell's trojan-go.
       - name: Install reference clients
         run: |
-          go install github.com/p4gefau1t/trojan-go@latest
-          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+          curl -fsSL -o /tmp/trojan-go.zip \
+            https://github.com/p4gefau1t/trojan-go/releases/latest/download/trojan-go-linux-amd64.zip
+          sudo unzip -o -q /tmp/trojan-go.zip trojan-go -d /usr/local/bin
+          sudo chmod +x /usr/local/bin/trojan-go
           sudo apt-get update
           sudo apt-get install -y trojan
+
+      # Both clients are driven by config file, so a binary that cannot parse
+      # one is useless to these tests. Checking here means a broken install
+      # fails with the reason rather than as a connection error later.
+      - name: Verify the clients are usable
+        run: |
+          trojan-go -version
+          trojan-go -h 2>&1 | grep -q -- '-config' \
+            || { echo "trojan-go does not accept -config"; exit 1; }
+          trojan --version
       # Kept out of the main test matrix because they need a client binary on
       # PATH, which is why they carry #[ignore]. TROJAN_INTEROP_REQUIRED makes
       # a missing binary fatal here, so this job cannot pass without having
