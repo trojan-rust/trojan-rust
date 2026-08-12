@@ -5,14 +5,14 @@ use std::net::IpAddr;
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use trojan_config::WebSocketConfig;
+use trojan_config::{WebSocketConfig, WebSocketMode};
 use trojan_server::RateLimiter;
 use trojan_server::ws::inspect_mixed;
 
 fn sample_ws_config() -> WebSocketConfig {
     WebSocketConfig {
         enabled: true,
-        mode: "mixed".to_string(),
+        mode: WebSocketMode::Mixed,
         path: "/ws".to_string(),
         host: Some("example.com".to_string()),
         listen: None,

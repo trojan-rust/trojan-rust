@@ -16,7 +16,9 @@ use trojan_auth::{
     AuthBackend, MemoryAuth, ReloadableAuth,
     http::{Codec, HttpAuth, HttpAuthConfig},
 };
-use trojan_config::{CliOverrides, LoggingConfig, apply_overrides, load_config, validate_config};
+use trojan_config::{
+    CliOverrides, LoggingConfig, apply_overrides, load_config, validate_auth_source,
+};
 
 use crate::{CancellationToken, run_with_shutdown};
 
@@ -39,7 +41,6 @@ pub struct ServerArgs {
 pub async fn run(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = load_config(&args.config)?;
     apply_overrides(&mut config, &args.overrides);
-    validate_config(&config)?;
 
     init_tracing(&config.logging);
 
@@ -54,6 +55,9 @@ pub async fn run(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Create reloadable auth backend
+    // The server checks the rest of the config itself; this is the part only
+    // a caller that builds the backend from config can be held to.
+    validate_auth_source(&config.auth)?;
     let auth = Arc::new(ReloadableAuth::new(build_auth(&config.auth)));
 
     // Set up SIGHUP handler for config reload
@@ -149,7 +153,7 @@ fn reload_config(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = load_config(config_path)?;
     apply_overrides(&mut config, overrides);
-    validate_config(&config)?;
+    validate_auth_source(&config.auth)?;
 
     // Reload auth backend
     let new_auth = build_auth(&config.auth);

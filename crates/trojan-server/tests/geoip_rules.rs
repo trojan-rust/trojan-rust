@@ -34,7 +34,7 @@ use tokio_rustls::TlsConnector;
 use trojan_auth::{MemoryAuth, sha224_hex};
 use trojan_config::{
     AuthConfig, Config, LoggingConfig, MetricsConfig, RouteRuleConfig, ServerConfig, TcpConfig,
-    TlsConfig, WebSocketConfig,
+    TlsConfig, TlsVersion, WebSocketConfig,
 };
 use trojan_proto::{AddressRef, CMD_CONNECT, HostRef, write_request_header};
 use trojan_server::{CancellationToken, run_with_shutdown};
@@ -197,8 +197,8 @@ impl TestServer {
                 cert: cert_path.to_string_lossy().into_owned(),
                 key: key_path.to_string_lossy().into_owned(),
                 alpn: vec![],
-                min_version: "tls12".to_string(),
-                max_version: "tls13".to_string(),
+                min_version: TlsVersion::Tls12,
+                max_version: TlsVersion::Tls13,
                 client_ca: None,
                 cipher_suites: vec![],
             },

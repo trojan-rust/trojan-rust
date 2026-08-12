@@ -55,6 +55,12 @@ async fn run_server(
 ) -> Result<(), AgentError> {
     let config: Config = serde_json::from_value(config_json.clone())
         .map_err(|e| AgentError::Service(format!("invalid server config: {e}")))?;
+    // The rest of the config is checked by the server itself; this is the part
+    // only a caller that builds the backend from config can be held to, and a
+    // panel that pushes an empty `auth` section would otherwise produce a node
+    // that authenticates nobody.
+    trojan_config::validate_auth_source(&config.auth)
+        .map_err(|e| AgentError::Service(e.to_string()))?;
 
     info!(listen = %config.server.listen, "starting server service");
 

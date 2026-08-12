@@ -215,6 +215,22 @@ pub struct RateLimitConfig {
     pub cleanup_interval_secs: u64,
 }
 
+/// A TLS protocol version this server will negotiate.
+///
+/// Declaration order is version order, so `min <= max` is a comparison rather
+/// than a hand-written ordinal mapping.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, clap::ValueEnum,
+)]
+#[serde(rename_all = "lowercase")]
+#[value(rename_all = "lowercase")]
+pub enum TlsVersion {
+    /// TLS 1.2.
+    Tls12,
+    /// TLS 1.3.
+    Tls13,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsConfig {
     /// Server certificate file path (PEM format).
@@ -224,12 +240,12 @@ pub struct TlsConfig {
     /// ALPN protocols to advertise.
     #[serde(default)]
     pub alpn: Vec<String>,
-    /// Minimum TLS version (tls12, tls13). Default: tls12
+    /// Lowest version to negotiate. Default: tls12
     #[serde(default = "default_min_tls_version")]
-    pub min_version: String,
-    /// Maximum TLS version (tls12, tls13). Default: tls13
+    pub min_version: TlsVersion,
+    /// Highest version to negotiate. Default: tls13
     #[serde(default = "default_max_tls_version")]
-    pub max_version: String,
+    pub max_version: TlsVersion,
     /// Path to CA certificate for client authentication (mTLS).
     /// If set, client certificates will be required and verified.
     #[serde(default)]
@@ -240,12 +256,26 @@ pub struct TlsConfig {
     pub cipher_suites: Vec<String>,
 }
 
+/// How the server carries WebSocket traffic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+#[value(rename_all = "lowercase")]
+pub enum WebSocketMode {
+    /// One port carries both: a connection is inspected once TLS is up and
+    /// either upgraded or handled as a plain trojan stream.
+    #[default]
+    Mixed,
+    /// A port of its own, where a connection that does not upgrade is refused
+    /// rather than passed to the fallback.
+    Split,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSocketConfig {
     #[serde(default = "default_ws_enabled")]
     pub enabled: bool,
-    #[serde(default = "default_ws_mode")]
-    pub mode: String,
+    #[serde(default)]
+    pub mode: WebSocketMode,
     #[serde(default = "default_ws_path")]
     pub path: String,
     #[serde(default)]
@@ -260,7 +290,7 @@ impl Default for WebSocketConfig {
     fn default() -> Self {
         Self {
             enabled: default_ws_enabled(),
-            mode: default_ws_mode(),
+            mode: WebSocketMode::default(),
             path: default_ws_path(),
             host: None,
             listen: None,

@@ -141,12 +141,25 @@ pub struct AnalyticsPrivacyConfig {
     #[serde(default = "default_true")]
     pub record_sni: bool,
 
-    /// GeoIP precision for analytics events: "city", "country", or "none".
-    /// - "city": record all geo fields (country, region, city, ASN, org, lat/lon)
-    /// - "country": record only country code
-    /// - "none": do not record any geo information
-    #[serde(default = "default_geo_precision")]
-    pub geo_precision: String,
+    /// How much of a GeoIP lookup to keep on an event.
+    #[serde(default)]
+    pub geo_precision: GeoPrecision,
+}
+
+/// How much of a GeoIP lookup an analytics event keeps.
+///
+/// A privacy setting, so the coarser values are not a degraded version of the
+/// finer one — they are the point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GeoPrecision {
+    /// Country, region, city, ASN, organisation and coordinates.
+    #[default]
+    City,
+    /// Country code only.
+    Country,
+    /// Nothing at all.
+    None,
 }
 
 impl Default for AnalyticsPrivacyConfig {
@@ -156,13 +169,9 @@ impl Default for AnalyticsPrivacyConfig {
             full_user_id: false,
             user_id_prefix_len: default_analytics_user_id_prefix_len(),
             record_sni: true,
-            geo_precision: default_geo_precision(),
+            geo_precision: GeoPrecision::default(),
         }
     }
-}
-
-fn default_geo_precision() -> String {
-    "city".to_string()
 }
 
 // Analytics default value functions
@@ -227,14 +236,28 @@ mod tests {
         assert!(!cfg.full_user_id);
         assert_eq!(cfg.user_id_prefix_len, 8);
         assert!(cfg.record_sni);
-        assert_eq!(cfg.geo_precision, "city");
+        assert_eq!(cfg.geo_precision, GeoPrecision::City);
     }
 
     #[test]
     fn privacy_config_deserialize_geo_precision() {
         let toml_str = r#"geo_precision = "country""#;
         let cfg: AnalyticsPrivacyConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(cfg.geo_precision, "country");
+        assert_eq!(cfg.geo_precision, GeoPrecision::Country);
+    }
+
+    /// A misspelt precision used to parse as a `String` and then match no arm,
+    /// silently dropping every geo field for the life of the process. It has
+    /// to be a load error instead.
+    #[test]
+    fn an_unknown_geo_precision_is_rejected() {
+        let err = toml::from_str::<AnalyticsPrivacyConfig>(r#"geo_precision = "City""#)
+            .expect_err("a value outside the enum must not load");
+
+        assert!(
+            err.to_string().contains("city"),
+            "the error should list what is accepted, got: {err}"
+        );
     }
 
     #[test]

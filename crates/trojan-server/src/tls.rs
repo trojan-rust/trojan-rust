@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tokio_rustls::rustls::{self, RootCertStore, server::WebPkiClientVerifier};
 use tracing::{info, warn};
-use trojan_config::TlsConfig;
+use trojan_config::{TlsConfig, TlsVersion};
 use trojan_core::defaults;
 use trojan_core::tls::load_keypair;
 
@@ -14,12 +14,12 @@ use crate::error::ServerError;
 pub fn load_tls_config(cfg: &TlsConfig) -> Result<rustls::ServerConfig, ServerError> {
     let (certs, key) = load_keypair(&cfg.cert, &cfg.key)?;
 
-    // Build TLS versions based on config
-    // Use static slices to avoid heap allocation
+    // Static slices, so selecting a range allocates nothing. `validate_config`
+    // rejects an inverted range, and the type rules out any other pairing.
     let versions: &[&'static rustls::SupportedProtocolVersion] =
-        match (cfg.min_version.as_str(), cfg.max_version.as_str()) {
-            ("tls13", "tls13") => &[&rustls::version::TLS13],
-            ("tls12", "tls12") => &[&rustls::version::TLS12],
+        match (cfg.min_version, cfg.max_version) {
+            (TlsVersion::Tls13, TlsVersion::Tls13) => &[&rustls::version::TLS13],
+            (TlsVersion::Tls12, TlsVersion::Tls12) => &[&rustls::version::TLS12],
             _ => &[&rustls::version::TLS12, &rustls::version::TLS13],
         };
 
@@ -115,8 +115,8 @@ pub fn load_tls_config(cfg: &TlsConfig) -> Result<rustls::ServerConfig, ServerEr
         rustls::server::ServerSessionMemoryCache::new(defaults::DEFAULT_TLS_SESSION_CACHE_SIZE);
 
     info!(
-        min_version = %cfg.min_version,
-        max_version = %cfg.max_version,
+        min_version = ?cfg.min_version,
+        max_version = ?cfg.max_version,
         mtls = cfg.client_ca.is_some(),
         cipher_suites = ?cfg.cipher_suites,
         session_cache = defaults::DEFAULT_TLS_SESSION_CACHE_SIZE,
@@ -151,8 +151,8 @@ mod tests {
             cert: cert_path.to_string_lossy().into_owned(),
             key: key_path.to_string_lossy().into_owned(),
             alpn: vec![],
-            min_version: "tls12".to_string(),
-            max_version: "tls13".to_string(),
+            min_version: TlsVersion::Tls12,
+            max_version: TlsVersion::Tls13,
             client_ca: None,
             cipher_suites: vec![],
         };

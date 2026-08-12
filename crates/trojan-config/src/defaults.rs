@@ -61,8 +61,15 @@ default_fns! {
 }
 
 default_string_fns! {
-    default_min_tls_version => DEFAULT_TLS_MIN_VERSION,
-    default_max_tls_version => DEFAULT_TLS_MAX_VERSION,
-    default_ws_mode         => DEFAULT_WS_MODE,
-    default_ws_path         => DEFAULT_WS_PATH,
+    default_ws_path => DEFAULT_WS_PATH,
+}
+
+/// serde default for [`TlsConfig::min_version`](crate::TlsConfig::min_version).
+pub(crate) fn default_min_tls_version() -> crate::TlsVersion {
+    crate::TlsVersion::Tls12
+}
+
+/// serde default for [`TlsConfig::max_version`](crate::TlsConfig::max_version).
+pub(crate) fn default_max_tls_version() -> crate::TlsVersion {
+    crate::TlsVersion::Tls13
 }

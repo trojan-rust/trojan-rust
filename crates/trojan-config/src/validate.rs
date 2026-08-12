@@ -1,9 +1,18 @@
 //! Configuration validation logic.
+//!
+//! Split in two because the questions are different. [`validate_config`] asks
+//! whether a running server can be built from these numbers, and so belongs on
+//! every start path. [`validate_auth_source`] asks whether an authentication
+//! backend can be built out of the config's `auth` section — which only
+//! concerns callers that do that, not ones handing the server a backend they
+//! built themselves.
 
 use crate::Config;
 use crate::defaults::min_header_bytes;
 use crate::loader::ConfigError;
+use crate::types::{AuthConfig, WebSocketMode};
 
+/// Check everything a running server depends on.
 pub fn validate_config(config: &Config) -> Result<(), ConfigError> {
     if config.server.listen.trim().is_empty() {
         return Err(ConfigError::Validation("server.listen is empty".into()));
@@ -16,13 +25,6 @@ pub fn validate_config(config: &Config) -> Result<(), ConfigError> {
     }
     if config.tls.key.trim().is_empty() {
         return Err(ConfigError::Validation("tls.key is empty".into()));
-    }
-    let has_local = !config.auth.passwords.is_empty() || !config.auth.users.is_empty();
-    let has_http = config.auth.http_url.is_some();
-    if !has_local && !has_http {
-        return Err(ConfigError::Validation(
-            "auth: at least one of 'passwords', 'users', or 'http_url' must be configured".into(),
-        ));
     }
     if config.server.tcp_idle_timeout_secs == 0 {
         return Err(ConfigError::Validation(
@@ -55,32 +57,8 @@ pub fn validate_config(config: &Config) -> Result<(), ConfigError> {
             "server.max_udp_buffer_bytes must be >= max_udp_payload + 8".into(),
         ));
     }
-    // Validate TLS versions
-    let valid_versions = ["tls12", "tls13"];
-    if !valid_versions.contains(&config.tls.min_version.as_str()) {
-        return Err(ConfigError::Validation(format!(
-            "tls.min_version must be one of: {:?}",
-            valid_versions
-        )));
-    }
-    if !valid_versions.contains(&config.tls.max_version.as_str()) {
-        return Err(ConfigError::Validation(format!(
-            "tls.max_version must be one of: {:?}",
-            valid_versions
-        )));
-    }
-    // tls13 > tls12
-    let min_ord = if config.tls.min_version == "tls13" {
-        1
-    } else {
-        0
-    };
-    let max_ord = if config.tls.max_version == "tls13" {
-        1
-    } else {
-        0
-    };
-    if min_ord > max_ord {
+    // Which versions exist is settled by the type; only their order is not.
+    if config.tls.min_version > config.tls.max_version {
         return Err(ConfigError::Validation(
             "tls.min_version cannot be greater than tls.max_version".into(),
         ));
@@ -120,20 +98,31 @@ pub fn validate_config(config: &Config) -> Result<(), ConfigError> {
             ));
         }
     }
-    if config.websocket.mode != "mixed" && config.websocket.mode != "split" {
-        return Err(ConfigError::Validation(
-            "websocket.mode must be 'mixed' or 'split'".into(),
-        ));
-    }
     if config.websocket.path.is_empty() {
         return Err(ConfigError::Validation("websocket.path is empty".into()));
     }
     if config.websocket.enabled
-        && config.websocket.mode == "split"
+        && config.websocket.mode == WebSocketMode::Split
         && config.websocket.listen.as_deref().unwrap_or("").is_empty()
     {
         return Err(ConfigError::Validation(
             "websocket.listen is required in split mode".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Check that an authentication backend can be built from this `auth` section.
+///
+/// For callers that build one from the config — the CLI and the panel agent.
+/// A caller that constructs its own backend and hands it to the server has no
+/// use for this: the config's `auth` section is not what its users came from.
+pub fn validate_auth_source(auth: &AuthConfig) -> Result<(), ConfigError> {
+    let has_local = !auth.passwords.is_empty() || !auth.users.is_empty();
+    let has_http = auth.http_url.is_some();
+    if !has_local && !has_http {
+        return Err(ConfigError::Validation(
+            "auth: at least one of 'passwords', 'users', or 'http_url' must be configured".into(),
         ));
     }
     Ok(())

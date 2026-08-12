@@ -127,7 +127,7 @@ impl TestServer {
         use trojan_auth::MemoryAuth;
         use trojan_config::{
             AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TcpConfig, TlsConfig,
-            WebSocketConfig,
+            TlsVersion, WebSocketConfig,
         };
 
         let password = "test_password_123".to_string();
@@ -170,8 +170,8 @@ impl TestServer {
                 cert: cert_path.to_string_lossy().to_string(),
                 key: key_path.to_string_lossy().to_string(),
                 alpn: vec![],
-                min_version: "tls12".to_string(),
-                max_version: "tls13".to_string(),
+                min_version: TlsVersion::Tls12,
+                max_version: TlsVersion::Tls13,
                 client_ca: None,
                 cipher_suites: vec![],
             },

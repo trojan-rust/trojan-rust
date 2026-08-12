@@ -48,7 +48,7 @@ pub mod writer;
 pub use collector::{ConnectionEventBuilder, EventCollector};
 pub use config::{
     AnalyticsBufferConfig, AnalyticsConfig, AnalyticsPrivacyConfig, AnalyticsSamplingConfig,
-    ClickHouseConfig,
+    ClickHouseConfig, GeoPrecision,
 };
 #[cfg(feature = "collector")]
 pub use error::AnalyticsError;

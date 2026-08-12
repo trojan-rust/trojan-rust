@@ -56,12 +56,12 @@ pub struct CliOverrides {
     /// Rate limit time window in seconds
     #[arg(long)]
     pub rate_limit_window_secs: Option<u64>,
-    /// Minimum TLS version (tls12, tls13)
-    #[arg(long)]
-    pub tls_min_version: Option<String>,
-    /// Maximum TLS version (tls12, tls13)
-    #[arg(long)]
-    pub tls_max_version: Option<String>,
+    /// Minimum TLS version
+    #[arg(long, value_enum)]
+    pub tls_min_version: Option<crate::TlsVersion>,
+    /// Maximum TLS version
+    #[arg(long, value_enum)]
+    pub tls_max_version: Option<crate::TlsVersion>,
     /// Path to CA certificate for client authentication (mTLS)
     #[arg(long)]
     pub tls_client_ca: Option<String>,
@@ -80,9 +80,9 @@ pub struct CliOverrides {
     /// Enable WebSocket transport (default true)
     #[arg(long)]
     pub ws_enabled: Option<bool>,
-    /// WebSocket mode: mixed | split
-    #[arg(long)]
-    pub ws_mode: Option<String>,
+    /// WebSocket mode
+    #[arg(long, value_enum)]
+    pub ws_mode: Option<crate::WebSocketMode>,
     /// WebSocket path
     #[arg(long)]
     pub ws_path: Option<String>,
@@ -177,11 +177,11 @@ pub fn apply_overrides(config: &mut Config, overrides: &CliOverrides) {
         rl.window_secs = window;
     }
     // TLS version overrides
-    if let Some(v) = &overrides.tls_min_version {
-        config.tls.min_version = v.clone();
+    if let Some(v) = overrides.tls_min_version {
+        config.tls.min_version = v;
     }
-    if let Some(v) = &overrides.tls_max_version {
-        config.tls.max_version = v.clone();
+    if let Some(v) = overrides.tls_max_version {
+        config.tls.max_version = v;
     }
     if let Some(v) = &overrides.tls_client_ca {
         config.tls.client_ca = Some(v.clone());
@@ -217,8 +217,8 @@ pub fn apply_overrides(config: &mut Config, overrides: &CliOverrides) {
     if let Some(v) = overrides.ws_enabled {
         config.websocket.enabled = v;
     }
-    if let Some(v) = &overrides.ws_mode {
-        config.websocket.mode = v.clone();
+    if let Some(v) = overrides.ws_mode {
+        config.websocket.mode = v;
     }
     if let Some(v) = &overrides.ws_path {
         config.websocket.path = v.clone();

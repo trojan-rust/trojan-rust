@@ -4,7 +4,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::config::{AnalyticsConfig, AnalyticsPrivacyConfig};
+use crate::config::{AnalyticsConfig, AnalyticsPrivacyConfig, GeoPrecision};
 use tokio::sync::mpsc;
 use tracing::debug;
 
@@ -174,15 +174,10 @@ impl ConnectionEventBuilder {
         self
     }
 
-    /// Set GeoIP fields based on lookup result and privacy precision.
-    ///
-    /// Precision levels:
-    /// - `"city"`: fill all geo fields (country, region, city, ASN, org, lat/lon)
-    /// - `"country"`: fill only country code
-    /// - `"none"` or other: no-op
-    pub fn geo(mut self, result: trojan_core::geo::GeoResult, precision: &str) -> Self {
+    /// Keep as much of a GeoIP lookup as the privacy setting allows.
+    pub fn geo(mut self, result: trojan_core::geo::GeoResult, precision: GeoPrecision) -> Self {
         match precision {
-            "city" => {
+            GeoPrecision::City => {
                 self.event.peer_country = result.country;
                 self.event.peer_region = result.region;
                 self.event.peer_city = result.city;
@@ -191,10 +186,10 @@ impl ConnectionEventBuilder {
                 self.event.peer_longitude = result.longitude;
                 self.event.peer_latitude = result.latitude;
             }
-            "country" => {
+            GeoPrecision::Country => {
                 self.event.peer_country = result.country;
             }
-            _ => {} // "none" or unknown: no-op
+            GeoPrecision::None => {}
         }
         self
     }
@@ -294,7 +289,7 @@ mod tests {
             latitude: 34.05,
         };
 
-        let builder = builder.geo(geo, "city");
+        let builder = builder.geo(geo, GeoPrecision::City);
         assert_eq!(builder.event.peer_country, "US");
         assert_eq!(builder.event.peer_region, "California");
         assert_eq!(builder.event.peer_city, "Los Angeles");
@@ -319,7 +314,7 @@ mod tests {
             latitude: 31.23,
         };
 
-        let builder = builder.geo(geo, "country");
+        let builder = builder.geo(geo, GeoPrecision::Country);
         assert_eq!(builder.event.peer_country, "CN");
         assert!(builder.event.peer_region.is_empty());
         assert!(builder.event.peer_city.is_empty());
@@ -341,7 +336,7 @@ mod tests {
             latitude: 35.69,
         };
 
-        let builder = builder.geo(geo, "none");
+        let builder = builder.geo(geo, GeoPrecision::None);
         assert!(builder.event.peer_country.is_empty());
         assert!(builder.event.peer_region.is_empty());
         assert_eq!(builder.event.peer_asn, 0);

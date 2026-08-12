@@ -94,10 +94,6 @@ pub const DEFAULT_POOL_FILL_DELAY_MS: u64 = 50;
 // TLS Defaults
 // ============================================================================
 
-/// Default minimum TLS version.
-pub const DEFAULT_TLS_MIN_VERSION: &str = "tls12";
-/// Default maximum TLS version.
-pub const DEFAULT_TLS_MAX_VERSION: &str = "tls13";
 /// Default TLS handshake timeout in seconds.
 pub const DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 /// Number of TLS sessions retained for stateful (session-ID) resumption.
@@ -113,8 +109,6 @@ pub const DEFAULT_TLS_SESSION_CACHE_SIZE: usize = 4096;
 
 /// Default WebSocket enabled.
 pub const DEFAULT_WS_ENABLED: bool = false;
-/// Default WebSocket mode: "mixed" or "split".
-pub const DEFAULT_WS_MODE: &str = "mixed";
 /// Default WebSocket path.
 pub const DEFAULT_WS_PATH: &str = "/";
 /// Default max WebSocket frame size.

@@ -28,6 +28,6 @@ pub use trojan_server as server;
 /// Prelude module for convenient imports.
 pub mod prelude {
     pub use trojan_auth::{AuthBackend, MemoryAuth, ReloadableAuth};
-    pub use trojan_config::{Config, load_config, validate_config};
+    pub use trojan_config::{Config, load_config, validate_auth_source, validate_config};
     pub use trojan_server::{CancellationToken, ServerError, run, run_with_shutdown};
 }

@@ -180,7 +180,7 @@ where
     A: AuthBackend + ?Sized,
 {
     #[cfg(feature = "ws")]
-    if state.websocket.enabled && state.websocket.mode == "mixed" {
+    if state.websocket.enabled && state.websocket.mode == trojan_config::WebSocketMode::Mixed {
         return handle_conn_mixed_ws(stream, state, auth, conn).await;
     }
     handle_trojan_stream(stream, BytesMut::new(), state, auth, conn).await
@@ -356,7 +356,7 @@ where
                         }
                         #[cfg(feature = "geoip")]
                         if let Some(geo) = analytics_geo {
-                            builder = builder.geo(geo, &collector.privacy().geo_precision);
+                            builder = builder.geo(geo, collector.privacy().geo_precision);
                         }
                         Some(builder)
                     });

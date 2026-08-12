@@ -32,7 +32,7 @@ use tokio_rustls::TlsConnector;
 use trojan_auth::{MemoryAuth, sha224_hex};
 use trojan_config::{
     AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TcpConfig, TlsConfig,
-    WebSocketConfig,
+    TlsVersion, WebSocketConfig,
 };
 use trojan_proto::{
     AddressRef, CMD_CONNECT, CMD_UDP_ASSOCIATE, HostRef, write_request_header, write_udp_packet,
@@ -168,7 +168,7 @@ impl TestServer {
     async fn start(fallback_addr: SocketAddr) -> Self {
         use trojan_auth::MemoryAuth;
         use trojan_config::{
-            AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TlsConfig,
+            AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TlsConfig, TlsVersion,
         };
 
         let password = "test_password_123".to_string();
@@ -229,8 +229,8 @@ impl TestServer {
                 cert: cert_path.to_string_lossy().to_string(),
                 key: key_path.to_string_lossy().to_string(),
                 alpn: vec![],
-                min_version: "tls12".to_string(),
-                max_version: "tls13".to_string(),
+                min_version: TlsVersion::Tls12,
+                max_version: TlsVersion::Tls13,
                 client_ca: None,
                 cipher_suites: vec![],
             },
@@ -420,7 +420,7 @@ async fn test_fallback_on_non_trojan_traffic() {
 async fn test_graceful_shutdown() {
     use trojan_auth::MemoryAuth;
     use trojan_config::{
-        AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TlsConfig,
+        AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TlsConfig, TlsVersion,
     };
     use trojan_server::{CancellationToken, run_with_shutdown};
 
@@ -487,8 +487,8 @@ async fn test_graceful_shutdown() {
             cert: cert_path.to_string_lossy().to_string(),
             key: key_path.to_string_lossy().to_string(),
             alpn: vec![],
-            min_version: "tls12".to_string(),
-            max_version: "tls13".to_string(),
+            min_version: TlsVersion::Tls12,
+            max_version: TlsVersion::Tls13,
             client_ca: None,
             cipher_suites: vec![],
         },
@@ -587,7 +587,7 @@ async fn test_graceful_shutdown() {
 async fn test_max_connections_limit() {
     use trojan_auth::MemoryAuth;
     use trojan_config::{
-        AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TlsConfig,
+        AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TlsConfig, TlsVersion,
     };
     use trojan_server::{CancellationToken, run_with_shutdown};
 
@@ -654,8 +654,8 @@ async fn test_max_connections_limit() {
             cert: cert_path.to_string_lossy().to_string(),
             key: key_path.to_string_lossy().to_string(),
             alpn: vec![],
-            min_version: "tls12".to_string(),
-            max_version: "tls13".to_string(),
+            min_version: TlsVersion::Tls12,
+            max_version: TlsVersion::Tls13,
             client_ca: None,
             cipher_suites: vec![],
         },
@@ -749,6 +749,7 @@ async fn test_rate_limiting() {
     use trojan_auth::MemoryAuth;
     use trojan_config::{
         AuthConfig, Config, LoggingConfig, MetricsConfig, RateLimitConfig, ServerConfig, TlsConfig,
+        TlsVersion,
     };
     use trojan_server::CancellationToken;
 
@@ -809,8 +810,8 @@ async fn test_rate_limiting() {
             cert: cert_path.to_string_lossy().to_string(),
             key: key_path.to_string_lossy().to_string(),
             alpn: vec![],
-            min_version: "tls12".to_string(),
-            max_version: "tls13".to_string(),
+            min_version: TlsVersion::Tls12,
+            max_version: TlsVersion::Tls13,
             client_ca: None,
             cipher_suites: vec![],
         },
@@ -888,7 +889,8 @@ async fn test_rate_limiting() {
 async fn test_tls13_only() {
     use trojan_auth::MemoryAuth;
     use trojan_config::{
-        AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TlsConfig, WebSocketConfig,
+        AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TlsConfig, TlsVersion,
+        WebSocketConfig,
     };
     use trojan_server::CancellationToken;
 
@@ -947,8 +949,8 @@ async fn test_tls13_only() {
             cert: cert_path.to_string_lossy().to_string(),
             key: key_path.to_string_lossy().to_string(),
             alpn: vec![],
-            min_version: "tls13".to_string(),
-            max_version: "tls13".to_string(),
+            min_version: TlsVersion::Tls13,
+            max_version: TlsVersion::Tls13,
             client_ca: None,
             cipher_suites: vec![],
         },
@@ -1149,8 +1151,8 @@ async fn test_udp_idle_timeout() {
             cert: cert_path.to_string_lossy().to_string(),
             key: key_path.to_string_lossy().to_string(),
             alpn: vec![],
-            min_version: "tls12".to_string(),
-            max_version: "tls13".to_string(),
+            min_version: TlsVersion::Tls12,
+            max_version: TlsVersion::Tls13,
             client_ca: None,
             cipher_suites: vec![],
         },
@@ -1396,8 +1398,8 @@ async fn test_tcp_idle_timeout() {
             cert: cert_path.to_string_lossy().to_string(),
             key: key_path.to_string_lossy().to_string(),
             alpn: vec![],
-            min_version: "tls12".to_string(),
-            max_version: "tls13".to_string(),
+            min_version: TlsVersion::Tls12,
+            max_version: TlsVersion::Tls13,
             client_ca: None,
             cipher_suites: vec![],
         },
@@ -2312,8 +2314,8 @@ mod multi_worker_tests {
                     cert: pki.cert_path.to_string_lossy().into_owned(),
                     key: pki.key_path.to_string_lossy().into_owned(),
                     alpn: vec![],
-                    min_version: "tls12".to_string(),
-                    max_version: "tls13".to_string(),
+                    min_version: TlsVersion::Tls12,
+                    max_version: TlsVersion::Tls13,
                     client_ca: None,
                     cipher_suites: vec![],
                 },
@@ -2594,8 +2596,8 @@ mod config_surface_tests {
                     cert: cert_path.to_string_lossy().into_owned(),
                     key: key_path.to_string_lossy().into_owned(),
                     alpn: vec![],
-                    min_version: "tls12".to_string(),
-                    max_version: "tls13".to_string(),
+                    min_version: TlsVersion::Tls12,
+                    max_version: TlsVersion::Tls13,
                     client_ca: None,
                     cipher_suites: vec![],
                 },
@@ -2831,7 +2833,7 @@ mod config_surface_tests {
     async fn test_cipher_suite_restriction_is_honoured() {
         let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
         let server = ConfiguredServer::start(fallback.addr, |config, _dir| {
-            config.tls.min_version = "tls13".to_string();
+            config.tls.min_version = TlsVersion::Tls13;
             config.tls.cipher_suites = vec!["TLS13_CHACHA20_POLY1305_SHA256".to_string()];
         })
         .await;
@@ -3222,6 +3224,7 @@ mod config_surface_tests {
 mod websocket_tests {
     use super::*;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use trojan_config::WebSocketMode;
     use trojan_server::ws::WsIo;
     use trojan_server::{CancellationToken, run_with_shutdown};
 
@@ -3296,8 +3299,8 @@ mod websocket_tests {
                     cert: cert_path.to_string_lossy().into_owned(),
                     key: key_path.to_string_lossy().into_owned(),
                     alpn: vec![],
-                    min_version: "tls12".to_string(),
-                    max_version: "tls13".to_string(),
+                    min_version: TlsVersion::Tls12,
+                    max_version: TlsVersion::Tls13,
                     client_ca: None,
                     cipher_suites: vec![],
                 },
@@ -3358,10 +3361,10 @@ mod websocket_tests {
         }
     }
 
-    fn ws_config(mode: &str, path: &str) -> WebSocketConfig {
+    fn ws_config(mode: WebSocketMode, path: &str) -> WebSocketConfig {
         WebSocketConfig {
             enabled: true,
-            mode: mode.to_string(),
+            mode,
             path: path.to_string(),
             host: None,
             listen: None,
@@ -3401,7 +3404,7 @@ mod websocket_tests {
     #[tokio::test]
     async fn test_ws_mixed_upgrade_relays_trojan() {
         let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
-        let server = WsTestServer::start(fallback.addr, ws_config("mixed", "/")).await;
+        let server = WsTestServer::start(fallback.addr, ws_config(WebSocketMode::Mixed, "/")).await;
         let addr = server.addr;
         relay_over_websocket(&server, addr, "/").await;
     }
@@ -3412,7 +3415,7 @@ mod websocket_tests {
     async fn test_ws_mixed_raw_trojan_still_works() {
         let echo = MockEchoServer::start();
         let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
-        let server = WsTestServer::start(fallback.addr, ws_config("mixed", "/")).await;
+        let server = WsTestServer::start(fallback.addr, ws_config(WebSocketMode::Mixed, "/")).await;
 
         let mut tls = server.tls(server.addr).await;
         let mut header = connect_header(&server.hash(), echo.addr);
@@ -3435,7 +3438,7 @@ mod websocket_tests {
     #[tokio::test]
     async fn test_ws_mixed_plain_http_falls_back() {
         let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback OK");
-        let server = WsTestServer::start(fallback.addr, ws_config("mixed", "/")).await;
+        let server = WsTestServer::start(fallback.addr, ws_config(WebSocketMode::Mixed, "/")).await;
 
         let mut tls = server.tls(server.addr).await;
         tls.write_all(b"GET /some/ordinary/page HTTP/1.1\r\nHost: localhost\r\n\r\n")
@@ -3456,7 +3459,8 @@ mod websocket_tests {
     #[tokio::test]
     async fn test_ws_mixed_wrong_path_rejected() {
         let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
-        let server = WsTestServer::start(fallback.addr, ws_config("mixed", "/secret")).await;
+        let server =
+            WsTestServer::start(fallback.addr, ws_config(WebSocketMode::Mixed, "/secret")).await;
 
         let tls = server.tls(server.addr).await;
         let request = "ws://localhost/wrong-path".into_client_request().unwrap();
@@ -3472,7 +3476,8 @@ mod websocket_tests {
     #[tokio::test]
     async fn test_ws_mixed_configured_path_accepted() {
         let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
-        let server = WsTestServer::start(fallback.addr, ws_config("mixed", "/secret")).await;
+        let server =
+            WsTestServer::start(fallback.addr, ws_config(WebSocketMode::Mixed, "/secret")).await;
         let addr = server.addr;
         // The query string is stripped before matching.
         relay_over_websocket(&server, addr, "/secret?token=abc").await;
@@ -3482,7 +3487,7 @@ mod websocket_tests {
     #[tokio::test]
     async fn test_ws_split_upgrade_relays_trojan() {
         let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
-        let server = WsTestServer::start(fallback.addr, ws_config("split", "/")).await;
+        let server = WsTestServer::start(fallback.addr, ws_config(WebSocketMode::Split, "/")).await;
         let ws_addr = server.ws_addr;
         relay_over_websocket(&server, ws_addr, "/").await;
     }
@@ -3493,7 +3498,7 @@ mod websocket_tests {
     async fn test_ws_split_rejects_non_websocket() {
         let echo = MockEchoServer::start();
         let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
-        let server = WsTestServer::start(fallback.addr, ws_config("split", "/")).await;
+        let server = WsTestServer::start(fallback.addr, ws_config(WebSocketMode::Split, "/")).await;
 
         let mut tls = server.tls(server.ws_addr).await;
         let header = connect_header(&server.hash(), echo.addr);
@@ -3518,7 +3523,7 @@ mod websocket_tests {
     async fn test_ws_split_main_port_still_raw_trojan() {
         let echo = MockEchoServer::start();
         let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
-        let server = WsTestServer::start(fallback.addr, ws_config("split", "/")).await;
+        let server = WsTestServer::start(fallback.addr, ws_config(WebSocketMode::Split, "/")).await;
 
         let mut tls = server.tls(server.addr).await;
         let mut header = connect_header(&server.hash(), echo.addr);
@@ -3639,8 +3644,8 @@ mod rules_tests {
                     cert: cert_path.to_string_lossy().to_string(),
                     key: key_path.to_string_lossy().to_string(),
                     alpn: vec![],
-                    min_version: "tls12".to_string(),
-                    max_version: "tls13".to_string(),
+                    min_version: TlsVersion::Tls12,
+                    max_version: TlsVersion::Tls13,
                     client_ca: None,
                     cipher_suites: vec![],
                 },

@@ -16,7 +16,7 @@ use trojan_client::config::{ClientConfig, ClientSettings, ClientTlsConfig};
 use trojan_client::socks5::udp::{parse_socks5_udp, write_socks5_udp};
 use trojan_config::{
     AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TcpConfig, TlsConfig,
-    WebSocketConfig,
+    TlsVersion, WebSocketConfig,
 };
 use trojan_proto::{AddressRef, HostRef};
 
@@ -231,8 +231,8 @@ impl TestServer {
                 cert: cert_path.to_string_lossy().to_string(),
                 key: key_path.to_string_lossy().to_string(),
                 alpn: vec![],
-                min_version: "tls12".to_string(),
-                max_version: "tls13".to_string(),
+                min_version: TlsVersion::Tls12,
+                max_version: TlsVersion::Tls13,
                 client_ca: None,
                 cipher_suites: vec![],
             },
@@ -594,8 +594,8 @@ mod rules_e2e {
                     cert: cert_path.to_string_lossy().to_string(),
                     key: key_path.to_string_lossy().to_string(),
                     alpn: vec![],
-                    min_version: "tls12".to_string(),
-                    max_version: "tls13".to_string(),
+                    min_version: TlsVersion::Tls12,
+                    max_version: TlsVersion::Tls13,
                     client_ca: None,
                     cipher_suites: vec![],
                 },

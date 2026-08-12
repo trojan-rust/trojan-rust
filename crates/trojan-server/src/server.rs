@@ -18,7 +18,9 @@ use crate::state::ServerState;
 use crate::tls::load_tls_config;
 use crate::util::{ConnectionTracker, create_listener};
 use trojan_auth::AuthBackend;
-use trojan_config::Config;
+#[cfg(feature = "ws")]
+use trojan_config::WebSocketMode;
+use trojan_config::{Config, validate_config};
 use trojan_core::defaults;
 use trojan_dns::DnsResolver;
 use trojan_metrics::NodeStats;
@@ -46,6 +48,14 @@ pub async fn run_with_stats(
     stats: Arc<NodeStats>,
     shutdown: CancellationToken,
 ) -> Result<(), ServerError> {
+    // Every way of starting a server funnels through here, so this is the one
+    // place the checks cannot be skipped. They used to sit in the CLI, which
+    // left the panel agent — it deserializes a config the panel pushed and
+    // starts the server directly — running whatever it was handed: a zero
+    // idle timeout, a header limit below the minimum, a UDP buffer smaller
+    // than one packet. The node came up and then behaved wrongly.
+    validate_config(&config).map_err(|e| ServerError::Config(e.to_string()))?;
+
     let tls_config = load_tls_config(&config.tls)?;
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
 
@@ -313,7 +323,7 @@ pub async fn run_with_stats(
     // The dedicated WebSocket port, when `split` mode asks for one, runs
     // alongside the main listener rather than in place of it.
     #[cfg(feature = "ws")]
-    if config.websocket.enabled && config.websocket.mode == "split" {
+    if config.websocket.enabled && config.websocket.mode == WebSocketMode::Split {
         let ws_addr: SocketAddr = config
             .websocket
             .listen
