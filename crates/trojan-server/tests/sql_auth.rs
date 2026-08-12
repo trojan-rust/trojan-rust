@@ -283,10 +283,9 @@ impl TestServer {
             .await
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "relay timeout"))??;
         assert_eq!(&echoed[..], payload);
-        // Close cleanly: on an aborted session the relay ends in error and the
-        // handler's `?` skips traffic accounting entirely, which would make
-        // the persistence test below fail for an unrelated reason. See the
-        // ignored test in tests/http_auth.rs.
+        // Close cleanly, matching how a well-behaved client ends a session.
+        // Aborted sessions are accounted for too — see
+        // `http_auth_reports_traffic_after_abrupt_disconnect`.
         tls.shutdown().await?;
         Ok(())
     }

@@ -67,17 +67,24 @@ where
         counters.add_to_target(payload_bytes);
         debug!(peer = %peer, target = %target, bytes = payload.len(), "initial payload sent");
     }
-    let stats = relay_with_counters(
+    let result = relay_with_counters(
         stream,
         outbound,
         state.tcp_idle_timeout,
         state.relay_buffer_size,
         &counters,
     )
-    .await?;
-    debug!(peer = %peer, target = %target, "relay finished");
+    .await;
 
-    record_traffic_for_user(&*auth, user_id, payload_bytes + stats.total(), peer).await;
+    // Account for the bytes however the relay ended. A client that vanishes
+    // without a close_notify — a killed app, a dropped mobile link, an RST —
+    // makes this an error, and billing only the success path let that traffic
+    // through free on a server enforcing `traffic_limit`. The counters carry a
+    // running total precisely so this does not depend on `RelayStats`.
+    record_traffic_for_user(&*auth, user_id, counters.total_bytes(), peer).await;
+
+    result?;
+    debug!(peer = %peer, target = %target, "relay finished");
 
     Ok(())
 }

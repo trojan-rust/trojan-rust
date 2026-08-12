@@ -391,22 +391,15 @@ async fn http_auth_admits_known_password_and_refuses_unknown() {
     );
 }
 
-/// Traffic should still be accounted when a client vanishes mid-session.
+/// Traffic is accounted even when a client vanishes mid-session.
 ///
-/// KNOWN GAP — ignored until the accounting path is fixed.
-///
-/// `handle_connect` does `relay(..).await?` and only records traffic on the
-/// success path, and `relay_bidirectional` returns `io::Result<RelayStats>` —
-/// so on error the byte counts are dropped along with the stats. A client that
-/// disappears without a TLS close_notify (a killed app, a dropped mobile link,
-/// an RST) therefore transfers data that is never billed, which on a server
-/// enforcing `traffic_limit` is a way to transfer for free.
-///
-/// The fix does not need a signature change: `RelayCounters` already sees every
-/// flush, so it can carry a running total the handler reads regardless of how
-/// the relay ended.
+/// A client that disappears without a TLS close_notify — a killed app, a
+/// dropped mobile link, an RST — ends the relay in error. Billing only the
+/// success path let that traffic through free on a server enforcing
+/// `traffic_limit`, and an aborted connection is the common case rather than
+/// the exception. `RelayCounters` carries a running total so the handler can
+/// settle up however the relay ended.
 #[tokio::test]
-#[ignore = "known gap: an aborted connection loses its traffic accounting"]
 async fn http_auth_reports_traffic_after_abrupt_disconnect() {
     let echo = MockEchoServer::start();
     let worker = MockAuthWorker::start();

@@ -4,6 +4,8 @@
 //! including connection counts, bytes transferred, and error rates.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
 use metrics::{Counter, counter, gauge, histogram};
@@ -339,6 +341,16 @@ pub struct RelayCounters {
     target_sent: Option<Counter>,
     /// Per-target bytes, `direction="received"` (target → client).
     target_received: Option<Counter>,
+    /// Bytes reported in either direction so far.
+    ///
+    /// The relay returns its `RelayStats` only on success, so a session that
+    /// ends in error takes its byte counts with it. Accumulating here instead
+    /// lets a caller settle the account however the relay ended — which is
+    /// what traffic-limited deployments need, since an aborted connection is
+    /// the common case, not the exception.
+    ///
+    /// Shared across clones so they observe one running total.
+    total: Arc<AtomicU64>,
 }
 
 impl RelayCounters {
@@ -349,6 +361,7 @@ impl RelayCounters {
             sent: counter!(BYTES_SENT_TOTAL),
             target_sent: None,
             target_received: None,
+            total: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -377,12 +390,22 @@ impl RelayCounters {
                 "target" => target.to_owned(),
                 "direction" => "received"
             )),
+            total: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Bytes reported in either direction since this handle was built.
+    ///
+    /// Valid whether the relay succeeded or failed, unlike `RelayStats`.
+    #[inline]
+    pub fn total_bytes(&self) -> u64 {
+        self.total.load(Ordering::Relaxed)
     }
 
     /// Record bytes flowing client → target.
     #[inline]
     pub fn add_to_target(&self, bytes: u64) {
+        self.total.fetch_add(bytes, Ordering::Relaxed);
         self.received.increment(bytes);
         if let Some(ref per_target) = self.target_sent {
             per_target.increment(bytes);
@@ -392,6 +415,7 @@ impl RelayCounters {
     /// Record bytes flowing target → client.
     #[inline]
     pub fn add_to_client(&self, bytes: u64) {
+        self.total.fetch_add(bytes, Ordering::Relaxed);
         self.sent.increment(bytes);
         if let Some(ref per_target) = self.target_received {
             per_target.increment(bytes);

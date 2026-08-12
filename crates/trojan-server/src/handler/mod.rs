@@ -437,18 +437,20 @@ where
         counters.add_to_target(payload_bytes);
     }
 
-    let stats = crate::relay::relay_with_counters(
+    let result = crate::relay::relay_with_counters(
         stream,
         outbound_stream,
         state.tcp_idle_timeout,
         state.relay_buffer_size,
         &counters,
     )
-    .await?;
+    .await;
 
+    // Settle the account however the relay ended — see `handler::tcp`.
+    tcp::record_traffic_for_user(&*auth, user_id, counters.total_bytes(), peer).await;
+
+    result?;
     debug!(peer = %peer, target = ?address, "outbound relay finished");
-
-    tcp::record_traffic_for_user(&*auth, user_id, payload_bytes + stats.total(), peer).await;
 
     Ok(())
 }
