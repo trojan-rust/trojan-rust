@@ -91,6 +91,9 @@ sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
     "any",
 ] }
+# Generates a real .mmdb in-test, so the geoip paths can be exercised without
+# committing a binary fixture or depending on a MaxMind download.
+maxminddb-writer = "0.1"
 ctor.workspace = true
 rcgen.workspace = true
 tempfile.workspace = true
