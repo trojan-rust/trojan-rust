@@ -21,7 +21,7 @@ collector = ["dep:trojan-core", "dep:clickhouse", "dep:time", "dep:tokio", "dep:
 [dependencies]
 serde.workspace = true
 # Only for `GeoipConfig`; the rule engine and GeoIP loader stay out.
-trojan-rules = { version = "0.12.0", path = "../trojan-rules", default-features = false }
+trojan-rules = { version = "0.13.0", path = "../trojan-rules", default-features = false }
 
 trojan-core = { workspace = true, optional = true }
 clickhouse = { version = "0.15", features = ["inserter", "time"], optional = true }
