@@ -4140,7 +4140,7 @@ dependencies = [
 
 [[package]]
 name = "trojan"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "clap",
  "flate2",
@@ -4172,7 +4172,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-agent"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "bincode",
  "clap",
@@ -4199,7 +4199,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-analytics"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "clickhouse",
  "rand 0.10.1",
@@ -4214,7 +4214,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-auth"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "bincode",
@@ -4236,7 +4236,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-cert"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "clap",
  "rcgen",
@@ -4246,7 +4246,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-client"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "bytes",
  "clap",
@@ -4277,7 +4277,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-config"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "clap",
  "json_comments",
@@ -4292,7 +4292,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-core"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "bytes",
  "criterion",
@@ -4303,7 +4303,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-dash"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "axum",
  "base64",
@@ -4331,7 +4331,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-ddns"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "cloudflare",
  "reqwest",
@@ -4344,7 +4344,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-dns"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "hickory-resolver",
  "serde",
@@ -4355,7 +4355,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-lb"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -4364,7 +4364,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-metrics"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "axum",
  "criterion",
@@ -4376,7 +4376,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-proto"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "bytes",
  "criterion",
@@ -4384,7 +4384,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-protocol"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "bincode",
  "serde",
@@ -4393,7 +4393,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-relay"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "clap",
  "hex",
@@ -4415,14 +4415,14 @@ dependencies = [
 
 [[package]]
 name = "trojan-rs"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "trojan",
 ]
 
 [[package]]
 name = "trojan-rules"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "aho-corasick",
  "arc-swap",
@@ -4441,7 +4441,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-server"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -4492,7 +4492,7 @@ dependencies = [
 
 [[package]]
 name = "trojan-transport"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "rcgen",
  "rustls",
