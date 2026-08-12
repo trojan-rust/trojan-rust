@@ -2505,6 +2505,335 @@ mod multi_worker_tests {
 }
 
 // ============================================================================
+// WebSocket Transport Tests
+// ============================================================================
+//
+// The server can carry trojan inside WebSocket frames, either sharing the TLS
+// port with raw trojan ("mixed", where the first bytes decide) or on a
+// dedicated port ("split"). Both go through a different read path than raw
+// trojan — protocol sniffing, an HTTP upgrade, then frame-based I/O — and
+// neither had any end-to-end coverage. The relay-crate ws tests exercise
+// `trojan-transport`, which is a separate implementation.
+
+#[cfg(feature = "ws")]
+mod websocket_tests {
+    use super::*;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use trojan_server::ws::WsIo;
+    use trojan_server::{CancellationToken, run_with_shutdown};
+
+    const PASSWORD: &str = "test_password_123";
+
+    struct WsTestServer {
+        addr: SocketAddr,
+        ws_addr: SocketAddr,
+        tls_connector: TlsConnector,
+        shutdown: CancellationToken,
+        _handle: tokio::task::JoinHandle<()>,
+        _temp_dir: tempfile::TempDir,
+    }
+
+    impl WsTestServer {
+        /// `ws` is applied verbatim, except that `listen` is filled in with a
+        /// reserved port so split mode has somewhere to bind.
+        async fn start(fallback_addr: SocketAddr, mut ws: WebSocketConfig) -> Self {
+            let (cert_pem, key_pem) = generate_test_certs();
+            let temp_dir = tempfile::Builder::new()
+                .prefix("trojan-ws-test-")
+                .tempdir()
+                .unwrap();
+            let cert_path = temp_dir.path().join("cert.pem");
+            let key_path = temp_dir.path().join("key.pem");
+            fs::write(&cert_path, &cert_pem).unwrap();
+            fs::write(&key_path, &key_pem).unwrap();
+
+            let cert_der = rustls_pemfile::certs(&mut cert_pem.as_bytes())
+                .next()
+                .unwrap()
+                .unwrap()
+                .to_vec();
+            let mut root_store = RootCertStore::empty();
+            root_store.add(CertificateDer::from(cert_der)).unwrap();
+            let tls_connector = TlsConnector::from(Arc::new(
+                ClientConfig::builder()
+                    .with_root_certificates(root_store)
+                    .with_no_client_auth(),
+            ));
+
+            // Reserve both ports before either is bound.
+            let main_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = main_listener.local_addr().unwrap();
+            let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let ws_addr = ws_listener.local_addr().unwrap();
+            drop(main_listener);
+            drop(ws_listener);
+            ws.listen = Some(ws_addr.to_string());
+
+            let config = Config {
+                server: ServerConfig {
+                    listen: addr.to_string(),
+                    fallback: fallback_addr.to_string(),
+                    tcp_idle_timeout_secs: 30,
+                    udp_timeout_secs: 30,
+                    max_udp_payload: 8192,
+                    max_udp_buffer_bytes: 65536,
+                    max_header_bytes: 8192,
+                    max_connections: None,
+                    rate_limit: None,
+                    fallback_pool: None,
+                    resource_limits: None,
+                    tcp: TcpConfig::default(),
+                    outbounds: Default::default(),
+                    rule_providers: Default::default(),
+                    rules: Default::default(),
+                    geoip: None,
+                },
+                tls: TlsConfig {
+                    cert: cert_path.to_string_lossy().into_owned(),
+                    key: key_path.to_string_lossy().into_owned(),
+                    alpn: vec![],
+                    min_version: "tls12".to_string(),
+                    max_version: "tls13".to_string(),
+                    client_ca: None,
+                    cipher_suites: vec![],
+                },
+                auth: AuthConfig {
+                    passwords: vec![PASSWORD.to_string()],
+                    users: vec![],
+                    ..Default::default()
+                },
+                websocket: ws,
+                metrics: MetricsConfig {
+                    listen: None,
+                    ..Default::default()
+                },
+                analytics: AnalyticsConfig::default(),
+                logging: LoggingConfig {
+                    level: Some("warn".to_string()),
+                    ..Default::default()
+                },
+                dns: Default::default(),
+                ddns: Default::default(),
+            };
+
+            let auth = MemoryAuth::from_passwords(&config.auth.passwords);
+            let shutdown = CancellationToken::new();
+            let token = shutdown.clone();
+            let handle = tokio::spawn(async move {
+                let _ = run_with_shutdown(config, auth, token).await;
+            });
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            Self {
+                addr,
+                ws_addr,
+                tls_connector,
+                shutdown,
+                _handle: handle,
+                _temp_dir: temp_dir,
+            }
+        }
+
+        fn hash(&self) -> String {
+            sha224_hex(PASSWORD)
+        }
+
+        async fn tls(
+            &self,
+            addr: SocketAddr,
+        ) -> tokio_rustls::client::TlsStream<tokio::net::TcpStream> {
+            let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let name = ServerName::try_from("localhost").unwrap();
+            self.tls_connector.connect(name, tcp).await.unwrap()
+        }
+    }
+
+    impl Drop for WsTestServer {
+        fn drop(&mut self) {
+            self.shutdown.cancel();
+        }
+    }
+
+    fn ws_config(mode: &str, path: &str) -> WebSocketConfig {
+        WebSocketConfig {
+            enabled: true,
+            mode: mode.to_string(),
+            path: path.to_string(),
+            host: None,
+            listen: None,
+            max_frame_bytes: 1 << 20,
+        }
+    }
+
+    /// Upgrade to WebSocket, then relay a payload through the tunnel and back.
+    async fn relay_over_websocket(server: &WsTestServer, addr: SocketAddr, path: &str) {
+        let echo = MockEchoServer::start();
+        let tls = server.tls(addr).await;
+
+        let request = format!("ws://localhost{path}")
+            .into_client_request()
+            .unwrap();
+        let (ws_stream, _response) = tokio_tungstenite::client_async(request, tls)
+            .await
+            .expect("websocket upgrade rejected");
+
+        let mut io = WsIo::new(ws_stream);
+        let mut header = connect_header(&server.hash(), echo.addr);
+        let payload = b"payload-over-websocket";
+        header.extend_from_slice(payload);
+
+        io.write_all(&header).await.unwrap();
+        io.flush().await.unwrap();
+
+        let mut echoed = vec![0u8; payload.len()];
+        tokio::time::timeout(Duration::from_secs(10), io.read_exact(&mut echoed))
+            .await
+            .expect("timed out relaying over websocket")
+            .unwrap();
+        assert_eq!(&echoed[..], payload);
+    }
+
+    /// Mixed mode: a WebSocket upgrade on the main TLS port carries trojan.
+    #[tokio::test]
+    async fn test_ws_mixed_upgrade_relays_trojan() {
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+        let server = WsTestServer::start(fallback.addr, ws_config("mixed", "/")).await;
+        let addr = server.addr;
+        relay_over_websocket(&server, addr, "/").await;
+    }
+
+    /// Mixed mode must still accept raw trojan on the same port — that is the
+    /// whole point of sniffing rather than committing to one framing.
+    #[tokio::test]
+    async fn test_ws_mixed_raw_trojan_still_works() {
+        let echo = MockEchoServer::start();
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+        let server = WsTestServer::start(fallback.addr, ws_config("mixed", "/")).await;
+
+        let mut tls = server.tls(server.addr).await;
+        let mut header = connect_header(&server.hash(), echo.addr);
+        let payload = b"raw-trojan-on-mixed-port";
+        header.extend_from_slice(payload);
+
+        tls.write_all(&header).await.unwrap();
+        tls.flush().await.unwrap();
+
+        let mut echoed = vec![0u8; payload.len()];
+        tokio::time::timeout(Duration::from_secs(10), tls.read_exact(&mut echoed))
+            .await
+            .expect("timed out on raw trojan over a mixed-mode port")
+            .unwrap();
+        assert_eq!(&echoed[..], payload);
+    }
+
+    /// Plain HTTP that is not an upgrade is ordinary cover traffic and must
+    /// reach the fallback, not be rejected.
+    #[tokio::test]
+    async fn test_ws_mixed_plain_http_falls_back() {
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback OK");
+        let server = WsTestServer::start(fallback.addr, ws_config("mixed", "/")).await;
+
+        let mut tls = server.tls(server.addr).await;
+        tls.write_all(b"GET /some/ordinary/page HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        tls.flush().await.unwrap();
+
+        let mut body = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), tls.read_to_end(&mut body))
+            .await
+            .expect("fallback read timeout")
+            .unwrap();
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("Fallback OK"), "unexpected body: {body:?}");
+    }
+
+    /// An upgrade on the wrong path is rejected rather than tunnelled.
+    #[tokio::test]
+    async fn test_ws_mixed_wrong_path_rejected() {
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+        let server = WsTestServer::start(fallback.addr, ws_config("mixed", "/secret")).await;
+
+        let tls = server.tls(server.addr).await;
+        let request = "ws://localhost/wrong-path".into_client_request().unwrap();
+        let result = tokio_tungstenite::client_async(request, tls).await;
+
+        assert!(
+            result.is_err(),
+            "an upgrade on an unconfigured path must not succeed"
+        );
+    }
+
+    /// The configured path is what gets accepted, including with a query.
+    #[tokio::test]
+    async fn test_ws_mixed_configured_path_accepted() {
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+        let server = WsTestServer::start(fallback.addr, ws_config("mixed", "/secret")).await;
+        let addr = server.addr;
+        // The query string is stripped before matching.
+        relay_over_websocket(&server, addr, "/secret?token=abc").await;
+    }
+
+    /// Split mode: WebSocket lives on its own port and carries trojan there.
+    #[tokio::test]
+    async fn test_ws_split_upgrade_relays_trojan() {
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+        let server = WsTestServer::start(fallback.addr, ws_config("split", "/")).await;
+        let ws_addr = server.ws_addr;
+        relay_over_websocket(&server, ws_addr, "/").await;
+    }
+
+    /// The split-mode port speaks WebSocket only; anything else is refused
+    /// rather than falling back or being treated as raw trojan.
+    #[tokio::test]
+    async fn test_ws_split_rejects_non_websocket() {
+        let echo = MockEchoServer::start();
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+        let server = WsTestServer::start(fallback.addr, ws_config("split", "/")).await;
+
+        let mut tls = server.tls(server.ws_addr).await;
+        let header = connect_header(&server.hash(), echo.addr);
+        tls.write_all(&header).await.unwrap();
+        tls.flush().await.unwrap();
+
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), tls.read_to_end(&mut response))
+            .await
+            .expect("read timeout on the websocket-only port")
+            .unwrap();
+
+        let response = String::from_utf8_lossy(&response);
+        assert!(
+            response.contains("400"),
+            "expected a 400 on the websocket-only port, got {response:?}"
+        );
+    }
+
+    /// Split mode leaves the main port speaking raw trojan.
+    #[tokio::test]
+    async fn test_ws_split_main_port_still_raw_trojan() {
+        let echo = MockEchoServer::start();
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+        let server = WsTestServer::start(fallback.addr, ws_config("split", "/")).await;
+
+        let mut tls = server.tls(server.addr).await;
+        let mut header = connect_header(&server.hash(), echo.addr);
+        let payload = b"raw-trojan-on-split-main-port";
+        header.extend_from_slice(payload);
+
+        tls.write_all(&header).await.unwrap();
+        tls.flush().await.unwrap();
+
+        let mut echoed = vec![0u8; payload.len()];
+        tokio::time::timeout(Duration::from_secs(10), tls.read_exact(&mut echoed))
+            .await
+            .expect("timed out on raw trojan over the split-mode main port")
+            .unwrap();
+        assert_eq!(&echoed[..], payload);
+    }
+}
+
+// ============================================================================
 // Rule-Based Routing Tests
 // ============================================================================
 
