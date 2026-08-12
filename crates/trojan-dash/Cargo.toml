@@ -1,0 +1,54 @@
+[package]
+name = "trojan-dash"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Dashboard service for trojan-rs — user management, node tokens, traffic accounting, subscriptions"
+keywords = ["trojan", "dashboard", "panel", "management"]
+categories = ["network-programming"]
+
+[dependencies]
+trojan-auth = { workspace = true, features = ["protocol"] }
+trojan-core.workspace = true
+
+axum.workspace = true
+base64 = "0.22"
+bincode.workspace = true
+clap.workspace = true
+getrandom = "0.3"
+percent-encoding = "2.3"
+serde.workspace = true
+serde_json.workspace = true
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "derive",
+] }
+subtle = "2"
+thiserror.workspace = true
+time.workspace = true
+tokio = { workspace = true, features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "signal",
+    "sync",
+] }
+tokio-util.workspace = true
+toml.workspace = true
+tower-http = { version = "0.6", features = ["fs"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+# Drives the node-facing protocol in tests the same way a real node does.
+trojan-auth = { workspace = true, features = ["http", "protocol"] }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

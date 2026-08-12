@@ -82,6 +82,7 @@ changelog_include = [
   "trojan-metrics",
   "trojan-analytics",
   "trojan-server",
+  "trojan-dash",
   "trojan-rs",
 ]
 git_tag_name = "v{{ version }}"
@@ -115,6 +116,10 @@ version_group = "workspace"
 
 [[package]]
 name = "trojan-server"
+version_group = "workspace"
+
+[[package]]
+name = "trojan-dash"
 version_group = "workspace"
 
 [[package]]

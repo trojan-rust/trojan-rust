@@ -13,7 +13,6 @@ categories = ["network-programming"]
 
 [workspace]
 resolver = "2"
-exclude = ["auth-worker"]
 members = [
     "crates/trojan-core",
     "crates/trojan-proto",
@@ -33,6 +32,7 @@ members = [
     "crates/trojan-agent",
     "crates/trojan-protocol",
     "crates/trojan-ddns",
+    "crates/trojan-dash",
 ]
 
 [workspace.package]
@@ -63,6 +63,7 @@ trojan-rules = { version = "0.10.1", path = "crates/trojan-rules" }
 trojan-agent = { version = "0.10.1", path = "crates/trojan-agent" }
 trojan-protocol = { version = "0.10.1", path = "crates/trojan-protocol" }
 trojan-ddns = { version = "0.10.1", path = "crates/trojan-ddns" }
+trojan-dash = { version = "0.10.1", path = "crates/trojan-dash" }
 
 # External dependencies (shared across crates)
 arc-swap = "1"
@@ -144,6 +145,7 @@ default = [
     "sql-postgres",
     "sql-tls-rustls",
     "agent",
+    "dash",
 ]
 cli = ["trojan-auth/cli", "dep:clap", "dep:tokio"]
 
@@ -166,6 +168,9 @@ upgrade = [
 
 # Panel agent
 agent = ["cli", "dep:trojan-agent"]
+
+# Dashboard service (users, node tokens, traffic, subscriptions)
+dash = ["cli", "dep:trojan-dash"]
 
 # Certificate management CLI
 cert = ["cli", "dep:trojan-cert"]
@@ -193,6 +198,7 @@ trojan-client.workspace = true
 trojan-relay.workspace = true
 trojan-cert = { workspace = true, optional = true }
 trojan-agent = { workspace = true, optional = true }
+trojan-dash = { workspace = true, optional = true }
 
 rustls.workspace = true
 

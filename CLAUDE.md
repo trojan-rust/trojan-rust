@@ -29,7 +29,7 @@ CI runs: check, fmt, clippy, test (linux/macos/windows), doc, MSRV (1.90).
 
 ## Architecture
 
-Cargo workspace with 13 crates. Rust 2024 edition, version 0.4.0.
+Cargo workspace with 19 crates plus the root `trojan` binary. Rust 2024 edition.
 
 **Three roles in the network:**
 - **Entry (A)** — accepts client SOCKS5 connections, builds multi-hop tunnel, does NOT parse Trojan protocol
@@ -46,8 +46,16 @@ Client → A(entry) → B1(relay) → ... → C(trojan-server) → Target
 trojan (unified CLI binary)
 ├── trojan-server ← trojan-core, trojan-proto, trojan-auth, trojan-config, trojan-metrics
 ├── trojan-client ← trojan-proto, trojan-auth, trojan-config
-└── trojan-relay  ← trojan-transport, trojan-lb, trojan-core, trojan-proto
+├── trojan-relay  ← trojan-transport, trojan-lb, trojan-core, trojan-proto
+└── trojan-dash   ← trojan-auth (protocol), trojan-core
 ```
+
+**Dashboard:** `trojan-dash` is the other end of `trojan-auth`'s HTTP backend —
+an axum + SQLite service holding users, node tokens, traffic and subscription
+templates. Both ends share one definition of the wire format
+(`trojan_auth::protocol`, behind the `protocol` feature), so the contract cannot
+drift. Its web UI lives in a separate repository and is served from `panel_dir`
+as static files.
 
 **Standalone utility crates (no trojan internal dependencies):**
 - `trojan-transport` — `TransportAcceptor`/`TransportConnector` traits + plain/TLS/WS implementations
@@ -79,6 +87,7 @@ trojan server -c config.toml        # exit node (trojan-server)
 trojan client -c client.toml        # SOCKS5 proxy client
 trojan entry -c entry.toml          # relay entry node
 trojan relay -c relay.toml          # relay middle node
+trojan dash -c dash.toml            # dashboard service (admin API + panel)
 trojan auth init --database sqlite://users.db
 trojan cert generate --domain example.com --output /etc/trojan
 ```

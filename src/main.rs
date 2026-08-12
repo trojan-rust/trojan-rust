@@ -58,6 +58,11 @@ enum Commands {
     #[command(name = "agent")]
     Agent(trojan_agent::AgentArgs),
 
+    /// Run the dashboard service.
+    #[cfg(feature = "dash")]
+    #[command(name = "dash")]
+    Dash(trojan_dash::DashArgs),
+
     /// Generate and manage TLS certificates.
     #[cfg(feature = "cert")]
     #[command(name = "cert")]
@@ -95,6 +100,8 @@ async fn main() -> ExitCode {
         Commands::Agent(args) => trojan_agent::cli::run(args)
             .await
             .map_err(|e| e.to_string()),
+        #[cfg(feature = "dash")]
+        Commands::Dash(args) => trojan_dash::cli::run(args).await.map_err(|e| e.to_string()),
         #[cfg(feature = "cert")]
         Commands::Cert(args) => trojan_cert::run(args).map_err(|e| e.to_string()),
         #[cfg(feature = "upgrade")]

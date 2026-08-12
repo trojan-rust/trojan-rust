@@ -42,14 +42,5 @@ logs/
 .DS_Store
 Thumbs.db
 
-# Cloudflare Workers
-wrangler.toml
-.dev.vars
-.wrangler/
-node_modules/
-build/
-dist/
-
-# wasm-pack output
-pkg/
-auth-worker/panel/dist/
+# trojan dash, when run from the repo root
+dash.db*
