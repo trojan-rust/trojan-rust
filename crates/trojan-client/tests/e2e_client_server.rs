@@ -588,7 +588,7 @@ mod rules_e2e {
                     rule_providers: Default::default(),
                     rules,
                     geoip: None,
-                proxy_protocol: Default::default(),
+                    proxy_protocol: Default::default(),
                 },
                 tls: TlsConfig {
                     cert: cert_path.to_string_lossy().to_string(),

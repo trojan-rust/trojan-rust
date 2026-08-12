@@ -3,12 +3,14 @@
 //! Sends periodic heartbeat and traffic messages to the panel
 //! via the WS send channel.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sysinfo::System;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
+use trojan_metrics::NodeStats;
 
 use crate::collector::TrafficCollector;
 use crate::protocol::AgentMessage;
@@ -20,6 +22,7 @@ use crate::protocol::AgentMessage;
 pub async fn run_reporter(
     tx: mpsc::Sender<AgentMessage>,
     collector: TrafficCollector,
+    stats: Arc<NodeStats>,
     interval: Duration,
     shutdown: CancellationToken,
 ) {
@@ -57,11 +60,15 @@ pub async fn run_reporter(
                     }
                 };
 
-                // Send heartbeat
+                // Totals since the service started, not a delta: the panel
+                // diffs them, and a heartbeat lost in a reconnect then costs
+                // nothing.
+                let snapshot = stats.snapshot();
                 let heartbeat = AgentMessage::Heartbeat {
-                    connections_active: 0, // TODO: wire up from service metrics
-                    bytes_in: 0,           // TODO: wire up from service metrics
-                    bytes_out: 0,          // TODO: wire up from service metrics
+                    connections_active: u32::try_from(snapshot.connections_active)
+                        .unwrap_or(u32::MAX),
+                    bytes_in: snapshot.bytes_in,
+                    bytes_out: snapshot.bytes_out,
                     uptime_secs,
                     memory_rss_bytes,
                     cpu_usage_percent,

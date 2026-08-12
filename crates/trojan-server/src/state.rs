@@ -7,7 +7,7 @@ use std::time::Duration;
 use crate::pool::ConnectionPool;
 use trojan_config::{ProxyProtocolConfig, TcpConfig, WebSocketConfig};
 use trojan_dns::DnsResolver;
-use trojan_metrics::RelayCounters;
+use trojan_metrics::{NodeStats, RelayCounters};
 
 /// Shared server state for all connections.
 #[derive(Clone)]
@@ -25,6 +25,8 @@ pub struct ServerState {
     pub tcp_config: TcpConfig,
     pub websocket: WebSocketConfig,
     pub dns_resolver: DnsResolver,
+    /// Traffic and connection totals for this node, for the panel agent.
+    pub node_stats: Arc<NodeStats>,
     /// Senders whose PROXY protocol header names the client and the chain.
     pub proxy_protocol: ProxyProtocolConfig,
     /// Whether to label relay byte counters with the destination host.
@@ -54,10 +56,11 @@ impl ServerState {
     /// Done once per connection rather than per flush; see [`RelayCounters`].
     /// Falls back to global-only counters when `metrics.per_target` is off.
     pub fn relay_counters(&self, target_label: &str) -> RelayCounters {
-        if self.per_target_metrics {
+        let counters = if self.per_target_metrics {
             RelayCounters::with_target(target_label)
         } else {
             RelayCounters::global()
-        }
+        };
+        counters.with_node_stats(self.node_stats.clone())
     }
 }

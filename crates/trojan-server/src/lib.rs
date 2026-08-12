@@ -28,5 +28,6 @@ pub use cli::ServerArgs;
 pub use error::ServerError;
 pub use pool::ConnectionPool;
 pub use rate_limit::RateLimiter;
-pub use server::{DEFAULT_SHUTDOWN_TIMEOUT, run, run_with_shutdown};
+pub use server::{DEFAULT_SHUTDOWN_TIMEOUT, run, run_with_shutdown, run_with_stats};
 pub use tokio_util::sync::CancellationToken;
+pub use trojan_metrics::{NodeSnapshot, NodeStats};

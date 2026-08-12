@@ -24,7 +24,7 @@ use trojan_config::Config;
 use trojan_core::defaults;
 use trojan_dns::DnsResolver;
 use trojan_metrics::{
-    ERROR_TLS_HANDSHAKE, record_connection_accepted, record_connection_closed,
+    ERROR_TLS_HANDSHAKE, NodeStats, record_connection_accepted, record_connection_closed,
     record_connection_rejected, record_error, record_tls_handshake_duration,
     set_connection_queue_depth,
 };
@@ -45,6 +45,20 @@ fn next_conn_id() -> u64 {
 pub async fn run_with_shutdown(
     config: Config,
     auth: impl AuthBackend + 'static,
+    shutdown: CancellationToken,
+) -> Result<(), ServerError> {
+    run_with_stats(config, auth, NodeStats::new(), shutdown).await
+}
+
+/// Run the server, accumulating its totals into `stats`.
+///
+/// Same as [`run_with_shutdown`], for callers that report node traffic
+/// themselves — the panel agent reads these totals for its heartbeats, which
+/// have no scraper to diff Prometheus samples for them.
+pub async fn run_with_stats(
+    config: Config,
+    auth: impl AuthBackend + 'static,
+    stats: Arc<NodeStats>,
     shutdown: CancellationToken,
 ) -> Result<(), ServerError> {
     let tls_config = load_tls_config(&config.tls)?;
@@ -262,6 +276,7 @@ pub async fn run_with_shutdown(
         tcp_config: config.server.tcp.clone(),
         websocket: config.websocket.clone(),
         dns_resolver,
+        node_stats: stats,
         proxy_protocol: config.server.proxy_protocol.clone(),
         per_target_metrics: config.metrics.per_target,
         #[cfg(feature = "analytics")]

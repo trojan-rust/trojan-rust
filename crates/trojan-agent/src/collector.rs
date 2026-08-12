@@ -8,53 +8,33 @@ use std::sync::{Arc, Mutex};
 
 use crate::protocol::TrafficRecord;
 
-/// Accumulated traffic for a single user.
-#[derive(Debug, Default)]
-struct UserTraffic {
-    bytes_up: u64,
-    bytes_down: u64,
-}
-
 /// Thread-safe per-user traffic accumulator.
-#[derive(Debug, Clone)]
+///
+/// Cloning shares one set of totals, so the service can hold a handle while
+/// the reporter drains from another.
+#[derive(Debug, Clone, Default)]
 pub struct TrafficCollector {
-    inner: Arc<Mutex<HashMap<String, UserTraffic>>>,
+    inner: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl TrafficCollector {
     /// Create a new empty collector.
     pub fn new() -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(HashMap::new())),
-        }
+        Self::default()
     }
 
     /// Record traffic for a user (additive).
-    pub fn record(&self, user_id: &str, bytes_up: u64, bytes_down: u64) {
+    pub fn record(&self, user_id: &str, bytes: u64) {
         let mut map = self.inner.lock().expect("traffic collector lock poisoned");
-        let entry = map.entry(user_id.to_string()).or_default();
-        entry.bytes_up += bytes_up;
-        entry.bytes_down += bytes_down;
+        *map.entry(user_id.to_string()).or_default() += bytes;
     }
 
     /// Drain all accumulated traffic records and reset counters.
     pub fn drain(&self) -> Vec<TrafficRecord> {
         let mut map = self.inner.lock().expect("traffic collector lock poisoned");
-        let records: Vec<TrafficRecord> = map
-            .drain()
-            .map(|(user_id, traffic)| TrafficRecord {
-                user_id,
-                bytes_up: traffic.bytes_up,
-                bytes_down: traffic.bytes_down,
-            })
-            .collect();
-        records
-    }
-}
-
-impl Default for TrafficCollector {
-    fn default() -> Self {
-        Self::new()
+        map.drain()
+            .map(|(user_id, bytes)| TrafficRecord { user_id, bytes })
+            .collect()
     }
 }
 
@@ -65,38 +45,35 @@ mod tests {
     #[test]
     fn record_and_drain() {
         let collector = TrafficCollector::new();
-        collector.record("alice", 100, 200);
-        collector.record("bob", 50, 75);
-        collector.record("alice", 100, 100);
+        collector.record("alice", 100);
+        collector.record("bob", 50);
+        collector.record("alice", 100);
 
         let mut records = collector.drain();
         records.sort_by(|a, b| a.user_id.cmp(&b.user_id));
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].user_id, "alice");
-        assert_eq!(records[0].bytes_up, 200);
-        assert_eq!(records[0].bytes_down, 300);
+        assert_eq!(records[0].bytes, 200);
         assert_eq!(records[1].user_id, "bob");
-        assert_eq!(records[1].bytes_up, 50);
+        assert_eq!(records[1].bytes, 50);
     }
 
     #[test]
     fn drain_clears() {
         let collector = TrafficCollector::new();
-        collector.record("alice", 100, 200);
+        collector.record("alice", 100);
         let _ = collector.drain();
-        let records = collector.drain();
-        assert!(records.is_empty());
+        assert!(collector.drain().is_empty());
     }
 
     #[test]
     fn clone_shares_state() {
         let a = TrafficCollector::new();
         let b = a.clone();
-        a.record("alice", 10, 20);
-        b.record("alice", 30, 40);
+        a.record("alice", 10);
+        b.record("alice", 30);
         let records = a.drain();
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].bytes_up, 40);
-        assert_eq!(records[0].bytes_down, 60);
+        assert_eq!(records[0].bytes, 40);
     }
 }

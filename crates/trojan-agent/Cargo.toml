@@ -42,6 +42,8 @@ tokio-util.workspace = true
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json"] }
+trojan-metrics.workspace = true
+async-trait.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

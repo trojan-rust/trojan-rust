@@ -70,11 +70,14 @@ pub enum PanelMessage {
 }
 
 /// Per-user traffic delta record.
+///
+/// One figure, not a direction split: a node settles a session against the
+/// total it carried — which is what quotas are spent from and what
+/// `traffic_logs` stores — and the split is never known at that point.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrafficRecord {
     pub user_id: String,
-    pub bytes_up: u64,
-    pub bytes_down: u64,
+    pub bytes: u64,
 }
 
 /// Node type — determines which service the agent boots.
@@ -235,14 +238,12 @@ mod tests {
     fn traffic_record_roundtrip() {
         let record = TrafficRecord {
             user_id: "alice".to_string(),
-            bytes_up: 1024,
-            bytes_down: 2048,
+            bytes: 3072,
         };
         let bytes = bincode::serialize(&record).unwrap();
         let decoded: TrafficRecord = bincode::deserialize(&bytes).unwrap();
         assert_eq!(decoded.user_id, "alice");
-        assert_eq!(decoded.bytes_up, 1024);
-        assert_eq!(decoded.bytes_down, 2048);
+        assert_eq!(decoded.bytes, 3072);
     }
 
     #[test]

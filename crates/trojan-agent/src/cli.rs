@@ -11,7 +11,6 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 
 use crate::cache::{self, CachedConfig};
 use crate::client::{self, RegistrationResult};
-use crate::collector::TrafficCollector;
 use crate::config::AgentConfig;
 use crate::error::AgentError;
 use crate::protocol::{AgentMessage, PanelMessage, ServiceState};
@@ -168,12 +167,20 @@ async fn run_session(config: &AgentConfig, shutdown: CancellationToken) -> Resul
             .unwrap_or_else(|| u64::from(report_interval_secs)),
     );
 
-    // Spawn the service
+    // Spawn the service, with somewhere to report what it carries
+    let sinks = runner::ServiceSinks::default();
     let service_shutdown = CancellationToken::new();
     let service_config_clone = service_config.clone();
     let service_shutdown_clone = service_shutdown.clone();
+    let service_sinks = sinks.clone();
     let service_handle = tokio::spawn(async move {
-        runner::run_service(node_type, &service_config_clone, service_shutdown_clone).await
+        runner::run_service(
+            node_type,
+            &service_config_clone,
+            service_sinks,
+            service_shutdown_clone,
+        )
+        .await
     });
 
     // Send initial service status
@@ -186,12 +193,12 @@ async fn run_session(config: &AgentConfig, shutdown: CancellationToken) -> Resul
         })
         .await;
 
-    // Spawn reporter
-    let collector = TrafficCollector::new();
+    // Spawn reporter, reading the very sinks the service writes to
     let reporter_shutdown = CancellationToken::new();
     let reporter_handle = tokio::spawn(reporter::run_reporter(
         agent_tx.clone(),
-        collector.clone(),
+        sinks.traffic.clone(),
+        sinks.stats.clone(),
         report_interval,
         reporter_shutdown.clone(),
     ));
@@ -363,7 +370,15 @@ async fn run_degraded_mode(
         "running in degraded mode from cached config (no panel connection)"
     );
 
-    runner::run_service(cached.node_type, &cached.config, shutdown).await
+    // Nothing drains the sinks here: with no panel to report to, the service
+    // still serves traffic, it just goes uncounted until one is reachable.
+    runner::run_service(
+        cached.node_type,
+        &cached.config,
+        runner::ServiceSinks::default(),
+        shutdown,
+    )
+    .await
 }
 
 /// Wait for shutdown signals (SIGTERM, SIGINT).
