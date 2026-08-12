@@ -184,6 +184,186 @@ async fn run_chain(transport: TransportType, hop_count: usize, payloads: &[&[u8]
     shutdown.cancel();
 }
 
+// ── Destination load balancing ──
+
+/// Start an entry with a direct (empty) chain and the given destinations.
+async fn spawn_entry_with_dests(
+    entry_addr: SocketAddr,
+    dests: Vec<String>,
+    strategy: trojan_lb::LbStrategy,
+    shutdown: &CancellationToken,
+) {
+    let mut chains = HashMap::new();
+    chains.insert("direct".to_string(), ChainConfig { nodes: vec![] });
+
+    let cfg = EntryConfig {
+        chains,
+        rules: vec![RuleConfig {
+            name: "lb-rule".to_string(),
+            listen: entry_addr,
+            chain: "direct".to_string(),
+            dest: dests,
+            strategy,
+            failover_cooldown_secs: 30,
+        }],
+        timeouts: TimeoutConfig::default(),
+        dns: Default::default(),
+    };
+
+    let sd = shutdown.clone();
+    tokio::spawn(async move {
+        let _ = trojan_relay::entry::run(cfg, sd).await;
+    });
+    wait_ready(entry_addr).await;
+}
+
+/// Echo server that prefixes every reply with `tag`, so a client can tell
+/// which destination served it.
+async fn spawn_tagged_echo(tag: u8) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (mut sock, _) = match listener.accept().await {
+                Ok(p) => p,
+                Err(_) => return,
+            };
+            tokio::spawn(async move {
+                let mut buf = [0u8; 1024];
+                loop {
+                    match sock.read(&mut buf).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => {
+                            let mut reply = vec![tag];
+                            reply.extend_from_slice(&buf[..n]);
+                            if sock.write_all(&reply).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+    addr
+}
+
+/// Round-robin spreads connections over every destination.
+///
+/// Each destination tags its replies, so the assertion is on which backend
+/// actually answered — a policy that always picked the first would fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn entry_round_robin_spreads_across_destinations() {
+    init_crypto();
+
+    let echo_a = spawn_tagged_echo(b'A').await;
+    let echo_b = spawn_tagged_echo(b'B').await;
+    let entry_addr = pick_addr().await;
+    let shutdown = CancellationToken::new();
+
+    spawn_entry_with_dests(
+        entry_addr,
+        vec![echo_a.to_string(), echo_b.to_string()],
+        trojan_lb::LbStrategy::RoundRobin,
+        &shutdown,
+    )
+    .await;
+
+    let mut served = std::collections::BTreeSet::new();
+    for i in 0..4 {
+        let mut sock = TcpStream::connect(entry_addr).await.unwrap();
+        let payload = format!("rr-{i}");
+        sock.write_all(payload.as_bytes()).await.unwrap();
+        sock.flush().await.unwrap();
+
+        let mut buf = vec![0u8; payload.len() + 1];
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            AsyncReadExt::read_exact(&mut sock, &mut buf),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("round-robin connection {i} timed out"))
+        .unwrap();
+
+        assert_eq!(&buf[1..], payload.as_bytes());
+        served.insert(buf[0]);
+    }
+
+    assert_eq!(
+        served,
+        (*b"AB").into_iter().collect(),
+        "round robin should have used both destinations, saw {served:?}"
+    );
+    shutdown.cancel();
+}
+
+/// Failover skips a destination that refuses connections.
+///
+/// The first attempt lands on the dead address and fails — the entry marks it
+/// unhealthy but does not retry within that connection — so the assertion is
+/// that a *subsequent* connection is served by the live destination.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn entry_failover_skips_dead_destination() {
+    init_crypto();
+
+    let echo = spawn_echo().await;
+    // Reserved and released: nothing is listening there.
+    let dead = pick_addr().await;
+    let entry_addr = pick_addr().await;
+    let shutdown = CancellationToken::new();
+
+    spawn_entry_with_dests(
+        entry_addr,
+        vec![dead.to_string(), echo.to_string()],
+        trojan_lb::LbStrategy::Failover,
+        &shutdown,
+    )
+    .await;
+
+    // Failover converges rather than switching instantly: the connection that
+    // lands on the dead destination is lost, and marking it unhealthy happens
+    // in that connection's task. Retry until a connection is served, with a
+    // bound so a policy that never fails over still fails the test.
+    let payload = b"after-failover";
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut attempts = 0;
+    let served = loop {
+        attempts += 1;
+        if tokio::time::Instant::now() >= deadline {
+            break false;
+        }
+
+        let Ok(mut sock) = TcpStream::connect(entry_addr).await else {
+            continue;
+        };
+        if sock.write_all(payload).await.is_err() || sock.flush().await.is_err() {
+            continue;
+        }
+
+        let mut buf = vec![0u8; payload.len()];
+        match tokio::time::timeout(
+            Duration::from_secs(2),
+            AsyncReadExt::read_exact(&mut sock, &mut buf),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {
+                assert_eq!(&buf, payload);
+                break true;
+            }
+            // The dead destination — keep going.
+            _ => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    };
+
+    assert!(
+        served,
+        "failover never reached the healthy destination after {attempts} attempts"
+    );
+
+    shutdown.cancel();
+}
+
 // ── Plain TCP ──
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
