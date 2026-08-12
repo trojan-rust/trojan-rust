@@ -33,8 +33,12 @@ sql-sqlite = ["sql", "sqlx/sqlite"]
 sql-tls-rustls = ["sqlx/tls-rustls-ring"]
 sql-tls-native = ["sqlx/tls-native-tls"]
 
-# HTTP backend (calls remote auth-worker)
-http = ["dep:reqwest", "dep:bincode", "dep:serde", "dep:serde_json", "batched-traffic"]
+# The HTTP auth protocol on its own, so the dashboard worker serving it can
+# depend on the contract without the client (it targets wasm32)
+protocol = ["dep:serde"]
+
+# HTTP backend (calls the remote dashboard worker)
+http = ["protocol", "dep:reqwest", "dep:bincode", "dep:serde_json", "batched-traffic"]
 
 # CLI tool for auth management
 cli = ["sql", "dep:clap", "dep:tabled", "tokio/rt-multi-thread"]

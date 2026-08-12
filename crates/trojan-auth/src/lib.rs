@@ -48,6 +48,11 @@ pub mod sql;
 #[cfg(feature = "http")]
 pub mod http;
 
+// Contract for the HTTP backend, also depended on by the dashboard worker
+// that serves it (optional feature)
+#[cfg(feature = "protocol")]
+pub mod protocol;
+
 // CLI module (optional feature)
 #[cfg(feature = "cli")]
 pub mod cli;

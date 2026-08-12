@@ -1,11 +1,14 @@
 //! End-to-end tests for the HTTP authentication backend.
 //!
-//! `HttpAuth` delegates verification to a remote auth-worker and is the path
-//! this project's own `auth-worker` crate exists to serve, yet nothing
-//! exercised it end to end: the server tests all use `MemoryAuth`. These drive
-//! a real server whose auth backend talks to a mock worker over HTTP, so the
+//! `HttpAuth` delegates verification to a remote dashboard, and is the path
+//! this project's own `trojan-dash` exists to serve, yet nothing exercised it
+//! end to end: the server tests all use `MemoryAuth`. These drive a real
+//! server whose auth backend talks to a stand-in dashboard over HTTP, so the
 //! wire format, the caching layer, and the traffic-reporting call are all
 //! covered against the actual `HttpAuth` implementation.
+//!
+//! The other half of the contract — that `trojan-dash` answers what `HttpAuth`
+//! expects — is covered by `trojan-dash`'s own `node_protocol` tests.
 #![allow(clippy::tests_outside_test_module)]
 
 use std::{
@@ -97,7 +100,7 @@ struct WorkerCalls {
     traffic: AtomicUsize,
 }
 
-/// A stand-in auth-worker speaking the JSON codec.
+/// A stand-in dashboard worker speaking the JSON codec.
 ///
 /// Serde encodes the wire `Result` as `{"Ok": ...}` / `{"Err": ...}`, which is
 /// what `HttpAuth` expects to decode.

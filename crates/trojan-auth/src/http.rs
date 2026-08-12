@@ -1,6 +1,6 @@
 //! HTTP authentication backend.
 //!
-//! Delegates authentication to a remote auth-worker (e.g. Cloudflare Worker)
+//! Delegates authentication to a remote dashboard worker (e.g. Cloudflare Worker)
 //! over HTTP, with local stale-while-revalidate caching via [`StoreAuth`].
 //!
 //! # Example
@@ -23,6 +23,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
+use crate::protocol;
 use crate::store::{
     FlushFn, StoreAuth, StoreAuthConfig, TrafficRecorder, TrafficRecordingMode, UserRecord,
     UserStore,
@@ -67,7 +68,7 @@ pub struct HttpAuthConfig {
     /// Traffic batch flush interval (default: 30s).
     ///
     /// Traffic updates are accumulated in memory and flushed to the
-    /// auth-worker at this interval.
+    /// dashboard worker at this interval.
     pub batch_flush_interval: Duration,
 }
 
@@ -102,9 +103,9 @@ impl HttpAuthConfig {
 
 // ── HttpStore ─────────────────────────────────────────────────────
 
-/// HTTP user store that delegates to a remote auth-worker.
+/// HTTP user store that delegates to a remote dashboard worker.
 ///
-/// Implements [`UserStore`] by calling the auth-worker's `/verify` and
+/// Implements [`UserStore`] by calling the dashboard worker's `/verify` and
 /// `/traffic` endpoints.
 ///
 /// Cloning is cheap — `reqwest::Client` is Arc-internal, the URLs/token are
@@ -184,10 +185,10 @@ impl UserStore for HttpStore {
         clippy::cast_possible_truncation
     )]
     async fn find_by_hash(&self, hash: &str) -> Result<Option<UserRecord>, AuthError> {
-        let req = wire::VerifyRequest {
+        let req = protocol::VerifyRequest {
             hash: hash.to_owned(),
         };
-        let result: Result<wire::AuthResult, wire::AuthError> =
+        let result: Result<protocol::AuthResult, protocol::AuthError> =
             self.request(&self.verify_url, &req).await?;
         match result {
             Ok(auth_result) => {
@@ -200,17 +201,17 @@ impl UserStore for HttpStore {
                     enabled: meta.is_none_or(|m| m.enabled),
                 }))
             }
-            Err(wire::AuthError::Invalid | wire::AuthError::NotFound) => Ok(None),
+            Err(protocol::AuthError::Invalid | protocol::AuthError::NotFound) => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
 
     async fn add_traffic(&self, user_id: &str, bytes: u64) -> Result<(), AuthError> {
-        let req = wire::TrafficRequest {
+        let req = protocol::TrafficRequest {
             user_id: user_id.to_owned(),
             bytes,
         };
-        let result: Result<(), wire::AuthError> = self.request(&self.traffic_url, &req).await?;
+        let result: Result<(), protocol::AuthError> = self.request(&self.traffic_url, &req).await?;
         result.map_err(Into::into)
     }
 }
@@ -246,7 +247,7 @@ impl HttpAuth {
             let flush_fn: FlushFn = Arc::new(move |batch| {
                 let store = store_for_flush.clone();
                 Box::pin(async move {
-                    // Fire all POSTs concurrently — the auth-worker's /traffic
+                    // Fire all POSTs concurrently — the dashboard worker's /traffic
                     // endpoint takes one user per request, so a 1000-user
                     // batch used to mean 1000 sequential round trips. JoinSet
                     // lets reqwest's connection pool fan them out instead.
@@ -304,59 +305,17 @@ impl std::fmt::Debug for HttpAuth {
     }
 }
 
-// ── Wire types (must match auth-worker exactly) ───────────────────
+// ── Protocol ↔ core conversions ───────────────────────────────────────
 
-#[allow(missing_debug_implementations)]
-mod wire {
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Serialize, Deserialize)]
-    pub struct VerifyRequest {
-        pub hash: String,
-    }
-
-    #[derive(Serialize, Deserialize)]
-    pub struct TrafficRequest {
-        pub user_id: String,
-        pub bytes: u64,
-    }
-
-    #[derive(Serialize, Deserialize)]
-    pub struct AuthResult {
-        pub user_id: Option<String>,
-        pub metadata: Option<AuthMetadata>,
-    }
-
-    #[derive(Serialize, Deserialize)]
-    pub struct AuthMetadata {
-        pub traffic_limit: u64,
-        pub traffic_used: u64,
-        pub expires_at: u64,
-        pub enabled: bool,
-    }
-
-    #[derive(Serialize, Deserialize)]
-    pub enum AuthError {
-        Invalid,
-        Backend(String),
-        NotFound,
-        TrafficExceeded,
-        Expired,
-        Disabled,
-    }
-}
-
-// ── Wire ↔ core conversions ───────────────────────────────────────
-
-impl From<wire::AuthError> for AuthError {
-    fn from(w: wire::AuthError) -> Self {
+impl From<protocol::AuthError> for AuthError {
+    fn from(w: protocol::AuthError) -> Self {
         match w {
-            wire::AuthError::Invalid => Self::Invalid,
-            wire::AuthError::Backend(s) => Self::Backend(s),
-            wire::AuthError::NotFound => Self::NotFound,
-            wire::AuthError::TrafficExceeded => Self::TrafficExceeded,
-            wire::AuthError::Expired => Self::Expired,
-            wire::AuthError::Disabled => Self::Disabled,
+            protocol::AuthError::Invalid => Self::Invalid,
+            protocol::AuthError::Backend(s) => Self::Backend(s),
+            protocol::AuthError::NotFound => Self::NotFound,
+            protocol::AuthError::TrafficExceeded => Self::TrafficExceeded,
+            protocol::AuthError::Expired => Self::Expired,
+            protocol::AuthError::Disabled => Self::Disabled,
         }
     }
 }

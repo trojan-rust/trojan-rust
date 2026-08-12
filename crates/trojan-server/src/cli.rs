@@ -170,7 +170,7 @@ fn reload_config(
 /// Build an auth backend from config.
 ///
 /// If `http_url` is set, creates an [`HttpAuth`] backend that delegates to a
-/// remote auth-worker. Otherwise falls back to in-memory password auth.
+/// remote dashboard worker. Otherwise falls back to in-memory password auth.
 fn build_auth(auth: &trojan_config::AuthConfig) -> Box<dyn AuthBackend> {
     if let Some(ref url) = auth.http_url {
         let codec = match auth.http_codec.as_deref() {

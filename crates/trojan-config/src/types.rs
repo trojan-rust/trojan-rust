@@ -281,14 +281,14 @@ pub struct AuthConfig {
     #[serde(default)]
     pub users: Vec<UserEntry>,
 
-    /// HTTP remote auth-worker URL.
+    /// HTTP remote dashboard worker URL.
     /// ```toml
     /// http_url = "https://auth.example.workers.dev"
     /// ```
     #[serde(default)]
     pub http_url: Option<String>,
 
-    /// Bearer token for node authentication with the auth-worker.
+    /// Bearer token for node authentication with the dashboard worker.
     #[serde(default)]
     pub http_node_token: Option<String>,
 
@@ -312,7 +312,7 @@ pub struct AuthConfig {
     pub http_cache_neg_ttl_secs: u64,
 
     /// HTTP auth traffic batch flush interval in seconds (default: 30).
-    /// Traffic updates are accumulated in memory and flushed to the auth-worker
+    /// Traffic updates are accumulated in memory and flushed to the dashboard worker
     /// at this interval. Set higher to reduce HTTP requests at the cost of
     /// delayed traffic accounting.
     #[serde(default = "default_http_batch_flush_interval_secs")]
