@@ -38,6 +38,7 @@ pub fn router(state: AppState, panel_dir: Option<&Path>) -> Router {
         .route("/admin/nodes/{id}/rotate", post(nodes::rotate))
         // Admin — traffic
         .route("/admin/traffic", get(traffic::list))
+        .route("/admin/traffic/daily", get(traffic::daily))
         // Admin — subscription templates
         .route(
             "/admin/sub-templates",

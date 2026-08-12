@@ -13,12 +13,20 @@ pub fn now_secs() -> u64 {
 
 /// Today in UTC, as `YYYY-MM-DD` — the granularity `traffic_logs` aggregates on.
 pub fn today_date() -> String {
-    let now = time::OffsetDateTime::now_utc();
+    date_days_ago(0)
+}
+
+/// A UTC date `days` before today, in the same `YYYY-MM-DD` form.
+///
+/// `traffic_logs.date` is text, so a range query compares strings; ISO order
+/// and lexical order agree, which is why the column is stored this way.
+pub fn date_days_ago(days: i64) -> String {
+    let at = time::OffsetDateTime::now_utc() - time::Duration::days(days);
     format!(
         "{:04}-{:02}-{:02}",
-        now.year(),
-        u8::from(now.month()),
-        now.day()
+        at.year(),
+        u8::from(at.month()),
+        at.day()
     )
 }
 

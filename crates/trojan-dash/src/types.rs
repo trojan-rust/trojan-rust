@@ -206,6 +206,35 @@ pub struct TrafficLogResponse {
     pub date: String,
 }
 
+/// One day's total for one node, for the dashboard chart.
+#[derive(Debug, FromRow)]
+pub struct DailyTrafficRow {
+    pub date: String,
+    pub node_id: i64,
+    pub node_name: String,
+    pub bytes: i64,
+}
+
+impl DailyTrafficRow {
+    pub fn to_response(&self) -> DailyTrafficResponse {
+        DailyTrafficResponse {
+            date: self.date.clone(),
+            node_id: nonneg(self.node_id),
+            node_name: self.node_name.clone(),
+            bytes: nonneg(self.bytes),
+        }
+    }
+}
+
+/// A point on the traffic chart.
+#[derive(Debug, Serialize)]
+pub struct DailyTrafficResponse {
+    pub date: String,
+    pub node_id: u64,
+    pub node_name: String,
+    pub bytes: u64,
+}
+
 /// Per-node totals for one user, for `/me`.
 #[derive(Debug, FromRow)]
 pub struct NodeTrafficRow {

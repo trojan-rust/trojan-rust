@@ -6,7 +6,12 @@
 //! framing, bearer auth, batched traffic — instead of a hand-written stand-in.
 
 // Integration tests are their own crate; there is no test module to sit in.
-#![allow(clippy::tests_outside_test_module)]
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests are their own crate, where every #[test] is \
+              necessarily a free item; the lint targets unit tests that \
+              escaped a #[cfg(test)] mod"
+)]
 
 use std::net::TcpListener;
 use std::time::Duration;
@@ -243,6 +248,12 @@ async fn reported_traffic_lands_on_the_user_and_the_node() {
         nodes[0]["last_seen"].as_u64().unwrap_or(0) > 0,
         "serving a node call should stamp last_seen"
     );
+
+    let daily = dash.admin_get("/admin/traffic/daily?days=7").await;
+    let daily = daily.as_array().unwrap();
+    assert_eq!(daily.len(), 1, "one node, one day: {daily:?}");
+    assert_eq!(daily[0]["bytes"].as_u64(), Some(5120));
+    assert_eq!(daily[0]["node_name"].as_str(), Some("node-a"));
 }
 
 #[tokio::test]
