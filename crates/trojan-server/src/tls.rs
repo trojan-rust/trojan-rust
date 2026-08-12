@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio_rustls::rustls::{self, RootCertStore, server::WebPkiClientVerifier};
 use tracing::{info, warn};
 use trojan_config::TlsConfig;
+use trojan_core::defaults;
 
 use crate::error::ServerError;
 
@@ -99,11 +100,26 @@ pub fn load_tls_config(cfg: &TlsConfig) -> Result<rustls::ServerConfig, ServerEr
         config.alpn_protocols = cfg.alpn.iter().map(|s| s.as_bytes().to_vec()).collect();
     }
 
+    // Session resumption. rustls defaults to `NeverProducesTickets` plus a
+    // 256-entry stateful cache, so on a busy server nearly every client pays
+    // for a full handshake — the dominant per-connection CPU cost when the
+    // proxy terminates TLS. A ticketer moves both TLS 1.3 and TLS 1.2
+    // resumption onto stateless tickets; the enlarged cache still backs
+    // TLS 1.2 session-ID resumption for clients that offer no ticket.
+    //
+    // Ticket keys are generated per process and rotate, so under
+    // `server.tcp.reuse_port` a client landing on a different worker still
+    // falls back to a full handshake.
+    config.ticketer = rustls::crypto::aws_lc_rs::Ticketer::new()?;
+    config.session_storage =
+        rustls::server::ServerSessionMemoryCache::new(defaults::DEFAULT_TLS_SESSION_CACHE_SIZE);
+
     info!(
         min_version = %cfg.min_version,
         max_version = %cfg.max_version,
         mtls = cfg.client_ca.is_some(),
         cipher_suites = ?cfg.cipher_suites,
+        session_cache = defaults::DEFAULT_TLS_SESSION_CACHE_SIZE,
         "TLS configured"
     );
 

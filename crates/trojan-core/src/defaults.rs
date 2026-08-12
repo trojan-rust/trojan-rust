@@ -100,6 +100,12 @@ pub const DEFAULT_TLS_MIN_VERSION: &str = "tls12";
 pub const DEFAULT_TLS_MAX_VERSION: &str = "tls13";
 /// Default TLS handshake timeout in seconds.
 pub const DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
+/// Number of TLS sessions retained for stateful (session-ID) resumption.
+///
+/// Only reached by TLS 1.2 clients that do not offer session tickets; ticket
+/// holders resume statelessly. rustls defaults this to 256, which a busy
+/// server evicts almost immediately.
+pub const DEFAULT_TLS_SESSION_CACHE_SIZE: usize = 4096;
 
 // ============================================================================
 // WebSocket Defaults
