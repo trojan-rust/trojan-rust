@@ -3,6 +3,48 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+## [0.12.0](https://github.com/trojan-rust/trojan-rust/compare/v0.11.0...v0.12.0) - 2026-08-12
+
+### Bug Fixes
+
+- keep the drive letter in sqlite connection URLs
+
+- repair the Windows and interop jobs on master ([#54](https://github.com/trojan-rust/trojan-rust/pull/54))
+
+
+### CI
+
+- stop one platform's failure from hiding the others
+
+
+### Documentation
+
+- record how traffic is accounted for across the chain
+
+- the settings and unit file a deployment needs
+
+- record the lint runs CI actually makes
+
+
+### Features
+
+- account for the bytes entry and relay nodes carry
+
+- speak PROXY protocol v2, with a TLV for the relay chain
+
+- believe a trusted proxy about the client, and credit the chain
+
+- report what the service actually carried
+
+- serve the agent socket, so a node's reports have somewhere to go
+
+
+### Refactoring
+
+- rebuild the data layer on SeaORM, after the panel it replaces
+
+- let each crate own the config it reads
+
 ## [0.11.0](https://github.com/trojan-rust/trojan-rust/compare/v0.10.1...v0.11.0) - 2026-08-12
 
 ### Bug Fixes
