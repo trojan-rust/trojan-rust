@@ -42,12 +42,12 @@ impl CloudflareUpdater {
         let credentials = Credentials::UserAuthToken {
             token: config.api_token.clone(),
         };
-        let client = Client::new(
-            credentials,
-            ClientConfig::default(),
-            Environment::Production,
-        )
-        .map_err(|e| DdnsError::Config(format!("failed to create Cloudflare client: {e}")))?;
+        let environment = match config.api_base_url {
+            Some(ref url) => Environment::Custom(url.clone()),
+            None => Environment::Production,
+        };
+        let client = Client::new(credentials, ClientConfig::default(), environment)
+            .map_err(|e| DdnsError::Config(format!("failed to create Cloudflare client: {e}")))?;
 
         Ok(Self {
             client,

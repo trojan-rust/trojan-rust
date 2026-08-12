@@ -57,6 +57,14 @@ pub struct CloudflareDdnsConfig {
     /// DNS record TTL in seconds. 1 = automatic.
     #[serde(default = "default_ddns_ttl")]
     pub ttl: u32,
+
+    /// Override the Cloudflare API base URL.
+    ///
+    /// Defaults to the production endpoint. Set this to point at a stand-in
+    /// API — without it the updater can only ever be exercised against
+    /// Cloudflare itself, which is why this path had no tests.
+    #[serde(default)]
+    pub api_base_url: Option<String>,
 }
 
 fn default_ddns_interval() -> u64 {
