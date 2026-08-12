@@ -38,6 +38,8 @@
   env.LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
 
   enterShell = ''
-    echo "trojan-rust dev shell — $(cargo --version)"
+    # stderr, not stdout: `devenv shell -- cargo ... --message-format json`
+    # otherwise emits this banner as the first "JSON" line.
+    echo "trojan-rust dev shell — $(cargo --version)" >&2
   '';
 }
