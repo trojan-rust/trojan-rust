@@ -45,6 +45,9 @@ lb.mark_healthy("backend-1:443");
 
 ### Custom Policies
 
+A policy owns whatever state its selection needs — `Failover`, for instance,
+carries its own cooldown.
+
 ```rust
 use trojan_lb::{LoadBalancer, LbPolicy, Backend, LbStrategy};
 use std::sync::Arc;
@@ -60,10 +63,9 @@ impl LbPolicy for MyPolicy {
 }
 
 let lb = LoadBalancer::with_policy(
-    backends,
+    vec!["backend-1:443".to_string()],
     Box::new(MyPolicy),
     LbStrategy::RoundRobin,
-    Duration::from_secs(60),
 );
 ```
 

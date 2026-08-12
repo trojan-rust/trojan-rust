@@ -123,18 +123,13 @@ pub struct LoadBalancer {
     backends: Vec<Arc<Backend>>,
     policy: Box<dyn LbPolicy>,
     strategy: LbStrategy,
-    /// Never read: the live copy lives on the `Failover` policy, which owns
-    /// the recovery logic. Retained because dropping it would mean dropping
-    /// `with_policy`'s parameter, a breaking change to a published API.
-    #[expect(
-        dead_code,
-        reason = "vestigial copy of the policy's cooldown; see the doc comment"
-    )]
-    failover_cooldown: Duration,
 }
 
 impl LoadBalancer {
     /// Create a new load balancer with the given addresses and strategy.
+    ///
+    /// `failover_cooldown` configures the [`Failover`] policy and is ignored by
+    /// every other strategy, none of which has a notion of recovery timing.
     pub fn new(addrs: Vec<String>, strategy: LbStrategy, failover_cooldown: Duration) -> Self {
         let policy: Box<dyn LbPolicy> = match &strategy {
             LbStrategy::RoundRobin => Box::new(RoundRobin::new()),
@@ -144,15 +139,17 @@ impl LoadBalancer {
                 cooldown: failover_cooldown,
             }),
         };
-        Self::with_policy(addrs, policy, strategy, failover_cooldown)
+        Self::with_policy(addrs, policy, strategy)
     }
 
     /// Create a load balancer with a custom policy.
+    ///
+    /// Any timing the policy needs belongs to the policy — see [`Failover`],
+    /// which carries its own cooldown.
     pub fn with_policy(
         addrs: Vec<String>,
         policy: Box<dyn LbPolicy>,
         strategy: LbStrategy,
-        failover_cooldown: Duration,
     ) -> Self {
         let backends = addrs
             .into_iter()
@@ -162,7 +159,6 @@ impl LoadBalancer {
             backends,
             policy,
             strategy,
-            failover_cooldown,
         }
     }
 
@@ -528,5 +524,33 @@ mod tests {
     fn send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<LoadBalancer>();
+    }
+
+    // ── Custom policies ──
+
+    /// The point of `with_policy`: selection is delegated to the caller's
+    /// policy, and whatever state that policy needs it carries itself.
+    #[test]
+    fn with_policy_delegates_selection() {
+        struct AlwaysLast;
+
+        impl LbPolicy for AlwaysLast {
+            fn select(&self, backends: &[Arc<Backend>], _peer_ip: IpAddr) -> Option<usize> {
+                backends.len().checked_sub(1)
+            }
+        }
+
+        let lb = LoadBalancer::with_policy(
+            addrs(3),
+            Box::new(AlwaysLast),
+            // The strategy tag is metadata for callers; it must not override
+            // the policy that was handed in.
+            LbStrategy::RoundRobin,
+        );
+
+        for _ in 0..3 {
+            assert_eq!(lb.select(localhost()).unwrap().addr, "backend-2:443");
+        }
+        assert!(!lb.is_failover());
     }
 }
