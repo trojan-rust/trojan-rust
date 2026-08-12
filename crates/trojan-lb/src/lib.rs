@@ -123,7 +123,13 @@ pub struct LoadBalancer {
     backends: Vec<Arc<Backend>>,
     policy: Box<dyn LbPolicy>,
     strategy: LbStrategy,
-    #[allow(dead_code)]
+    /// Never read: the live copy lives on the `Failover` policy, which owns
+    /// the recovery logic. Retained because dropping it would mean dropping
+    /// `with_policy`'s parameter, a breaking change to a published API.
+    #[expect(
+        dead_code,
+        reason = "vestigial copy of the policy's cooldown; see the doc comment"
+    )]
     failover_cooldown: Duration,
 }
 
@@ -276,7 +282,11 @@ impl LbPolicy for RoundRobin {
 pub struct IpHash;
 
 impl LbPolicy for IpHash {
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "narrowing the hash on a 32-bit target only changes which \
+                  backend a peer maps to, not that the mapping is stable"
+    )]
     fn select(&self, backends: &[Arc<Backend>], peer_ip: IpAddr) -> Option<usize> {
         if backends.is_empty() {
             return None;

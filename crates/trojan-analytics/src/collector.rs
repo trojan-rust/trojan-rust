@@ -218,10 +218,17 @@ impl ConnectionEventBuilder {
         &mut self.event
     }
 
+    /// Milliseconds since the connection opened.
+    ///
+    /// Saturates instead of narrowing: `Duration::as_millis` is `u128`, and a
+    /// connection would have to outlive the universe to overflow `u64`.
+    fn elapsed_ms(&self) -> u64 {
+        u64::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
     /// Finish and send the event with the given close reason.
-    #[allow(clippy::cast_possible_truncation)]
     pub fn finish(mut self, close_reason: CloseReason) {
-        self.event.duration_ms = self.start_time.elapsed().as_millis() as u64;
+        self.event.duration_ms = self.elapsed_ms();
         self.event.close_reason = close_reason;
         self.send();
     }
@@ -243,10 +250,9 @@ impl ConnectionEventBuilder {
 }
 
 impl Drop for ConnectionEventBuilder {
-    #[allow(clippy::cast_possible_truncation)]
     fn drop(&mut self) {
         if !self.sent {
-            self.event.duration_ms = self.start_time.elapsed().as_millis() as u64;
+            self.event.duration_ms = self.elapsed_ms();
             self.send();
         }
     }

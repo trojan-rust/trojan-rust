@@ -10,7 +10,12 @@
 //! crate's `Zone` type has around twenty required fields with nested
 //! structures, and a hand-written fixture for it would break on any upstream
 //! schema change while testing the crate's deserialiser more than our code.
-#![allow(clippy::tests_outside_test_module)]
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests are their own crate, where every #[test] is \
+              necessarily a free item; the lint targets unit tests that \
+              escaped a #[cfg(test)] mod"
+)]
 
 use std::{
     io::{BufRead, BufReader, Read, Write},

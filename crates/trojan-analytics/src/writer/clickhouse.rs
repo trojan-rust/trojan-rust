@@ -29,7 +29,6 @@ pub fn create_client(config: &ClickHouseConfig) -> Result<Client, AnalyticsError
 }
 
 /// SQL for creating the connections table.
-#[allow(dead_code)]
 pub const CREATE_TABLE_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS trojan.connections
 (
@@ -93,7 +92,6 @@ SETTINGS index_granularity = 8192
 "#;
 
 /// SQL for creating the user hourly stats materialized view.
-#[allow(dead_code)]
 pub const CREATE_USER_HOURLY_VIEW_SQL: &str = r#"
 CREATE MATERIALIZED VIEW IF NOT EXISTS trojan.user_hourly_stats
 ENGINE = SummingMergeTree()
@@ -112,7 +110,6 @@ GROUP BY date, hour, user_id
 "#;
 
 /// SQL for creating the user daily stats materialized view.
-#[allow(dead_code)]
 pub const CREATE_USER_DAILY_VIEW_SQL: &str = r#"
 CREATE MATERIALIZED VIEW IF NOT EXISTS trojan.user_daily_stats
 ENGINE = SummingMergeTree()

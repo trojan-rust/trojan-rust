@@ -4,7 +4,12 @@
 //! Requires trojan-go or trojan to be installed and available in PATH.
 //!
 //! Run with: cargo test --package trojan-server --test trojan_client_test -- --ignored --nocapture
-#![allow(clippy::tests_outside_test_module)]
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests are their own crate, where every #[test] is \
+              necessarily a free item; the lint targets unit tests that \
+              escaped a #[cfg(test)] mod"
+)]
 
 use std::{
     fs,

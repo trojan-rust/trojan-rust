@@ -4,7 +4,12 @@
 //! globally and only once per process, so a server started here must be the
 //! first to install it. Sharing a process with the main integration tests
 //! would make what `/metrics` reports depend on test ordering.
-#![allow(clippy::tests_outside_test_module)]
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests are their own crate, where every #[test] is \
+              necessarily a free item; the lint targets unit tests that \
+              escaped a #[cfg(test)] mod"
+)]
 
 use std::{
     fs,

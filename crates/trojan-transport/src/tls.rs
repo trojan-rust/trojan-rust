@@ -23,7 +23,10 @@ use crate::{TransportAcceptor, TransportConnector};
 // ── TLS Acceptor ──
 
 /// TLS transport acceptor that wraps incoming TCP connections in TLS.
-#[allow(missing_debug_implementations)]
+#[expect(
+    missing_debug_implementations,
+    reason = "wraps a rustls TlsAcceptor, which has no Debug impl"
+)]
 #[derive(Clone)]
 pub struct TlsTransportAcceptor {
     acceptor: TlsAcceptor,

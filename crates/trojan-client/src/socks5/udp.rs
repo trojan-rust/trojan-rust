@@ -86,7 +86,11 @@ pub fn parse_socks5_udp(buf: &[u8]) -> Result<Socks5UdpHeader<'_>, Socks5Error> 
 /// Write a SOCKS5 UDP datagram header + payload into a buffer.
 ///
 /// Returns the full packet bytes.
-#[allow(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the only caller passes an address parsed off the wire, whose \
+              domain length came from a single byte and so cannot exceed 255"
+)]
 pub fn write_socks5_udp(address: &AddressRef<'_>, payload: &[u8]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(32 + payload.len());
 

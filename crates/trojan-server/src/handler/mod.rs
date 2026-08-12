@@ -214,7 +214,6 @@ where
                     // Analytics: record connection event if sampling passes.
                     // The builder sends the event on drop with duration auto-filled.
                     #[cfg(feature = "analytics")]
-                    #[allow(unused_mut)]
                     let analytics_event: AnalyticsEvent =
                         state.analytics.as_ref().and_then(|collector| {
                             if !collector.should_sample(user_id.as_deref()) {
@@ -418,7 +417,10 @@ where
 
 /// Handle TCP CONNECT via a named outbound connector.
 #[cfg(feature = "rules")]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one connection's worth of state; a struct here would only rename the fields"
+)]
 async fn handle_connect_via_outbound<S, A>(
     mut stream: S,
     address: trojan_proto::AddressRef<'_>,
@@ -428,7 +430,7 @@ async fn handle_connect_via_outbound<S, A>(
     auth: Arc<A>,
     user_id: Option<&str>,
     peer: SocketAddr,
-    #[allow(unused_mut)] mut analytics: AnalyticsEvent,
+    analytics: AnalyticsEvent,
 ) -> Result<(), ServerError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,

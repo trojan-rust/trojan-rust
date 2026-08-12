@@ -4,7 +4,12 @@
 //! isolation — nothing drove it through a running server. These do, so the
 //! business rules that gate a connection (disabled, expired, over quota) are
 //! checked where they actually take effect: on the wire.
-#![allow(clippy::tests_outside_test_module)]
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests are their own crate, where every #[test] is \
+              necessarily a free item; the lint targets unit tests that \
+              escaped a #[cfg(test)] mod"
+)]
 
 use std::{
     fs,

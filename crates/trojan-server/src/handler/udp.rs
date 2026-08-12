@@ -18,10 +18,6 @@ use crate::handler::tcp::record_traffic_for_user;
 use crate::resolve::{address_from_socket, resolve_address};
 use crate::state::ServerState;
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one connection's worth of state; a struct here would only rename the fields"
-)]
 /// Handle UDP ASSOCIATE command.
 #[inline]
 #[cfg_attr(
@@ -38,7 +34,7 @@ pub async fn handle_udp_associate<S, A>(
     auth: Arc<A>,
     user_id: Option<&str>,
     peer: SocketAddr,
-    #[allow(unused_mut)] mut analytics: AnalyticsEvent,
+    analytics: AnalyticsEvent,
 ) -> Result<(), ServerError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,

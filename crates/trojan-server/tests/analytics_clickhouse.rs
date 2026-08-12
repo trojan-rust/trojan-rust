@@ -7,7 +7,12 @@
 //! it exercises the whole path: sampling, the bounded channel, the batching
 //! writer, and the insert itself.
 #![cfg(feature = "analytics")]
-#![allow(clippy::tests_outside_test_module)]
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests are their own crate, where every #[test] is \
+              necessarily a free item; the lint targets unit tests that \
+              escaped a #[cfg(test)] mod"
+)]
 
 use std::{
     fs,

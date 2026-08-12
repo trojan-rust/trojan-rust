@@ -18,7 +18,7 @@ use crate::resolve::{resolve_all_addresses, target_to_label};
 use crate::state::ServerState;
 use crate::util::connect_with_buffers;
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "one connection's worth of state; a struct here would only rename the fields"
 )]
@@ -32,7 +32,7 @@ pub async fn handle_connect<S, A>(
     auth: Arc<A>,
     user_id: Option<&str>,
     peer: SocketAddr,
-    #[allow(unused_mut)] mut analytics: AnalyticsEvent,
+    analytics: AnalyticsEvent,
 ) -> Result<(), ServerError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -161,7 +161,14 @@ pub(crate) async fn record_traffic_for_user<A: AuthBackend + ?Sized>(
 /// aborted session still reports what it moved, and the close reason
 /// distinguishes a clean end from a failure. Without this the event shipped
 /// with its byte fields at zero.
-#[allow(unused_variables)]
+#[cfg_attr(
+    not(feature = "analytics"),
+    expect(
+        unused_variables,
+        reason = "the whole body is behind cfg(analytics); with it off there is \
+                  nothing to record and every parameter goes unread"
+    )
+)]
 pub(crate) fn finish_analytics(
     analytics: crate::handler::AnalyticsEvent,
     counters: &trojan_metrics::RelayCounters,

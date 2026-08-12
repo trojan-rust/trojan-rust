@@ -122,7 +122,12 @@ pub fn inspect_mixed(buf: &[u8], cfg: &WsCfg) -> WsInspect {
 }
 
 /// Accept a WebSocket upgrade on the given stream.
-#[allow(clippy::result_large_err)]
+#[expect(
+    clippy::result_large_err,
+    reason = "the Ok variant is a WebSocketStream with its own buffers and \
+              dominates the Result's size, so boxing the error would not \
+              shrink it"
+)]
 pub async fn accept_ws<S>(
     stream: S,
     initial: Bytes,

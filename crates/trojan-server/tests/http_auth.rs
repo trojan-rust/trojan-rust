@@ -9,7 +9,12 @@
 //!
 //! The other half of the contract — that `trojan-dash` answers what `HttpAuth`
 //! expects — is covered by `trojan-dash`'s own `node_protocol` tests.
-#![allow(clippy::tests_outside_test_module)]
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests are their own crate, where every #[test] is \
+              necessarily a free item; the lint targets unit tests that \
+              escaped a #[cfg(test)] mod"
+)]
 
 use std::{
     fs,

@@ -184,7 +184,6 @@ pub fn parse_udp_packet(buf: &[u8]) -> ParseResult<UdpPacket<'_>> {
 /// # Errors
 /// - `InvalidHashLen` if hash is not exactly 56 bytes.
 /// - `DomainTooLong` if address contains a domain longer than 255 bytes.
-#[allow(clippy::cast_possible_truncation)]
 pub fn write_request_header(
     buf: &mut BytesMut,
     hash_hex: &[u8],
@@ -212,7 +211,11 @@ pub fn write_request_header(
 /// # Errors
 /// - `PayloadTooLarge` if payload exceeds 65535 bytes.
 /// - `DomainTooLong` if address contains a domain longer than 255 bytes.
-#[allow(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the length casts are guarded above: payload > u16::MAX and \
+              domain > MAX_DOMAIN_LEN both return early"
+)]
 pub fn write_udp_packet(
     buf: &mut BytesMut,
     address: &AddressRef<'_>,
@@ -301,7 +304,11 @@ fn parse_address<'a>(atyp: u8, buf: &'a [u8]) -> ParseResult<(AddressRef<'a>, us
 }
 
 /// Writes address without validation. Caller must ensure domain length <= 255.
-#[allow(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "domain length <= 255 is the documented caller contract, checked \
+              by the debug_assert below"
+)]
 fn write_address_unchecked(buf: &mut BytesMut, address: &AddressRef<'_>) {
     match address.host {
         HostRef::Ipv4(ip) => {

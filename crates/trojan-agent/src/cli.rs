@@ -98,7 +98,12 @@ async fn agent_loop(config: AgentConfig, shutdown: CancellationToken) {
 
         // Apply jitter: delay * (1 ± jitter)
         let jitter_factor = 1.0 + config.reconnect.jitter * (2.0 * rand_f64() - 1.0);
-        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "jitter_factor is 1 ± jitter, so the product stays within \
+                      a millisecond of delay_ms and cannot go negative"
+        )]
         let actual_delay = (delay_ms as f64 * jitter_factor) as u64;
         let delay = Duration::from_millis(actual_delay);
 
@@ -110,7 +115,12 @@ async fn agent_loop(config: AgentConfig, shutdown: CancellationToken) {
         }
 
         // Exponential backoff
-        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the result is immediately clamped to max_delay_ms, so \
+                      losing the fraction only shortens a backoff by <1ms"
+        )]
         let next = (delay_ms as f64 * config.reconnect.multiplier) as u64;
         delay_ms = next.min(config.reconnect.max_delay_ms);
     }

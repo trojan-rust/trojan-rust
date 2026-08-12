@@ -5,7 +5,12 @@
 //! error handling were only ever exercised against a real panel. `panel_url`
 //! is configurable, so a stand-in panel over plain WebSocket covers the whole
 //! handshake.
-#![allow(clippy::tests_outside_test_module)]
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests are their own crate, where every #[test] is \
+              necessarily a free item; the lint targets unit tests that \
+              escaped a #[cfg(test)] mod"
+)]
 
 use std::net::SocketAddr;
 use std::time::Duration;

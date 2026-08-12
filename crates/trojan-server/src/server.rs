@@ -195,11 +195,11 @@ pub async fn run_with_shutdown(
         map
     };
 
-    // Load GeoIP databases with deduplication.
-    // geoip_server is used indirectly (metrics fallback shares it).
+    // Load GeoIP databases with deduplication. Configs pointing at the same
+    // source share one `Arc`, which happens inside the loader — so the server
+    // handle itself has no user out here.
     #[cfg(feature = "geoip")]
-    #[allow(unused_variables)]
-    let (geoip_server, geoip_metrics, geoip_analytics) =
+    let (_geoip_server, geoip_metrics, geoip_analytics) =
         load_geoip_databases(&config, &shutdown).await;
 
     // Start metrics server (with debug routes if rules feature is enabled)
@@ -559,7 +559,6 @@ pub async fn run(config: Config, auth: impl AuthBackend + 'static) -> Result<(),
 /// Databases can be downloaded from CDN or custom URLs. Auto-update tasks
 /// are spawned for configs with `auto_update = true` and no local `path` set.
 #[cfg(feature = "geoip")]
-#[allow(unused_variables)]
 async fn load_geoip_databases(
     config: &Config,
     shutdown: &CancellationToken,

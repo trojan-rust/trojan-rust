@@ -10,7 +10,12 @@
 //! frame-aligned and unlikely to trigger it, but is included here so we have
 //! e2e coverage for all three transports.
 
-#![allow(clippy::tests_outside_test_module)]
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests are their own crate, where every #[test] is \
+              necessarily a free item; the lint targets unit tests that \
+              escaped a #[cfg(test)] mod"
+)]
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

@@ -15,7 +15,11 @@ use trojan_dns::DnsResolver;
 use crate::error::ClientError;
 
 /// Shared client state for establishing outbound connections.
-#[allow(missing_debug_implementations)]
+#[expect(
+    missing_debug_implementations,
+    reason = "holds a rustls TlsConnector, which has no Debug; a hand-written \
+              one would also risk printing the password hash"
+)]
 pub struct ClientState {
     /// SHA-224 hex hash of the password (56 bytes).
     pub hash_hex: String,
