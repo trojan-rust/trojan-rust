@@ -34,8 +34,48 @@ pub async fn connect(url: &str) -> Result<SqlitePool, DashError> {
     Ok(pool)
 }
 
-/// Create the tables and indexes if they are absent.
+/// Create the tables and indexes if they are absent, then add any columns a
+/// database created by an older version is missing.
 pub async fn bootstrap(pool: &SqlitePool) -> Result<(), DashError> {
     sqlx::raw_sql(SCHEMA).execute(pool).await?;
+    migrate(pool).await
+}
+
+/// Columns added to `nodes` after the table first shipped.
+///
+/// `CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists,
+/// so a database from an earlier version would keep the old shape and every
+/// query naming a new column would fail. SQLite has no `ADD COLUMN IF NOT
+/// EXISTS`, hence the lookup.
+const NODE_COLUMNS: &[(&str, &str)] = &[
+    ("node_type", "TEXT NOT NULL DEFAULT 'server'"),
+    ("config", "TEXT NOT NULL DEFAULT '{}'"),
+    ("config_version", "INTEGER NOT NULL DEFAULT 1"),
+    ("agent_version", "TEXT NOT NULL DEFAULT ''"),
+    ("connections_active", "INTEGER NOT NULL DEFAULT 0"),
+    ("bytes_in", "INTEGER NOT NULL DEFAULT 0"),
+    ("bytes_out", "INTEGER NOT NULL DEFAULT 0"),
+    ("uptime_secs", "INTEGER NOT NULL DEFAULT 0"),
+];
+
+/// Bring an existing database up to the current schema.
+async fn migrate(pool: &SqlitePool) -> Result<(), DashError> {
+    let existing: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('nodes')")
+        .fetch_all(pool)
+        .await?;
+
+    for (column, definition) in NODE_COLUMNS {
+        if existing.iter().any(|name| name == column) {
+            continue;
+        }
+        // Column names and definitions are constants above, never user input.
+        sqlx::query(&format!(
+            "ALTER TABLE nodes ADD COLUMN {column} {definition}"
+        ))
+        .execute(pool)
+        .await?;
+        tracing::info!(column, "added missing nodes column");
+    }
+
     Ok(())
 }

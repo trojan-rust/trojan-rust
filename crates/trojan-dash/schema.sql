@@ -15,14 +15,26 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE INDEX IF NOT EXISTS idx_users_hash ON users(hash);
 
+-- Columns after `created_at` serve the agent protocol: the first three are
+-- what a registering agent is handed, the rest is its last heartbeat. Adding
+-- more of them means adding them to `db::migrate` too, since CREATE TABLE IF
+-- NOT EXISTS leaves an existing table alone.
 CREATE TABLE IF NOT EXISTS nodes (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    name       TEXT NOT NULL UNIQUE,
-    token      TEXT NOT NULL UNIQUE,
-    enabled    INTEGER NOT NULL DEFAULT 1,
-    ip         TEXT NOT NULL DEFAULT '',
-    last_seen  INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL DEFAULT 0
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    name           TEXT NOT NULL UNIQUE,
+    token          TEXT NOT NULL UNIQUE,
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    ip             TEXT NOT NULL DEFAULT '',
+    last_seen      INTEGER NOT NULL DEFAULT 0,
+    created_at     INTEGER NOT NULL DEFAULT 0,
+    node_type      TEXT NOT NULL DEFAULT 'server',
+    config         TEXT NOT NULL DEFAULT '{}',
+    config_version INTEGER NOT NULL DEFAULT 1,
+    agent_version      TEXT NOT NULL DEFAULT '',
+    connections_active INTEGER NOT NULL DEFAULT 0,
+    bytes_in           INTEGER NOT NULL DEFAULT 0,
+    bytes_out          INTEGER NOT NULL DEFAULT 0,
+    uptime_secs        INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS traffic_logs (

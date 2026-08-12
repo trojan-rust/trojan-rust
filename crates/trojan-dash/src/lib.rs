@@ -2,9 +2,11 @@
 //!
 //! Serves three audiences from one process:
 //!
-//! - **nodes** — `/verify` and `/traffic`, the protocol defined in
-//!   [`trojan_auth::protocol`], so a node's `HttpAuth` backend points straight
-//!   at this service
+//! - **nodes** — `/verify`, `/traffic` and `/traffic/chain`, the protocol
+//!   defined in [`trojan_auth::protocol`], so a node's `HttpAuth` backend
+//!   points straight at this service
+//! - **agents** — `/ws/agent`, where a node registers with its token, is
+//!   handed its service config, and reports heartbeats and per-user traffic
 //! - **operators** — `/admin/*`, guarded by a bearer token
 //! - **users** — `/me` and `/sub/{name}`, for usage and subscription links
 //!

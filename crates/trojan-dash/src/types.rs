@@ -131,6 +131,18 @@ pub struct NodeRow {
     pub ip: String,
     pub last_seen: i64,
     pub created_at: i64,
+    /// Which service the agent on this node boots.
+    pub node_type: String,
+    /// Opaque service config, handed to the agent verbatim.
+    pub config: String,
+    /// Bumped on every config change, so an agent can tell one apart.
+    pub config_version: i64,
+    /// What the last heartbeat said. Zero until an agent connects.
+    pub agent_version: String,
+    pub connections_active: i64,
+    pub bytes_in: i64,
+    pub bytes_out: i64,
+    pub uptime_secs: i64,
 }
 
 impl NodeRow {
@@ -143,6 +155,16 @@ impl NodeRow {
             ip: self.ip.clone(),
             last_seen: nonneg(self.last_seen),
             created_at: nonneg(self.created_at),
+            node_type: self.node_type.clone(),
+            // Stored as text so the panel never has to understand it; parsed
+            // here only so the API answers with JSON rather than a JSON string.
+            config: serde_json::from_str(&self.config).unwrap_or(serde_json::Value::Null),
+            config_version: nonneg(self.config_version),
+            agent_version: self.agent_version.clone(),
+            connections_active: nonneg(self.connections_active),
+            bytes_in: nonneg(self.bytes_in),
+            bytes_out: nonneg(self.bytes_out),
+            uptime_secs: nonneg(self.uptime_secs),
         }
     }
 }
@@ -157,12 +179,30 @@ pub struct NodeResponse {
     pub ip: String,
     pub last_seen: u64,
     pub created_at: u64,
+    pub node_type: String,
+    pub config: serde_json::Value,
+    pub config_version: u64,
+    pub agent_version: String,
+    pub connections_active: u64,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub uptime_secs: u64,
 }
 
 /// `POST /admin/nodes` body.
 #[derive(Debug, Deserialize)]
 pub struct AddNodeRequest {
     pub name: String,
+    /// Service to boot: `server`, `entry` or `relay`. Defaults to `server`.
+    #[serde(default = "default_node_type")]
+    pub node_type: String,
+    /// Service config for the agent, passed through untouched.
+    #[serde(default)]
+    pub config: Option<serde_json::Value>,
+}
+
+fn default_node_type() -> String {
+    "server".to_owned()
 }
 
 /// `PATCH /admin/nodes/:id` body.
@@ -170,6 +210,9 @@ pub struct AddNodeRequest {
 pub struct UpdateNodeRequest {
     pub name: Option<String>,
     pub enabled: Option<bool>,
+    pub node_type: Option<String>,
+    /// Replaces the stored config and bumps `config_version`.
+    pub config: Option<serde_json::Value>,
 }
 
 // ── traffic_logs ──────────────────────────────────────────────────

@@ -10,7 +10,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use crate::auth::AdminAuth;
 use crate::db;
 use crate::error::DashError;
-use crate::handler::{me, node_api, nodes, sub, templates, traffic, users};
+use crate::handler::{agent, me, node_api, nodes, sub, templates, traffic, users};
 use crate::state::AppState;
 
 /// Build the router. When `panel_dir` is set the built panel is served from
@@ -24,6 +24,8 @@ pub fn router(state: AppState, panel_dir: Option<&Path>) -> Router {
         .route("/verify", post(node_api::verify))
         .route("/traffic", post(node_api::traffic))
         .route("/traffic/chain", post(node_api::chain_traffic))
+        // Agents
+        .route("/ws/agent", get(agent::ws))
         // Admin — users
         .route("/admin/users", get(users::list).post(users::add))
         .route(

@@ -14,8 +14,7 @@ categories = ["network-programming"]
 [dependencies]
 trojan-auth = { workspace = true, features = ["protocol"] }
 trojan-core.workspace = true
-
-axum.workspace = true
+axum = { workspace = true, features = ["ws"] }
 base64 = "0.22"
 bincode.workspace = true
 clap.workspace = true
@@ -43,12 +42,16 @@ toml.workspace = true
 tower-http = { version = "0.6", features = ["fs"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+trojan-protocol.workspace = true
 
 [dev-dependencies]
 # Drives the node-facing protocol in tests the same way a real node does.
 trojan-auth = { workspace = true, features = ["http", "protocol"] }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 tempfile.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+bincode.workspace = true
 
 [lints]
 workspace = true

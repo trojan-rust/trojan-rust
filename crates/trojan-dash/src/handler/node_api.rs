@@ -56,7 +56,26 @@ pub async fn traffic(
     let Ok(user_id) = request.user_id.parse::<i64>() else {
         return Ok(codec.encode(&Err::<(), _>(AuthError::NotFound)));
     };
-    let bytes = clamp_i64(request.bytes);
+
+    if !apply_traffic(&state, user_id, node.node_id, request.bytes).await? {
+        return Ok(codec.encode(&Err::<(), _>(AuthError::NotFound)));
+    }
+
+    Ok(codec.encode(&Ok::<(), AuthError>(())))
+}
+
+/// Add `bytes` to a user's usage and to today's total for one node.
+///
+/// Returns `false` when the user does not exist, which is the caller's cue to
+/// answer `NotFound` rather than to fail. Shared with the agent socket, which
+/// reports the same numbers over a different transport.
+pub(crate) async fn apply_traffic(
+    state: &AppState,
+    user_id: i64,
+    node_id: i64,
+    bytes: u64,
+) -> Result<bool, DashError> {
+    let bytes = clamp_i64(bytes);
 
     // The running total and the daily row are one accounting event; a partial
     // apply would silently misreport usage.
@@ -71,7 +90,7 @@ pub async fn traffic(
 
     if updated == 0 {
         // Dropping the transaction rolls it back.
-        return Ok(codec.encode(&Err::<(), _>(AuthError::NotFound)));
+        return Ok(false);
     }
 
     sqlx::query(
@@ -79,7 +98,7 @@ pub async fn traffic(
          ON CONFLICT(user_id, node_id, date) DO UPDATE SET bytes = bytes + ?3",
     )
     .bind(user_id)
-    .bind(node.node_id)
+    .bind(node_id)
     .bind(bytes)
     .bind(today_date())
     .execute(&mut *tx)
@@ -87,7 +106,7 @@ pub async fn traffic(
 
     tx.commit().await?;
 
-    Ok(codec.encode(&Ok::<(), AuthError>(())))
+    Ok(true)
 }
 
 /// `POST /traffic/chain` — credit a relay hop for traffic it carried.
