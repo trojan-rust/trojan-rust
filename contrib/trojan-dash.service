@@ -9,11 +9,15 @@ ExecStart=/usr/local/bin/trojan dash -c /etc/trojan/dash.toml
 Restart=on-failure
 RestartSec=3
 
-# Keep the admin token out of the config file, which the panel directory sits
-# next to and a backup may copy.
-Environment=TROJAN_DASH_ADMIN_TOKEN=
-# Better still, replace the line above with a file readable only by root:
-# EnvironmentFile=/etc/trojan/dash.env
+# Keeps the admin token out of the config file, which the panel directory sits
+# next to and a backup may copy. One line, mode 600, root-owned:
+#
+#     TROJAN_DASH_ADMIN_TOKEN=...
+#
+# Optional (the leading `-`) so a config file carrying the token still works.
+# Either way a token that is nowhere to be found fails the service at startup
+# rather than leaving /admin/* open.
+EnvironmentFile=-/etc/trojan/dash.env
 
 StandardOutput=journal
 StandardError=journal

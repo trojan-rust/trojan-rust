@@ -18,6 +18,11 @@ See [`dash.example.toml`](dash.example.toml) for the settings, and
 [`contrib/trojan-dash.service`](../../contrib/trojan-dash.service) for a unit
 file.
 
+`/admin/*` is guarded by a bearer token, read from `TROJAN_DASH_ADMIN_TOKEN` if
+set and from `admin_token` otherwise. Prefer the environment: the config file
+sits next to the panel directory a backup may copy. The unit reads it from a
+root-only `/etc/trojan/dash.env`. Startup fails when neither supplies one.
+
 ## What it serves
 
 | Path | Caller |
