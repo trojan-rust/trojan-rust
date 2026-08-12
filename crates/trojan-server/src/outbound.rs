@@ -53,7 +53,11 @@ impl std::fmt::Debug for Outbound {
 }
 
 /// An established outbound connection, ready for relay.
-#[allow(clippy::large_enum_variant)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the TLS variant embeds a rustls connection; boxing it would trade \
+              one move per connection for an indirection on every relay poll"
+)]
 pub enum OutboundStream {
     /// Plain TCP stream (from direct connection).
     Tcp(TcpStream),
@@ -238,7 +242,6 @@ impl Outbound {
 }
 
 /// Connect to target with a specific local bind address.
-#[allow(clippy::cast_possible_truncation)]
 async fn connect_with_bind(
     target: SocketAddr,
     bind_ip: IpAddr,
@@ -252,10 +255,10 @@ async fn connect_with_bind(
         tokio::net::TcpSocket::new_v6()?
     };
     if send_buf > 0 {
-        socket.set_send_buffer_size(send_buf as u32)?;
+        socket.set_send_buffer_size(u32::try_from(send_buf).unwrap_or(u32::MAX))?;
     }
     if recv_buf > 0 {
-        socket.set_recv_buffer_size(recv_buf as u32)?;
+        socket.set_recv_buffer_size(u32::try_from(recv_buf).unwrap_or(u32::MAX))?;
     }
     let bind_addr = SocketAddr::new(bind_ip, 0);
     socket.bind(bind_addr)?;

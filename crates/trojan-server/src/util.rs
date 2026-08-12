@@ -84,12 +84,6 @@ impl Drop for ConnectionGuard {
 }
 
 /// Create a TCP listener with custom backlog and TCP options.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::ptr_as_ptr
-)]
 pub fn create_listener(
     addr: SocketAddr,
     backlog: u32,
@@ -120,7 +114,13 @@ pub fn create_listener(
         use std::os::unix::io::AsRawFd;
         // TCP_FASTOPEN = 23 on Linux
         const TCP_FASTOPEN: libc::c_int = 23;
-        let qlen = tcp_cfg.fast_open_qlen as libc::c_int;
+        let qlen = libc::c_int::try_from(tcp_cfg.fast_open_qlen).unwrap_or(libc::c_int::MAX);
+        // Conversions rather than `as`: usize is 4 bytes on the i686 and armv7
+        // targets we release and 8 on the rest, so a cast would truncate on
+        // only half of them — and any lint suppression for it would be
+        // unfulfilled on the other half.
+        let qlen_size =
+            libc::socklen_t::try_from(size_of::<libc::c_int>()).unwrap_or(libc::socklen_t::MAX);
         // SAFETY: libc FFI calls require unsafe; the socket fd and address pointers are valid.
         let ret = unsafe {
             libc::setsockopt(
@@ -128,7 +128,7 @@ pub fn create_listener(
                 libc::IPPROTO_TCP,
                 TCP_FASTOPEN,
                 (&qlen as *const libc::c_int).cast::<libc::c_void>(),
-                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                qlen_size,
             )
         };
         if ret != 0 {
@@ -138,7 +138,7 @@ pub fn create_listener(
     }
 
     socket.bind(&addr.into())?;
-    socket.listen(backlog as i32)?;
+    socket.listen(i32::try_from(backlog).unwrap_or(i32::MAX))?;
     let listener = TcpListener::from_std(std::net::TcpListener::from(socket))?;
     Ok(listener)
 }
@@ -162,11 +162,6 @@ pub fn apply_tcp_options(stream: &TcpStream, tcp_cfg: &TcpConfig) -> std::io::Re
 }
 
 /// Connect to target with optional socket buffer configuration.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss
-)]
 pub async fn connect_with_buffers(
     target: SocketAddr,
     send_buf: usize,
@@ -179,10 +174,10 @@ pub async fn connect_with_buffers(
         tokio::net::TcpSocket::new_v6()?
     };
     if send_buf > 0 {
-        socket.set_send_buffer_size(send_buf as u32)?;
+        socket.set_send_buffer_size(u32::try_from(send_buf).unwrap_or(u32::MAX))?;
     }
     if recv_buf > 0 {
-        socket.set_recv_buffer_size(recv_buf as u32)?;
+        socket.set_recv_buffer_size(u32::try_from(recv_buf).unwrap_or(u32::MAX))?;
     }
 
     let stream = socket.connect(target).await?;
