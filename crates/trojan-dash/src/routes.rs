@@ -23,6 +23,7 @@ pub fn router(state: AppState, panel_dir: Option<&Path>) -> Router {
         // Node-facing
         .route("/verify", post(node_api::verify))
         .route("/traffic", post(node_api::traffic))
+        .route("/traffic/chain", post(node_api::chain_traffic))
         // Admin — users
         .route("/admin/users", get(users::list).post(users::add))
         .route(

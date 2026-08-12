@@ -11,6 +11,7 @@ mod handler;
 #[cfg(feature = "rules")]
 mod outbound;
 mod pool;
+mod proxy;
 mod rate_limit;
 mod relay;
 mod resolve;

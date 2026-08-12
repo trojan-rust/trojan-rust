@@ -1,8 +1,11 @@
 //! Configuration type definitions for server, TLS, WebSocket, auth, metrics, and logging.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 
-use serde::{Deserialize, Serialize};
+use ipnet::IpNet;
+use serde::ser::SerializeSeq;
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::defaults::*;
 
@@ -47,6 +50,79 @@ pub struct ServerConfig {
     /// GeoIP database configuration for rule-based routing.
     #[serde(default)]
     pub geoip: Option<GeoipConfig>,
+    /// Senders allowed to introduce a connection with a PROXY protocol header.
+    #[serde(default)]
+    pub proxy_protocol: ProxyProtocolConfig,
+}
+
+/// Who may hand this server a PROXY protocol v2 header, and thereby name the
+/// client and the relay chain a connection came through.
+///
+/// A header is a claim about someone else, so it is only believed from an
+/// address the operator listed: relays and load balancers that sit directly in
+/// front of this server. An empty list turns the feature off entirely, since
+/// believing anyone would let any client on the internet pick the address it
+/// is rate-limited and logged as, and the nodes its traffic is billed to.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProxyProtocolConfig {
+    /// Trusted senders, as addresses (`10.0.0.7`) or blocks (`10.0.0.0/24`).
+    #[serde(
+        default,
+        deserialize_with = "deserialize_networks",
+        serialize_with = "serialize_networks"
+    )]
+    pub trusted: Vec<IpNet>,
+}
+
+impl ProxyProtocolConfig {
+    /// Whether any sender is trusted, and so whether to look for a header.
+    pub fn is_enabled(&self) -> bool {
+        !self.trusted.is_empty()
+    }
+
+    /// Whether a header arriving from `peer` may be believed.
+    pub fn trusts(&self, peer: IpAddr) -> bool {
+        // A dual-stack listener reports an IPv4 sender as `::ffff:a.b.c.d`,
+        // which no IPv4 block would match. Test the address the operator
+        // would have written down as well as the one the socket reports.
+        let unmapped = match peer {
+            IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4),
+            IpAddr::V4(_) => None,
+        };
+        self.trusted
+            .iter()
+            .any(|net| net.contains(&peer) || unmapped.is_some_and(|addr| net.contains(&addr)))
+    }
+}
+
+/// Accept both plain addresses and CIDR blocks, so an operator listing a
+/// single relay does not have to write `/32`.
+fn deserialize_networks<'de, D>(deserializer: D) -> Result<Vec<IpNet>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Vec::<String>::deserialize(deserializer)?
+        .into_iter()
+        .map(|entry| {
+            entry
+                .parse::<IpNet>()
+                .or_else(|_| entry.parse::<IpAddr>().map(IpNet::from))
+                .map_err(|_| {
+                    de::Error::custom(format!("invalid IP address or CIDR block: {entry:?}"))
+                })
+        })
+        .collect()
+}
+
+fn serialize_networks<S>(networks: &[IpNet], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let mut seq = serializer.serialize_seq(Some(networks.len()))?;
+    for net in networks {
+        seq.serialize_element(&net.to_string())?;
+    }
+    seq.end()
 }
 
 /// GeoIP MaxMind database configuration.
@@ -517,5 +593,43 @@ source = "dbip-country"
         assert_eq!(cfg.listen.as_deref(), Some("0.0.0.0:9100"));
         let geoip = cfg.geoip.unwrap();
         assert_eq!(geoip.source, "dbip-country");
+    }
+
+    #[test]
+    fn proxy_protocol_is_off_until_a_sender_is_trusted() {
+        let cfg = ProxyProtocolConfig::default();
+        assert!(!cfg.is_enabled());
+        assert!(!cfg.trusts("10.0.0.7".parse().unwrap()));
+    }
+
+    #[test]
+    fn proxy_protocol_trusts_bare_addresses_and_blocks() {
+        let cfg: ProxyProtocolConfig =
+            toml::from_str(r#"trusted = ["10.0.0.7", "192.168.8.0/24", "2001:db8::/32"]"#).unwrap();
+
+        assert!(cfg.is_enabled());
+        assert!(cfg.trusts("10.0.0.7".parse().unwrap()));
+        assert!(!cfg.trusts("10.0.0.8".parse().unwrap()));
+        assert!(cfg.trusts("192.168.8.99".parse().unwrap()));
+        assert!(!cfg.trusts("192.168.9.1".parse().unwrap()));
+        assert!(cfg.trusts("2001:db8::1".parse().unwrap()));
+    }
+
+    /// A dual-stack listener reports IPv4 senders in mapped form, which would
+    /// otherwise never match the block an operator wrote.
+    #[test]
+    fn proxy_protocol_trusts_ipv4_mapped_senders() {
+        let cfg: ProxyProtocolConfig = toml::from_str(r#"trusted = ["10.0.0.0/8"]"#).unwrap();
+
+        assert!(cfg.trusts("::ffff:10.0.0.7".parse().unwrap()));
+        assert!(!cfg.trusts("::ffff:11.0.0.7".parse().unwrap()));
+    }
+
+    #[test]
+    fn proxy_protocol_rejects_nonsense_entries() {
+        let err = toml::from_str::<ProxyProtocolConfig>(r#"trusted = ["not-an-address"]"#)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not-an-address"), "unexpected error: {err}");
     }
 }

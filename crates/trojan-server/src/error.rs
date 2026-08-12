@@ -27,6 +27,8 @@ pub enum ServerError {
     UdpPayloadTooLarge,
     #[error("rules: {0}")]
     Rules(String),
+    #[error("proxy protocol: {0}")]
+    ProxyProtocol(#[from] trojan_core::proxy_protocol::ProxyProtocolError),
 }
 
 impl ServerError {
@@ -37,7 +39,9 @@ impl ServerError {
             ServerError::Tls(_) => ERROR_TLS_HANDSHAKE,
             ServerError::Auth(_) => ERROR_AUTH,
             ServerError::Config(_) | ServerError::Rules(_) => ERROR_CONFIG,
-            ServerError::Proto(_) | ServerError::ProtoWrite(_) => ERROR_PROTOCOL,
+            ServerError::Proto(_) | ServerError::ProtoWrite(_) | ServerError::ProxyProtocol(_) => {
+                ERROR_PROTOCOL
+            }
             ServerError::Resolve => ERROR_RESOLVE,
             ServerError::UdpPayloadTooLarge => ERROR_PROTOCOL,
         }

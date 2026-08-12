@@ -116,6 +116,7 @@ pub struct HttpStore {
     client: Client,
     verify_url: String,
     traffic_url: String,
+    chain_traffic_url: String,
     codec: Codec,
     node_token: Option<String>,
 }
@@ -128,9 +129,27 @@ impl HttpStore {
             client: Client::new(),
             verify_url: format!("{base}/verify"),
             traffic_url: format!("{base}/traffic"),
+            chain_traffic_url: format!("{base}/traffic/chain"),
             codec,
             node_token,
         }
+    }
+
+    /// Credit one relay hop with bytes it carried for a user.
+    async fn add_chain_traffic(
+        &self,
+        user_id: &str,
+        node_id: &str,
+        bytes: u64,
+    ) -> Result<(), AuthError> {
+        let req = protocol::ChainTrafficRequest {
+            user_id: user_id.to_owned(),
+            node_id: node_id.to_owned(),
+            bytes,
+        };
+        let result: Result<(), protocol::AuthError> =
+            self.request(&self.chain_traffic_url, &req).await?;
+        result.map_err(Into::into)
     }
 
     /// Send a request and decode the response.
@@ -222,6 +241,16 @@ impl UserStore for HttpStore {
 /// - Negative caching for invalid hashes
 pub struct HttpAuth {
     inner: StoreAuth<HttpStore>,
+    /// Batches the credit owed to relay hops, keyed per user and hop so bytes
+    /// for one user across two chains are not merged into one.
+    chain_recorder: Option<TrafficRecorder<ChainCredit>>,
+}
+
+/// One relay hop's share of a user's traffic, as a batch key.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ChainCredit {
+    user_id: String,
+    node_id: String,
 }
 
 impl HttpAuth {
@@ -273,7 +302,44 @@ impl HttpAuth {
             auth = auth.with_traffic_recorder(recorder);
         }
 
-        Self { inner: auth }
+        // Chain credit is batched on its own schedule and never touches the
+        // cache: it does not move anyone's quota, so a verify decision never
+        // waits on it.
+        let chain_store = HttpStore::new(&config.base_url, config.codec, config.node_token.clone());
+        let chain_flush: FlushFn<ChainCredit> = Arc::new(move |batch| {
+            let store = chain_store.clone();
+            Box::pin(async move {
+                let mut tasks = tokio::task::JoinSet::new();
+                for (credit, bytes) in batch {
+                    let store = store.clone();
+                    tasks.spawn(async move {
+                        if let Err(e) = store
+                            .add_chain_traffic(&credit.user_id, &credit.node_id, bytes)
+                            .await
+                        {
+                            tracing::warn!(
+                                user_id = %credit.user_id,
+                                node_id = %credit.node_id,
+                                bytes = bytes,
+                                error = %e,
+                                "failed to flush chain traffic record"
+                            );
+                        }
+                    });
+                }
+                while tasks.join_next().await.is_some() {}
+                Ok(())
+            })
+        });
+
+        Self {
+            inner: auth,
+            chain_recorder: Some(TrafficRecorder::new(
+                store_config.batch_flush_interval,
+                store_config.batch_max_pending,
+                chain_flush,
+            )),
+        }
     }
 }
 
@@ -287,8 +353,32 @@ impl AuthBackend for HttpAuth {
         self.inner.record_traffic(user_id, bytes).await
     }
 
+    async fn record_chain_traffic(
+        &self,
+        user_id: &str,
+        bytes: u64,
+        nodes: &[String],
+    ) -> Result<(), AuthError> {
+        let Some(ref recorder) = self.chain_recorder else {
+            return Ok(());
+        };
+        for node_id in nodes {
+            recorder.record(
+                ChainCredit {
+                    user_id: user_id.to_owned(),
+                    node_id: node_id.clone(),
+                },
+                bytes,
+            );
+        }
+        Ok(())
+    }
+
     async fn shutdown(&self) {
         self.inner.shutdown().await;
+        if let Some(ref recorder) = self.chain_recorder {
+            recorder.shutdown().await;
+        }
     }
 }
 

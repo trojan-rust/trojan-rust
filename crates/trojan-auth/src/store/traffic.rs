@@ -8,8 +8,8 @@
 //! three stages before reaching the backend:
 //!
 //! 1. **mpsc** — in the unbounded channel between callers and the loop task.
-//! 2. **pending** — coalesced into the `pending` map keyed by user_id; awaits
-//!    either the next tick or the unique-users threshold.
+//! 2. **pending** — coalesced into the `pending` map by batch key; awaits
+//!    either the next tick or the unique-key threshold.
 //! 3. **in-flight** — taken from `pending` and currently being flushed by a
 //!    task tracked in the loop's [`tokio::task::JoinSet`]. Bytes stay in
 //!    `in_flight` until the flush future resolves (success *or* failure),
@@ -25,6 +25,7 @@
 //! await every in-flight flush before returning.
 
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
@@ -36,40 +37,53 @@ use tokio_util::sync::CancellationToken;
 
 use crate::AuthError;
 
+/// What a batch coalesces on: cheap to clone, hashable, and safe to move into
+/// the background loop.
+///
+/// A user id is the common case, and the default. Reports that credit a hop of
+/// a relay chain key on the user and that hop together, so bytes for one user
+/// across two chains stay apart.
+pub trait BatchKey: Eq + Hash + Clone + Send + Sync + 'static {}
+
+impl<K: Eq + Hash + Clone + Send + Sync + 'static> BatchKey for K {}
+
 /// Traffic update message.
-struct TrafficUpdate {
-    user_id: String,
+struct TrafficUpdate<K> {
+    key: K,
     bytes: u64,
 }
 
 /// Flush function type for batched traffic updates.
-pub type FlushFn = Arc<dyn Fn(HashMap<String, u64>) -> FlushFuture + Send + Sync + 'static>;
+pub type FlushFn<K = String> = Arc<dyn Fn(HashMap<K, u64>) -> FlushFuture + Send + Sync + 'static>;
 
 /// Future type for flush operations.
 pub type FlushFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), AuthError>> + Send + 'static>>;
 
 /// Traffic recorder that batches updates.
-pub struct TrafficRecorder {
-    sender: mpsc::UnboundedSender<TrafficUpdate>,
+pub struct TrafficRecorder<K = String>
+where
+    K: BatchKey,
+{
+    sender: mpsc::UnboundedSender<TrafficUpdate<K>>,
     /// Bytes coalesced but not yet handed to a flush task.
-    pending: Arc<Mutex<HashMap<String, u64>>>,
+    pending: Arc<Mutex<HashMap<K, u64>>>,
     /// Bytes handed to an in-progress flush task.
-    in_flight: Arc<Mutex<HashMap<String, u64>>>,
+    in_flight: Arc<Mutex<HashMap<K, u64>>>,
     shutdown: CancellationToken,
     /// Background loop join handle, taken on shutdown.
     task: StdMutex<Option<JoinHandle<()>>>,
 }
 
-impl TrafficRecorder {
+impl<K: BatchKey> TrafficRecorder<K> {
     /// Create a new traffic recorder with batching.
     ///
     /// `max_unique_users` triggers a flush as soon as the pending map contains
     /// that many distinct user_ids (it does *not* count total updates).
-    pub fn new(flush_interval: Duration, max_unique_users: usize, flush_fn: FlushFn) -> Self {
-        let (tx, mut rx) = mpsc::unbounded_channel::<TrafficUpdate>();
-        let pending: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
-        let in_flight: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+    pub fn new(flush_interval: Duration, max_unique_users: usize, flush_fn: FlushFn<K>) -> Self {
+        let (tx, mut rx) = mpsc::unbounded_channel::<TrafficUpdate<K>>();
+        let pending: Arc<Mutex<HashMap<K, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+        let in_flight: Arc<Mutex<HashMap<K, u64>>> = Arc::new(Mutex::new(HashMap::new()));
         let shutdown = CancellationToken::new();
 
         let pending_loop = pending.clone();
@@ -95,7 +109,7 @@ impl TrafficRecorder {
                         // Drain any updates still sitting in the channel.
                         while let Ok(update) = rx.try_recv() {
                             let mut map = pending_loop.lock();
-                            *map.entry(update.user_id).or_insert(0) += update.bytes;
+                            *map.entry(update.key).or_insert(0) += update.bytes;
                         }
                         // Final flush — schedule it and then wait for *all*
                         // in-flight flushes (including ones spawned earlier
@@ -118,7 +132,7 @@ impl TrafficRecorder {
                     Some(update) = rx.recv() => {
                         let batch = {
                             let mut map = pending_loop.lock();
-                            *map.entry(update.user_id).or_insert(0) += update.bytes;
+                            *map.entry(update.key).or_insert(0) += update.bytes;
                             if map.len() >= max_unique_users {
                                 Some(std::mem::take(&mut *map))
                             } else {
@@ -170,8 +184,8 @@ impl TrafficRecorder {
 
     /// Record traffic (non-blocking, queues for batch).
     #[inline]
-    pub fn record(&self, user_id: String, bytes: u64) {
-        let _ = self.sender.send(TrafficUpdate { user_id, bytes });
+    pub fn record(&self, key: K, bytes: u64) {
+        let _ = self.sender.send(TrafficUpdate { key, bytes });
     }
 
     /// Bytes recorded for `user_id` that have not yet reached the backend.
@@ -184,9 +198,13 @@ impl TrafficRecorder {
     /// Bytes still sitting in the mpsc channel before the loop has consumed
     /// them are *not* included; the channel turnover is sub-millisecond, so
     /// missing them does not change the answer in practice.
-    pub fn pending_for(&self, user_id: &str) -> u64 {
-        let pending = self.pending.lock().get(user_id).copied().unwrap_or(0);
-        let in_flight = self.in_flight.lock().get(user_id).copied().unwrap_or(0);
+    pub fn pending_for<Q>(&self, key: &Q) -> u64
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let pending = self.pending.lock().get(key).copied().unwrap_or(0);
+        let in_flight = self.in_flight.lock().get(key).copied().unwrap_or(0);
         pending.saturating_add(in_flight)
     }
 
@@ -210,7 +228,7 @@ impl TrafficRecorder {
     }
 }
 
-impl std::fmt::Debug for TrafficRecorder {
+impl<K: BatchKey> std::fmt::Debug for TrafficRecorder<K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TrafficRecorder")
             .field("pending_users", &self.pending.lock().len())
@@ -220,7 +238,7 @@ impl std::fmt::Debug for TrafficRecorder {
     }
 }
 
-impl Drop for TrafficRecorder {
+impl<K: BatchKey> Drop for TrafficRecorder<K> {
     fn drop(&mut self) {
         // Best-effort: cancel so the loop exits even if shutdown() was not
         // awaited. Pending bytes that haven't been flushed yet are still lost
@@ -235,18 +253,18 @@ impl Drop for TrafficRecorder {
 /// Registering happens synchronously before the future is returned, so callers
 /// of [`TrafficRecorder::pending_for`] see the bytes the moment this function
 /// returns — not whenever the spawned task happens to be scheduled.
-fn build_flush_task(
-    in_flight: Arc<Mutex<HashMap<String, u64>>>,
-    flush_fn: FlushFn,
-    batch: HashMap<String, u64>,
+fn build_flush_task<K: BatchKey>(
+    in_flight: Arc<Mutex<HashMap<K, u64>>>,
+    flush_fn: FlushFn<K>,
+    batch: HashMap<K, u64>,
 ) -> impl std::future::Future<Output = ()> + Send + 'static {
-    let entries: Vec<(String, u64)> = {
+    let entries: Vec<(K, u64)> = {
         let mut map = in_flight.lock();
         batch
             .iter()
-            .map(|(uid, &bytes)| {
-                *map.entry(uid.clone()).or_insert(0) += bytes;
-                (uid.clone(), bytes)
+            .map(|(key, &bytes)| {
+                *map.entry(key.clone()).or_insert(0) += bytes;
+                (key.clone(), bytes)
             })
             .collect()
     };
@@ -256,11 +274,11 @@ fn build_flush_task(
             tracing::warn!(error = %e, "traffic flush failed; bytes lost");
         }
         let mut map = in_flight.lock();
-        for (uid, bytes) in entries {
-            if let Some(entry) = map.get_mut(&uid) {
+        for (key, bytes) in entries {
+            if let Some(entry) = map.get_mut(&key) {
                 *entry = entry.saturating_sub(bytes);
                 if *entry == 0 {
-                    map.remove(&uid);
+                    map.remove(&key);
                 }
             }
         }

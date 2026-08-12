@@ -36,6 +36,26 @@ pub struct TrafficRequest {
     pub bytes: u64,
 }
 
+/// `POST /traffic/chain` request body.
+///
+/// Reports bytes another node carried for a user: the relay hops a connection
+/// crossed on its way to the node sending this. Those hops cannot see who
+/// their traffic belongs to — the trojan handshake is inside end-to-end TLS
+/// only the exit terminates — so the exit reports on their behalf.
+///
+/// The bytes are the same ones the matching [`TrafficRequest`] carries, not
+/// additional ones, and they do not move the user's quota: a three-hop chain
+/// should not cost a user three times what it moved.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChainTrafficRequest {
+    /// User the traffic belongs to, as returned by `/verify`.
+    pub user_id: String,
+    /// The hop being credited, as the entry node named it.
+    pub node_id: String,
+    /// Bytes that hop carried.
+    pub bytes: u64,
+}
+
 /// Successful `/verify` response.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AuthResult {

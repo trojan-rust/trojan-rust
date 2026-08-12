@@ -223,6 +223,7 @@ impl TestServer {
                 rule_providers: Default::default(),
                 rules: Default::default(),
                 geoip: None,
+                proxy_protocol: Default::default(),
             },
             tls: TlsConfig {
                 cert: cert_path.to_string_lossy().to_string(),
@@ -480,6 +481,7 @@ async fn test_graceful_shutdown() {
             rule_providers: Default::default(),
             rules: Default::default(),
             geoip: None,
+            proxy_protocol: Default::default(),
         },
         tls: TlsConfig {
             cert: cert_path.to_string_lossy().to_string(),
@@ -646,6 +648,7 @@ async fn test_max_connections_limit() {
             rule_providers: Default::default(),
             rules: Default::default(),
             geoip: None,
+            proxy_protocol: Default::default(),
         },
         tls: TlsConfig {
             cert: cert_path.to_string_lossy().to_string(),
@@ -800,6 +803,7 @@ async fn test_rate_limiting() {
             rule_providers: Default::default(),
             rules: Default::default(),
             geoip: None,
+            proxy_protocol: Default::default(),
         },
         tls: TlsConfig {
             cert: cert_path.to_string_lossy().to_string(),
@@ -937,6 +941,7 @@ async fn test_tls13_only() {
             rule_providers: Default::default(),
             rules: Default::default(),
             geoip: None,
+            proxy_protocol: Default::default(),
         },
         tls: TlsConfig {
             cert: cert_path.to_string_lossy().to_string(),
@@ -1138,6 +1143,7 @@ async fn test_udp_idle_timeout() {
             rule_providers: Default::default(),
             rules: Default::default(),
             geoip: None,
+            proxy_protocol: Default::default(),
         },
         tls: TlsConfig {
             cert: cert_path.to_string_lossy().to_string(),
@@ -1384,6 +1390,7 @@ async fn test_tcp_idle_timeout() {
             rule_providers: Default::default(),
             rules: Default::default(),
             geoip: None,
+            proxy_protocol: Default::default(),
         },
         tls: TlsConfig {
             cert: cert_path.to_string_lossy().to_string(),
@@ -2299,6 +2306,7 @@ mod multi_worker_tests {
                     rule_providers: Default::default(),
                     rules: Default::default(),
                     geoip: None,
+                    proxy_protocol: Default::default(),
                 },
                 tls: TlsConfig {
                     cert: pki.cert_path.to_string_lossy().into_owned(),
@@ -2580,6 +2588,7 @@ mod config_surface_tests {
                     rule_providers: Default::default(),
                     rules: Default::default(),
                     geoip: None,
+                    proxy_protocol: Default::default(),
                 },
                 tls: TlsConfig {
                     cert: cert_path.to_string_lossy().into_owned(),
@@ -3281,6 +3290,7 @@ mod websocket_tests {
                     rule_providers: Default::default(),
                     rules: Default::default(),
                     geoip: None,
+                    proxy_protocol: Default::default(),
                 },
                 tls: TlsConfig {
                     cert: cert_path.to_string_lossy().into_owned(),
@@ -3623,6 +3633,7 @@ mod rules_tests {
                     rule_providers,
                     rules,
                     geoip: None,
+                    proxy_protocol: Default::default(),
                 },
                 tls: TlsConfig {
                     cert: cert_path.to_string_lossy().to_string(),

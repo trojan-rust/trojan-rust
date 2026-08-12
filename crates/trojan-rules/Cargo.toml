@@ -19,7 +19,7 @@ http = ["reqwest", "tokio", "tokio-util"]
 [dependencies]
 aho-corasick = "1"
 arc-swap.workspace = true
-ipnet = "2"
+ipnet.workspace = true
 maxminddb = { version = "0.28", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 rustc-hash = "2"

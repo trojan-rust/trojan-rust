@@ -213,6 +213,7 @@ impl TestServer {
                 rule_providers: Default::default(),
                 rules: Default::default(),
                 geoip: None,
+                proxy_protocol: Default::default(),
             },
             tls: TlsConfig {
                 cert: cert_path.to_string_lossy().into_owned(),

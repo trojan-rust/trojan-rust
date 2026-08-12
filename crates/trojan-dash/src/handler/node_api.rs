@@ -1,4 +1,4 @@
-//! The endpoints nodes call: `/verify` and `/traffic`.
+//! The endpoints nodes call: `/verify`, `/traffic` and `/traffic/chain`.
 //!
 //! Both answer with an encoded `Result` under HTTP 200 — a rejected user is an
 //! answer, not a transport failure. Only a bad token, a malformed body, or a
@@ -8,7 +8,9 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::Response;
-use trojan_auth::protocol::{AuthError, AuthResult, TrafficRequest, VerifyRequest};
+use trojan_auth::protocol::{
+    AuthError, AuthResult, ChainTrafficRequest, TrafficRequest, VerifyRequest,
+};
 
 use crate::auth::NodeAuth;
 use crate::codec::Codec;
@@ -84,6 +86,57 @@ pub async fn traffic(
     .await?;
 
     tx.commit().await?;
+
+    Ok(codec.encode(&Ok::<(), AuthError>(())))
+}
+
+/// `POST /traffic/chain` — credit a relay hop for traffic it carried.
+///
+/// Sent by an exit node on behalf of the hops in front of it, which never see
+/// whose traffic they forward. Only the per-node daily total moves: the user's
+/// own quota is settled once, by `/traffic`, so a three-hop chain does not
+/// bill a user three times for one download.
+pub async fn chain_traffic(
+    State(state): State<AppState>,
+    _node: NodeAuth,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, DashError> {
+    let codec = Codec::detect(&headers);
+    let request: ChainTrafficRequest = codec.decode(&body)?;
+
+    let (Ok(user_id), Ok(node_id)) = (
+        request.user_id.parse::<i64>(),
+        request.node_id.parse::<i64>(),
+    ) else {
+        return Ok(codec.encode(&Err::<(), _>(AuthError::NotFound)));
+    };
+
+    // Both ids are claims about rows this database owns, and traffic_logs has
+    // foreign keys on each. A chain naming a hop the panel has never heard of
+    // is a stale config on the reporting node, not a server fault, so answer
+    // with a verdict instead of letting the insert fail.
+    let (user_known, node_known): (bool, bool) = sqlx::query_as(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE id = ?1), EXISTS(SELECT 1 FROM nodes WHERE id = ?2)",
+    )
+    .bind(user_id)
+    .bind(node_id)
+    .fetch_one(&state.pool)
+    .await?;
+    if !user_known || !node_known {
+        return Ok(codec.encode(&Err::<(), _>(AuthError::NotFound)));
+    }
+
+    sqlx::query(
+        "INSERT INTO traffic_logs (user_id, node_id, bytes, date) VALUES (?1, ?2, ?3, ?4) \
+         ON CONFLICT(user_id, node_id, date) DO UPDATE SET bytes = bytes + ?3",
+    )
+    .bind(user_id)
+    .bind(node_id)
+    .bind(clamp_i64(request.bytes))
+    .bind(today_date())
+    .execute(&state.pool)
+    .await?;
 
     Ok(codec.encode(&Ok::<(), AuthError>(())))
 }

@@ -277,6 +277,7 @@ impl TestServer {
                 rule_providers: Default::default(),
                 rules: Default::default(),
                 geoip: None,
+                proxy_protocol: Default::default(),
             },
             tls: TlsConfig {
                 cert: cert_path.to_string_lossy().into_owned(),
@@ -323,6 +324,7 @@ impl TestServer {
                 privacy: Default::default(),
                 server_id: Some(server_id.clone()),
                 geoip: None,
+                proxy_protocol: Default::default(),
             },
             logging: LoggingConfig {
                 level: Some("warn".to_string()),

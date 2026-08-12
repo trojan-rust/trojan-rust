@@ -1,6 +1,5 @@
 //! WebSocket-only handler for split mode.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::BytesMut;
@@ -8,7 +7,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tracing::{debug, warn};
 use trojan_auth::AuthBackend;
 
-use super::handle_trojan_stream;
+use super::{Connection, handle_trojan_stream};
 use crate::error::ServerError;
 use crate::state::ServerState;
 use crate::ws::{INITIAL_BUFFER_SIZE, WsInspect, WsIo, accept_ws, inspect_mixed, send_reject};
@@ -18,13 +17,13 @@ pub async fn handle_ws_only<S, A>(
     mut stream: S,
     state: Arc<ServerState>,
     auth: Arc<A>,
-    peer: SocketAddr,
-    conn_id: u64,
+    conn: Connection,
 ) -> Result<(), ServerError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     A: AuthBackend + ?Sized,
 {
+    let peer = conn.peer;
     let mut buf = BytesMut::with_capacity(INITIAL_BUFFER_SIZE);
     loop {
         let n = stream.read_buf(&mut buf).await?;
@@ -43,7 +42,7 @@ where
             WsInspect::Upgrade => {
                 let ws = accept_ws(stream, buf.freeze(), &state.websocket).await?;
                 let ws = WsIo::new(ws);
-                return handle_trojan_stream(ws, BytesMut::new(), state, auth, peer, conn_id).await;
+                return handle_trojan_stream(ws, BytesMut::new(), state, auth, conn).await;
             }
             WsInspect::Reject(reason) => {
                 return send_reject(stream, reason).await;

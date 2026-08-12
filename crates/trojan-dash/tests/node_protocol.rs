@@ -159,6 +159,14 @@ impl Dash {
         node["token"].as_str().unwrap().to_owned()
     }
 
+    /// Create a node and return its row id, for chains that name it.
+    async fn add_node_id(&self, name: &str) -> u64 {
+        let node = self
+            .admin_post("/admin/nodes", serde_json::json!({ "name": name }))
+            .await;
+        node["id"].as_u64().unwrap()
+    }
+
     /// Create a user and return its id and generated password.
     async fn add_user(&self, username: &str) -> (u64, String) {
         let user = self
@@ -300,4 +308,89 @@ async fn the_admin_api_refuses_a_wrong_token() {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
+
+/// The exit reports for the hops in front of it: each is credited the same
+/// bytes, and none of it touches the user's quota — one download through a
+/// three-hop chain is still one download's worth of quota.
+#[tokio::test]
+async fn chain_traffic_credits_each_hop_without_double_billing_the_user() {
+    let dash = Dash::start().await;
+    let exit_token = dash.add_node("exit").await;
+    let entry_id = dash.add_node_id("entry").await;
+    let relay_id = dash.add_node_id("relay").await;
+    let (user_id, password) = dash.add_user("dave").await;
+
+    let auth = dash.node_auth(&exit_token);
+    auth.verify(&sha224_hex(&password)).await.unwrap();
+
+    // What an exit does when a chained connection ends: settle the user, then
+    // credit the hops that carried the same bytes.
+    auth.record_traffic(&user_id.to_string(), 2048)
+        .await
+        .unwrap();
+    auth.record_chain_traffic(
+        &user_id.to_string(),
+        2048,
+        &[entry_id.to_string(), relay_id.to_string()],
+    )
+    .await
+    .unwrap();
+    auth.shutdown().await;
+
+    let user = dash.admin_get(&format!("/admin/users/{user_id}")).await;
+    assert_eq!(
+        user["traffic_used"].as_u64(),
+        Some(2048),
+        "the chain must not multiply what the user is charged"
+    );
+
+    let daily = dash.admin_get("/admin/traffic/daily?days=7").await;
+    let mut by_node: Vec<(String, u64)> = daily
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["node_name"].as_str().unwrap().to_owned(),
+                row["bytes"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    by_node.sort();
+
+    assert_eq!(
+        by_node,
+        vec![
+            ("entry".to_string(), 2048),
+            ("exit".to_string(), 2048),
+            ("relay".to_string(), 2048),
+        ],
+        "every hop carried the same bytes and should be credited them"
+    );
+}
+
+/// A hop the panel has never heard of is a stale config on the reporting node,
+/// not a reason to fail the request or corrupt the log.
+#[tokio::test]
+async fn chain_traffic_for_an_unknown_hop_is_refused() {
+    let dash = Dash::start().await;
+    let exit_token = dash.add_node("exit").await;
+    let (user_id, password) = dash.add_user("erin").await;
+
+    let auth = dash.node_auth(&exit_token);
+    auth.verify(&sha224_hex(&password)).await.unwrap();
+
+    auth.record_chain_traffic(&user_id.to_string(), 512, &["9999".to_string()])
+        .await
+        .unwrap();
+    auth.shutdown().await;
+
+    let logs = dash
+        .admin_get(&format!("/admin/traffic?user_id={user_id}"))
+        .await;
+    assert!(
+        logs.as_array().unwrap().is_empty(),
+        "an unknown hop must not produce a row: {logs:?}"
+    );
 }

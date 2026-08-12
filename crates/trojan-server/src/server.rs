@@ -262,6 +262,7 @@ pub async fn run_with_shutdown(
         tcp_config: config.server.tcp.clone(),
         websocket: config.websocket.clone(),
         dns_resolver,
+        proxy_protocol: config.server.proxy_protocol.clone(),
         per_target_metrics: config.metrics.per_target,
         #[cfg(feature = "analytics")]
         analytics,
@@ -331,13 +332,17 @@ pub async fn run_with_shutdown(
                             tracing::debug!(error = %e, "failed to apply TCP options");
                         }
 
-                        if let Some(ref limiter) = ws_rate_limiter {
-                            let ip = peer.ip();
-                            if !limiter.check_and_increment(ip) {
-                                record_connection_rejected("rate_limit");
-                                drop(tcp);
-                                continue;
-                            }
+                        // Deferred for proxied connections, exactly as on the
+                        // main listener — see the comment there.
+                        let introduced_by_proxy = ws_state.proxy_protocol.trusts(peer.ip());
+
+                        if !introduced_by_proxy
+                            && let Some(ref limiter) = ws_rate_limiter
+                            && !limiter.check_and_increment(peer.ip())
+                        {
+                            record_connection_rejected("rate_limit");
+                            drop(tcp);
+                            continue;
                         }
 
                         let permit: Option<OwnedSemaphorePermit> = match &ws_conn_limit {
@@ -356,6 +361,7 @@ pub async fn run_with_shutdown(
                         let acceptor = ws_acceptor.clone();
                         let state = ws_state.clone();
                         let auth = ws_auth.clone();
+                        let rate_limiter = ws_rate_limiter.clone();
                         ws_tracker.increment();
                         let guard = ConnectionGuard::new(ws_tracker.clone());
 
@@ -368,15 +374,32 @@ pub async fn run_with_shutdown(
                                 let start = Instant::now();
 
                                 let result = async {
+                                    let introduced =
+                                        crate::proxy::introduce(tcp, peer, &state.proxy_protocol).await?;
+
+                                    if introduced_by_proxy
+                                        && let Some(ref limiter) = rate_limiter
+                                        && !limiter.check_and_increment(introduced.peer.ip())
+                                    {
+                                        record_connection_rejected("rate_limit");
+                                        return Ok(());
+                                    }
+
+                                    let conn = crate::handler::Connection {
+                                        peer: introduced.peer,
+                                        id: conn_id,
+                                        chain: introduced.chain,
+                                    };
+
                                     let tls_start = Instant::now();
                                     let tls_timeout =
                                         Duration::from_secs(defaults::DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS);
-                                    match tokio::time::timeout(tls_timeout, acceptor.accept(tcp)).await
+                                    match tokio::time::timeout(tls_timeout, acceptor.accept(introduced.stream)).await
                                     {
                                         Ok(Ok(tls)) => {
                                             let tls_duration = tls_start.elapsed().as_secs_f64();
                                             record_tls_handshake_duration(tls_duration);
-                                            crate::handler::handle_ws_only(tls, state, auth, peer, conn_id).await
+                                            crate::handler::handle_ws_only(tls, state, auth, conn).await
                                         }
                                         Ok(Err(err)) => {
                                             record_error(ERROR_TLS_HANDSHAKE);
@@ -438,15 +461,20 @@ pub async fn run_with_shutdown(
                     set_connection_queue_depth(available as f64);
                 }
 
-                // Check rate limit first
-                if let Some(ref limiter) = rate_limiter {
-                    let ip = peer.ip();
-                    if !limiter.check_and_increment(ip) {
-                        debug!(peer = %peer, reason = "rate_limit", "connection rejected");
-                        record_connection_rejected("rate_limit");
-                        drop(tcp);
-                        continue;
-                    }
+                // A trusted proxy's address stands for every client behind it,
+                // so limiting on it would throttle a whole relay chain as if
+                // it were one caller. Those connections are limited further
+                // down, once the header names the client they belong to.
+                let introduced_by_proxy = state.proxy_protocol.trusts(peer.ip());
+
+                if !introduced_by_proxy
+                    && let Some(ref limiter) = rate_limiter
+                    && !limiter.check_and_increment(peer.ip())
+                {
+                    debug!(peer = %peer, reason = "rate_limit", "connection rejected");
+                    record_connection_rejected("rate_limit");
+                    drop(tcp);
+                    continue;
                 }
 
                 // Try to acquire connection permit
@@ -469,6 +497,7 @@ pub async fn run_with_shutdown(
                 let acceptor = acceptor.clone();
                 let state = state.clone();
                 let auth = auth.clone();
+                let rate_limiter = rate_limiter.clone();
                 tracker.increment();
                 let guard = ConnectionGuard::new(tracker.clone());
 
@@ -481,16 +510,36 @@ pub async fn run_with_shutdown(
                         let start = Instant::now();
 
                         let result = async {
+                            let introduced =
+                                crate::proxy::introduce(tcp, peer, &state.proxy_protocol).await?;
+
+                            // The deferred half of the check above, now that
+                            // the client behind the proxy has a name.
+                            if introduced_by_proxy
+                                && let Some(ref limiter) = rate_limiter
+                                && !limiter.check_and_increment(introduced.peer.ip())
+                            {
+                                debug!(client = %introduced.peer, reason = "rate_limit", "connection rejected");
+                                record_connection_rejected("rate_limit");
+                                return Ok(());
+                            }
+
+                            let conn = crate::handler::Connection {
+                                peer: introduced.peer,
+                                id: conn_id,
+                                chain: introduced.chain,
+                            };
+
                             // Measure TLS handshake duration with timeout
                             let tls_start = Instant::now();
                             let tls_timeout =
                                 Duration::from_secs(defaults::DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS);
-                            match tokio::time::timeout(tls_timeout, acceptor.accept(tcp)).await {
+                            match tokio::time::timeout(tls_timeout, acceptor.accept(introduced.stream)).await {
                                 Ok(Ok(tls)) => {
                                     let tls_duration = tls_start.elapsed().as_secs_f64();
                                     record_tls_handshake_duration(tls_duration);
                                     debug!(duration_ms = tls_duration * 1000.0, "TLS handshake completed");
-                                    handle_conn(tls, state, auth, peer, conn_id).await
+                                    handle_conn(tls, state, auth, conn).await
                                 }
                                 Ok(Err(err)) => {
                                     record_error(ERROR_TLS_HANDSHAKE);

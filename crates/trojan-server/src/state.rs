@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::pool::ConnectionPool;
-use trojan_config::{TcpConfig, WebSocketConfig};
+use trojan_config::{ProxyProtocolConfig, TcpConfig, WebSocketConfig};
 use trojan_dns::DnsResolver;
 use trojan_metrics::RelayCounters;
 
@@ -25,6 +25,8 @@ pub struct ServerState {
     pub tcp_config: TcpConfig,
     pub websocket: WebSocketConfig,
     pub dns_resolver: DnsResolver,
+    /// Senders whose PROXY protocol header names the client and the chain.
+    pub proxy_protocol: ProxyProtocolConfig,
     /// Whether to label relay byte counters with the destination host.
     /// See `metrics.per_target` — this is unbounded-cardinality when on.
     pub per_target_metrics: bool,

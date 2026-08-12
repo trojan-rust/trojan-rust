@@ -20,6 +20,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tracing::{debug, instrument, warn};
 use trojan_auth::AuthBackend;
 use trojan_core::defaults;
+use trojan_core::proxy_protocol::ChainInfo;
 use trojan_metrics::{
     record_auth_failure, record_auth_success, record_connect_request, record_fallback,
     record_udp_associate_request,
@@ -40,14 +41,39 @@ pub(crate) type AnalyticsEvent = Option<trojan_analytics::ConnectionEventBuilder
 #[cfg(not(feature = "analytics"))]
 pub(crate) type AnalyticsEvent = ();
 
+/// What the server knows about a connection before its trojan request arrives.
+#[derive(Debug, Clone)]
+pub struct Connection {
+    /// The address to attribute the connection to. Behind a trusted proxy this
+    /// is the client the PROXY header named, not the hop it arrived from.
+    pub peer: SocketAddr,
+    /// Monotonic id, for correlating logs and analytics events.
+    pub id: u64,
+    /// Relay hops that carried the connection, empty for a direct one.
+    pub chain: ChainInfo,
+}
+
+/// Who a connection's traffic is charged to.
+///
+/// The user comes from the trojan handshake this server authenticated; the
+/// chain comes from the header the entry node sent and names the other nodes
+/// that carried the very same bytes. They travel together because they are
+/// settled together, once, when the connection ends.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Account<'a> {
+    /// The authenticated user, absent when the backend named no one.
+    pub user_id: Option<&'a str>,
+    /// Hops to credit alongside this node.
+    pub chain: &'a ChainInfo,
+}
+
 /// Handle a new connection after TLS handshake.
-#[instrument(level = "debug", skip(stream, state, auth))]
+#[instrument(level = "debug", skip(stream, state, auth), fields(client = %conn.peer))]
 pub async fn handle_conn<S, A>(
     stream: S,
     state: Arc<ServerState>,
     auth: Arc<A>,
-    peer: SocketAddr,
-    conn_id: u64,
+    conn: Connection,
 ) -> Result<(), ServerError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -55,9 +81,9 @@ where
 {
     #[cfg(feature = "ws")]
     if state.websocket.enabled && state.websocket.mode == "mixed" {
-        return handle_conn_mixed_ws(stream, state, auth, peer, conn_id).await;
+        return handle_conn_mixed_ws(stream, state, auth, conn).await;
     }
-    handle_trojan_stream(stream, BytesMut::new(), state, auth, peer, conn_id).await
+    handle_trojan_stream(stream, BytesMut::new(), state, auth, conn).await
 }
 
 #[cfg(feature = "ws")]
@@ -65,13 +91,13 @@ async fn handle_conn_mixed_ws<S, A>(
     mut stream: S,
     state: Arc<ServerState>,
     auth: Arc<A>,
-    peer: SocketAddr,
-    conn_id: u64,
+    conn: Connection,
 ) -> Result<(), ServerError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     A: AuthBackend + ?Sized,
 {
+    let peer = conn.peer;
     let mut buf = BytesMut::with_capacity(INITIAL_BUFFER_SIZE);
     loop {
         let n = stream.read_buf(&mut buf).await?;
@@ -89,7 +115,7 @@ where
                 continue;
             }
             WsInspect::NotHttp => {
-                return handle_trojan_stream(stream, buf, state, auth, peer, conn_id).await;
+                return handle_trojan_stream(stream, buf, state, auth, conn).await;
             }
             WsInspect::HttpFallback => {
                 record_fallback();
@@ -102,7 +128,7 @@ where
             WsInspect::Upgrade => {
                 let ws = accept_ws(stream, buf.freeze(), &state.websocket).await?;
                 let ws = WsIo::new(ws);
-                return handle_trojan_stream(ws, BytesMut::new(), state, auth, peer, conn_id).await;
+                return handle_trojan_stream(ws, BytesMut::new(), state, auth, conn).await;
             }
         }
     }
@@ -120,13 +146,14 @@ pub(crate) async fn handle_trojan_stream<S, A>(
     mut buf: BytesMut,
     state: Arc<ServerState>,
     auth: Arc<A>,
-    peer: SocketAddr,
-    conn_id: u64,
+    conn: Connection,
 ) -> Result<(), ServerError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     A: AuthBackend + ?Sized,
 {
+    let peer = conn.peer;
+    let conn_id = conn.id;
     // `read_buf` hands the stream only this buffer's spare capacity, and
     // `BytesMut` grows an exhausted buffer by 64 bytes — under
     // `MIN_HEADER_BYTES`. Callers that start from an empty buffer would
@@ -341,7 +368,10 @@ where
                                             outbound.clone(),
                                             state,
                                             auth,
-                                            user_id.as_deref(),
+                                            Account {
+                                                user_id: user_id.as_deref(),
+                                                chain: &conn.chain,
+                                            },
                                             peer,
                                             analytics_event,
                                         )
@@ -371,7 +401,10 @@ where
                                 payload,
                                 state,
                                 auth,
-                                user_id.as_deref(),
+                                Account {
+                                    user_id: user_id.as_deref(),
+                                    chain: &conn.chain,
+                                },
                                 peer,
                                 analytics_event,
                             )
@@ -384,7 +417,10 @@ where
                                 payload,
                                 state,
                                 auth,
-                                user_id.as_deref(),
+                                Account {
+                                    user_id: user_id.as_deref(),
+                                    chain: &conn.chain,
+                                },
                                 peer,
                                 analytics_event,
                             )
@@ -428,7 +464,7 @@ async fn handle_connect_via_outbound<S, A>(
     outbound: Arc<crate::outbound::Outbound>,
     state: Arc<ServerState>,
     auth: Arc<A>,
-    user_id: Option<&str>,
+    account: Account<'_>,
     peer: SocketAddr,
     analytics: AnalyticsEvent,
 ) -> Result<(), ServerError>
@@ -501,7 +537,7 @@ where
     .await;
 
     // Settle the account however the relay ended — see `handler::tcp`.
-    tcp::record_traffic_for_user(&*auth, user_id, counters.total_bytes(), peer).await;
+    tcp::record_traffic_for_user(&*auth, account, counters.total_bytes(), peer).await;
     tcp::finish_analytics(analytics, &counters, &result);
 
     result?;

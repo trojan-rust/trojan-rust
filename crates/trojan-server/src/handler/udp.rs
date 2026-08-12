@@ -13,8 +13,8 @@ use trojan_metrics::{record_bytes_received, record_bytes_sent, record_udp_packet
 use trojan_proto::{ParseResult, parse_udp_packet, write_udp_packet};
 
 use crate::error::ServerError;
-use crate::handler::AnalyticsEvent;
 use crate::handler::tcp::record_traffic_for_user;
+use crate::handler::{Account, AnalyticsEvent};
 use crate::resolve::{address_from_socket, resolve_address};
 use crate::state::ServerState;
 
@@ -32,7 +32,7 @@ pub async fn handle_udp_associate<S, A>(
     initial: &[u8],
     state: Arc<ServerState>,
     auth: Arc<A>,
-    user_id: Option<&str>,
+    account: Account<'_>,
     peer: SocketAddr,
     analytics: AnalyticsEvent,
 ) -> Result<(), ServerError>
@@ -69,7 +69,7 @@ where
                 }
                 if tcp_buf.len() > state.max_udp_buffer_bytes {
                     warn!(peer = %peer, bytes = tcp_buf.len(), max = state.max_udp_buffer_bytes, "UDP buffer too large");
-                    record_traffic_for_user(&*auth, user_id, total_bytes, peer).await;
+                    record_traffic_for_user(&*auth, account, total_bytes, peer).await;
                     return Err(ServerError::Config("udp buffer too large".into()));
                 }
                 let received = n as u64;
@@ -83,7 +83,7 @@ where
                         ParseResult::Complete(pkt) => {
                             if pkt.length > state.max_udp_payload {
                                 warn!(peer = %peer, size = pkt.length, max = state.max_udp_payload, "UDP payload too large");
-                                record_traffic_for_user(&*auth, user_id, total_bytes, peer).await;
+                                record_traffic_for_user(&*auth, account, total_bytes, peer).await;
                                 return Err(ServerError::UdpPayloadTooLarge);
                             }
                             let target = resolve_address(&pkt.address, &state.dns_resolver).await?;
@@ -115,7 +115,7 @@ where
                         }
                         ParseResult::Incomplete(_) => break,
                         ParseResult::Invalid(err) => {
-                            record_traffic_for_user(&*auth, user_id, total_bytes, peer).await;
+                            record_traffic_for_user(&*auth, account, total_bytes, peer).await;
                             return Err(ServerError::Proto(err));
                         }
                     }
@@ -163,7 +163,7 @@ where
         }
     };
 
-    record_traffic_for_user(&*auth, user_id, total_bytes, peer).await;
+    record_traffic_for_user(&*auth, account, total_bytes, peer).await;
 
     #[cfg(feature = "analytics")]
     if let Some(mut event) = analytics {

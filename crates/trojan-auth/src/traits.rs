@@ -31,6 +31,26 @@ pub trait AuthBackend: Send + Sync {
         Ok(())
     }
 
+    /// Optional: credit the relay hops that carried a user's traffic.
+    ///
+    /// `bytes` is the same figure passed to [`record_traffic`](Self::record_traffic)
+    /// for this node, and every hop in `nodes` carried it too. Hops cannot
+    /// account for it themselves: a relay never learns whose bytes it is
+    /// forwarding, since the trojan handshake stays inside end-to-end TLS that
+    /// only this node terminates.
+    ///
+    /// Default implementation does nothing, which is right for every backend
+    /// that has no notion of other nodes.
+    #[inline]
+    async fn record_chain_traffic(
+        &self,
+        _user_id: &str,
+        _bytes: u64,
+        _nodes: &[String],
+    ) -> Result<(), AuthError> {
+        Ok(())
+    }
+
     /// Optional: drain any buffered state (e.g. batched traffic updates) and
     /// wait for it to reach the backend before returning.
     ///
@@ -58,6 +78,16 @@ impl<A: AuthBackend + ?Sized> AuthBackend for Arc<A> {
     }
 
     #[inline]
+    async fn record_chain_traffic(
+        &self,
+        user_id: &str,
+        bytes: u64,
+        nodes: &[String],
+    ) -> Result<(), AuthError> {
+        (**self).record_chain_traffic(user_id, bytes, nodes).await
+    }
+
+    #[inline]
     async fn shutdown(&self) {
         (**self).shutdown().await
     }
@@ -74,6 +104,16 @@ impl<A: AuthBackend + ?Sized> AuthBackend for Box<A> {
     #[inline]
     async fn record_traffic(&self, user_id: &str, bytes: u64) -> Result<(), AuthError> {
         (**self).record_traffic(user_id, bytes).await
+    }
+
+    #[inline]
+    async fn record_chain_traffic(
+        &self,
+        user_id: &str,
+        bytes: u64,
+        nodes: &[String],
+    ) -> Result<(), AuthError> {
+        (**self).record_chain_traffic(user_id, bytes, nodes).await
     }
 
     #[inline]
