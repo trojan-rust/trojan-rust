@@ -21,10 +21,15 @@ use trojan_protocol::{
     AgentMessage, ErrorCode, NodeType, PROTOCOL_VERSION, PanelMessage, TrafficRecord,
 };
 
+use sea_orm::{
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, Unchanged,
+};
+
+use crate::entity::nodes;
 use crate::error::DashError;
 use crate::handler::node_api::apply_traffic;
 use crate::state::AppState;
-use crate::types::{NodeRow, clamp_i64};
+use crate::types::clamp_i64;
 use crate::util::now_secs;
 
 /// How often an agent should report, in seconds.
@@ -127,7 +132,7 @@ async fn register(
     socket: &mut WebSocket,
     state: &AppState,
     peer: SocketAddr,
-) -> Result<Option<NodeRow>, DashError> {
+) -> Result<Option<nodes::Model>, DashError> {
     let Some(Ok(Message::Binary(bytes))) = socket.recv().await else {
         return Ok(None);
     };
@@ -153,16 +158,16 @@ async fn register(
         return Ok(None);
     }
 
-    let node = sqlx::query_as::<_, NodeRow>("SELECT * FROM nodes WHERE token = ?1")
-        .bind(&token)
-        .fetch_optional(&state.pool)
+    let node = nodes::Entity::find()
+        .filter(nodes::Column::Token.eq(&token))
+        .one(&state.db)
         .await?;
 
     let Some(node) = node else {
         reject(socket, ErrorCode::InvalidToken, "unknown node token").await;
         return Ok(None);
     };
-    if !node.enabled {
+    if node.enabled == 0 {
         reject(socket, ErrorCode::NodeDisabled, "node is disabled").await;
         return Ok(None);
     }
@@ -184,13 +189,15 @@ async fn register(
         }
     };
 
-    sqlx::query("UPDATE nodes SET ip = ?1, last_seen = ?2, agent_version = ?3 WHERE id = ?4")
-        .bind(peer.ip().to_string())
-        .bind(clamp_i64(now_secs()))
-        .bind(&version)
-        .bind(node.id)
-        .execute(&state.pool)
-        .await?;
+    nodes::ActiveModel {
+        id: Unchanged(node.id),
+        ip: Set(peer.ip().to_string()),
+        last_seen: Set(clamp_i64(now_secs())),
+        agent_version: Set(version),
+        ..Default::default()
+    }
+    .update(&state.db)
+    .await?;
 
     let registered = PanelMessage::Registered {
         node_id: node.id.to_string(),
@@ -221,17 +228,16 @@ async fn record_heartbeat(
     node_id: i64,
     beat: Heartbeat,
 ) -> Result<(), DashError> {
-    sqlx::query(
-        "UPDATE nodes SET last_seen = ?1, connections_active = ?2, bytes_in = ?3, \
-         bytes_out = ?4, uptime_secs = ?5 WHERE id = ?6",
-    )
-    .bind(clamp_i64(now_secs()))
-    .bind(i64::from(beat.connections_active))
-    .bind(clamp_i64(beat.bytes_in))
-    .bind(clamp_i64(beat.bytes_out))
-    .bind(clamp_i64(beat.uptime_secs))
-    .bind(node_id)
-    .execute(&state.pool)
+    nodes::ActiveModel {
+        id: Unchanged(node_id),
+        last_seen: Set(clamp_i64(now_secs())),
+        connections_active: Set(i64::from(beat.connections_active)),
+        bytes_in: Set(clamp_i64(beat.bytes_in)),
+        bytes_out: Set(clamp_i64(beat.bytes_out)),
+        uptime_secs: Set(clamp_i64(beat.uptime_secs)),
+        ..Default::default()
+    }
+    .update(&state.db)
     .await?;
 
     Ok(())

@@ -3,46 +3,47 @@
 use std::path::Path;
 
 use axum::Router;
-use axum::extract::State;
+use axum::middleware;
 use axum::routing::{get, post};
 use tower_http::services::{ServeDir, ServeFile};
+use tower_http::trace::TraceLayer;
 
-use crate::auth::AdminAuth;
-use crate::db;
-use crate::error::DashError;
+use crate::auth::require_admin;
 use crate::handler::{agent, me, node_api, nodes, sub, templates, traffic, users};
 use crate::state::AppState;
 
-/// Build the router. When `panel_dir` is set the built panel is served from
-/// `/`, with unknown paths falling back to `index.html` so client-side routes
-/// survive a reload.
+/// Build the router. When the panel directory exists its contents are served
+/// from `/`, with unknown paths falling back to `index.html` so client-side
+/// routes survive a reload.
 pub fn router(state: AppState, panel_dir: Option<&Path>) -> Router {
-    let api = Router::new()
+    let public = Router::new()
         .route("/health", get(health))
         .route("/admin/version", get(version))
         // Node-facing
         .route("/verify", post(node_api::verify))
         .route("/traffic", post(node_api::traffic))
         .route("/traffic/chain", post(node_api::chain_traffic))
-        // Agents
         .route("/ws/agent", get(agent::ws))
-        // Admin — users
+        // User-facing
+        .route("/sub/{name}", get(sub::sub))
+        .route("/me", get(me::me));
+
+    // One guard for the whole admin surface: a route added here cannot forget
+    // to authenticate.
+    let admin = Router::new()
         .route("/admin/users", get(users::list).post(users::add))
         .route(
             "/admin/users/{id}",
             get(users::get).patch(users::update).delete(users::remove),
         )
-        // Admin — nodes
         .route("/admin/nodes", get(nodes::list).post(nodes::add))
         .route(
             "/admin/nodes/{id}",
             get(nodes::get).patch(nodes::update).delete(nodes::remove),
         )
         .route("/admin/nodes/{id}/rotate", post(nodes::rotate))
-        // Admin — traffic
         .route("/admin/traffic", get(traffic::list))
         .route("/admin/traffic/daily", get(traffic::daily))
-        // Admin — subscription templates
         .route(
             "/admin/sub-templates",
             get(templates::list).post(templates::add),
@@ -53,17 +54,26 @@ pub fn router(state: AppState, panel_dir: Option<&Path>) -> Router {
                 .patch(templates::update)
                 .delete(templates::remove),
         )
-        .route("/admin/migrate", post(migrate))
-        // Public
-        .route("/sub/{name}", get(sub::sub))
-        .route("/me", get(me::me))
-        .with_state(state);
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
 
+    let mut app = Router::new().merge(public).merge(admin);
+
+    // Migrations run at startup, so there is no /admin/migrate: a schema this
+    // binary can serve is a schema it already applied.
     match panel_dir {
-        Some(dir) => api
-            .fallback_service(ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")))),
-        None => api,
+        Some(dir) if dir.is_dir() => {
+            tracing::info!(path = %dir.display(), "serving the panel");
+            app = app.fallback_service(
+                ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html"))),
+            );
+        }
+        Some(dir) => {
+            tracing::warn!(path = %dir.display(), "panel directory not found — serving the API alone");
+        }
+        None => {}
     }
+
+    app.layer(TraceLayer::new_for_http()).with_state(state)
 }
 
 /// `GET /health`
@@ -71,19 +81,7 @@ async fn health() -> &'static str {
     "ok"
 }
 
-/// `GET /admin/version` — unauthenticated, as it was on Workers.
+/// `GET /admin/version` — unauthenticated, as the previous panel had it.
 async fn version() -> &'static str {
     trojan_core::VERSION
-}
-
-/// `POST /admin/migrate` — re-apply the schema.
-///
-/// Startup already does this; the route stays so an operator can repair a
-/// database without restarting.
-async fn migrate(
-    State(state): State<AppState>,
-    _admin: AdminAuth,
-) -> Result<&'static str, DashError> {
-    db::bootstrap(&state.pool).await?;
-    Ok("migrated")
 }

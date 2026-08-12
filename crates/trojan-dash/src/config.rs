@@ -1,7 +1,10 @@
 //! Service configuration.
+//!
+//! Field names match the config the deployed panel already reads, so an
+//! existing `config.toml` works unchanged.
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -16,11 +19,11 @@ pub const ADMIN_TOKEN_ENV: &str = "TROJAN_DASH_ADMIN_TOKEN";
 pub struct DashConfig {
     /// Address to listen on.
     #[serde(default = "default_listen")]
-    pub listen: SocketAddr,
+    pub listen: String,
 
-    /// SQLite database. A bare path is fine; it is created if missing.
-    #[serde(default = "default_database")]
-    pub database: String,
+    /// SQLite connection URL. A bare path is accepted too.
+    #[serde(default = "default_database_url", alias = "database")]
+    pub database_url: String,
 
     /// Bearer token guarding `/admin/*`.
     ///
@@ -29,33 +32,49 @@ pub struct DashConfig {
     #[serde(default)]
     pub admin_token: Option<String>,
 
-    /// Directory holding the built panel. Served at `/` when set, with the
-    /// single-page-app fallback; omit to run the API alone.
-    #[serde(default)]
-    pub panel_dir: Option<PathBuf>,
+    /// Directory holding the built panel. Served at `/` when it exists, with
+    /// the single-page-app fallback; omit to run the API alone.
+    #[serde(default, alias = "panel_dir")]
+    pub static_dir: Option<PathBuf>,
 
     /// Minimum interval, in seconds, between `last_seen` writes for a node.
     ///
     /// Nodes call `/verify` and `/traffic` continuously; without this every
     /// call would be a write.
-    #[serde(default = "default_last_seen_ttl")]
+    #[serde(default = "default_node_last_seen_ttl")]
     pub node_last_seen_ttl: u64,
+
+    /// How long a verified user stays cached, in seconds.
+    #[serde(default = "default_verify_cache_ttl")]
+    pub verify_cache_ttl: u64,
+
+    /// How long a subscription template stays cached, in seconds.
+    #[serde(default = "default_sub_cache_ttl")]
+    pub sub_cache_ttl: u64,
 
     /// Log level override (e.g. "info", "debug").
     #[serde(default)]
     pub log_level: Option<String>,
 }
 
-fn default_listen() -> SocketAddr {
-    SocketAddr::from(([127, 0, 0, 1], 8080))
+fn default_listen() -> String {
+    "127.0.0.1:8080".to_owned()
 }
 
-fn default_database() -> String {
-    "dash.db".to_owned()
+fn default_database_url() -> String {
+    "sqlite://./dash.db?mode=rwc".to_owned()
 }
 
-fn default_last_seen_ttl() -> u64 {
+fn default_node_last_seen_ttl() -> u64 {
     180
+}
+
+fn default_verify_cache_ttl() -> u64 {
+    3600
+}
+
+fn default_sub_cache_ttl() -> u64 {
+    3600
 }
 
 impl DashConfig {
@@ -64,7 +83,7 @@ impl DashConfig {
         std::env::var(ADMIN_TOKEN_ENV)
             .ok()
             .filter(|t| !t.is_empty())
-            .or_else(|| self.admin_token.clone().filter(|t| !t.is_empty()))
+            .or_else(|| self.admin_token.clone().filter(|t| !t.trim().is_empty()))
             .ok_or_else(|| {
                 DashError::Config(format!(
                     "no admin token: set {ADMIN_TOKEN_ENV} or `admin_token` in the config file"
@@ -72,15 +91,22 @@ impl DashConfig {
             })
     }
 
-    /// SQLite connection URL, creating the file if it does not exist.
+    /// Connection URL, accepting a bare path for convenience.
     ///
-    /// Paths are accepted verbatim in the config for convenience; sqlx wants a
-    /// URL, and without `mode=rwc` it refuses to create a missing database.
+    /// Without `mode=rwc` sqlite refuses to create a missing database.
     pub fn database_url(&self) -> String {
-        if self.database.starts_with("sqlite:") {
-            self.database.clone()
+        if self.database_url.starts_with("sqlite:") {
+            self.database_url.clone()
         } else {
-            format!("sqlite://{}?mode=rwc", self.database)
+            format!("sqlite://{}?mode=rwc", self.database_url)
         }
+    }
+
+    pub fn verify_cache_ttl(&self) -> Duration {
+        Duration::from_secs(self.verify_cache_ttl)
+    }
+
+    pub fn sub_cache_ttl(&self) -> Duration {
+        Duration::from_secs(self.sub_cache_ttl)
     }
 }

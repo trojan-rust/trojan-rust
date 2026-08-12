@@ -32,7 +32,7 @@ fn config_accepts_a_windows_style_database_path() {
     let config: DashConfig = toml::from_str(&config_toml(8080, std::path::Path::new(raw)))
         .expect("a backslashed path must not be read as a unicode escape");
 
-    assert_eq!(config.database, raw);
+    assert_eq!(config.database_url, raw);
 }
 
 #[tokio::test]

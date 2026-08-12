@@ -3,136 +3,140 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
+use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait, QueryOrder, Unchanged};
 
-use crate::auth::AdminAuth;
+use crate::entity::nodes;
 use crate::error::DashError;
 use crate::state::AppState;
-use crate::types::{AddNodeRequest, NodeResponse, NodeRow, UpdateNodeRequest, clamp_i64};
+use crate::types::{AddNodeRequest, NodeResponse, UpdateNodeRequest, clamp_i64};
 use crate::util::{gen_password, now_secs};
 
+/// Store a config as text, defaulting to an empty object.
+///
+/// The agent receives these bytes verbatim, so what an operator wrote is what
+/// the node boots.
+fn encode_config(config: Option<&serde_json::Value>) -> String {
+    config.map_or_else(|| "{}".to_owned(), ToString::to_string)
+}
+
 /// `GET /admin/nodes`
-pub async fn list(
-    State(state): State<AppState>,
-    _admin: AdminAuth,
-) -> Result<Json<Vec<NodeResponse>>, DashError> {
-    let rows = sqlx::query_as::<_, NodeRow>("SELECT * FROM nodes ORDER BY id")
-        .fetch_all(&state.pool)
+pub async fn list(State(state): State<AppState>) -> Result<Json<Vec<NodeResponse>>, DashError> {
+    let rows = nodes::Entity::find()
+        .order_by_asc(nodes::Column::Id)
+        .all(&state.db)
         .await?;
 
-    Ok(Json(rows.iter().map(NodeRow::to_response).collect()))
+    Ok(Json(rows.iter().map(NodeResponse::from).collect()))
 }
 
 /// `POST /admin/nodes`
 pub async fn add(
     State(state): State<AppState>,
-    _admin: AdminAuth,
     Json(body): Json<AddNodeRequest>,
 ) -> Result<Json<NodeResponse>, DashError> {
-    let row = sqlx::query_as::<_, NodeRow>(
-        "INSERT INTO nodes (name, token, enabled, last_seen, created_at, node_type, config) \
-         VALUES (?1, ?2, 1, 0, ?3, ?4, ?5) RETURNING *",
-    )
-    .bind(&body.name)
-    .bind(gen_password())
-    .bind(clamp_i64(now_secs()))
-    .bind(&body.node_type)
-    .bind(encode_config(body.config.as_ref()))
-    .fetch_one(&state.pool)
-    .await?;
+    let inserted = nodes::ActiveModel {
+        name: Set(body.name),
+        token: Set(gen_password()),
+        enabled: Set(1),
+        ip: Set(String::new()),
+        last_seen: Set(0),
+        created_at: Set(clamp_i64(now_secs())),
+        node_type: Set(body.node_type),
+        config: Set(encode_config(body.config.as_ref())),
+        config_version: Set(1),
+        agent_version: Set(String::new()),
+        connections_active: Set(0),
+        bytes_in: Set(0),
+        bytes_out: Set(0),
+        uptime_secs: Set(0),
+        ..Default::default()
+    }
+    .insert(&state.db)
+    .await
+    .map_err(DashError::from_db)?;
 
-    Ok(Json(row.to_response()))
+    Ok(Json(NodeResponse::from(&inserted)))
 }
 
 /// `GET /admin/nodes/{id}`
 pub async fn get(
     State(state): State<AppState>,
-    _admin: AdminAuth,
     Path(id): Path<i64>,
 ) -> Result<Json<NodeResponse>, DashError> {
-    let row = sqlx::query_as::<_, NodeRow>("SELECT * FROM nodes WHERE id = ?1")
-        .bind(id)
-        .fetch_optional(&state.pool)
+    let row = nodes::Entity::find_by_id(id)
+        .one(&state.db)
         .await?
         .ok_or(DashError::NotFound)?;
 
-    Ok(Json(row.to_response()))
+    Ok(Json(NodeResponse::from(&row)))
 }
 
 /// `PATCH /admin/nodes/{id}` — absent fields keep their stored value.
 pub async fn update(
     State(state): State<AppState>,
-    _admin: AdminAuth,
     Path(id): Path<i64>,
     Json(body): Json<UpdateNodeRequest>,
 ) -> Result<Json<NodeResponse>, DashError> {
-    if body.name.is_none()
-        && body.enabled.is_none()
-        && body.node_type.is_none()
-        && body.config.is_none()
-    {
+    let existing = nodes::Entity::find_by_id(id)
+        .one(&state.db)
+        .await?
+        .ok_or(DashError::NotFound)?;
+
+    let mut active = nodes::ActiveModel {
+        id: Unchanged(existing.id),
+        ..Default::default()
+    };
+    if let Some(name) = body.name {
+        active.name = Set(name);
+    }
+    if let Some(v) = body.enabled {
+        active.enabled = Set(i64::from(v));
+    }
+    if let Some(node_type) = body.node_type {
+        active.node_type = Set(node_type);
+    }
+    if let Some(config) = body.config {
+        // The version is how an agent tells one config from another; a changed
+        // config that kept its version would be ignored.
+        active.config = Set(config.to_string());
+        active.config_version = Set(existing.config_version.saturating_add(1));
+    }
+    if !active.is_changed() {
         return Err(DashError::BadRequest("no fields to update".to_owned()));
     }
 
-    // A new config is a new version: that is how an agent tells the config it
-    // is running from the one it would be handed on reconnect.
-    let config = body.config.as_ref().map(|c| encode_config(Some(c)));
+    let updated = active.update(&state.db).await.map_err(DashError::from_db)?;
 
-    let row = sqlx::query_as::<_, NodeRow>(
-        "UPDATE nodes SET \
-             name      = COALESCE(?1, name), \
-             enabled   = COALESCE(?2, enabled), \
-             node_type = COALESCE(?3, node_type), \
-             config    = COALESCE(?4, config), \
-             config_version = config_version + CASE WHEN ?4 IS NULL THEN 0 ELSE 1 END \
-         WHERE id = ?5 RETURNING *",
-    )
-    .bind(body.name)
-    .bind(body.enabled)
-    .bind(body.node_type)
-    .bind(config)
-    .bind(id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or(DashError::NotFound)?;
-
-    Ok(Json(row.to_response()))
-}
-
-/// Store a config as text, defaulting to an empty object.
-///
-/// The panel never interprets it — only the agent's runner does — so it is
-/// kept as written rather than validated against a schema this crate would
-/// then have to track.
-fn encode_config(config: Option<&serde_json::Value>) -> String {
-    config.map_or_else(|| "{}".to_owned(), ToString::to_string)
+    Ok(Json(NodeResponse::from(&updated)))
 }
 
 /// `DELETE /admin/nodes/{id}`
 pub async fn remove(
     State(state): State<AppState>,
-    _admin: AdminAuth,
     Path(id): Path<i64>,
 ) -> Result<&'static str, DashError> {
-    sqlx::query("DELETE FROM nodes WHERE id = ?1")
-        .bind(id)
-        .execute(&state.pool)
-        .await?;
-
+    nodes::Entity::delete_by_id(id).exec(&state.db).await?;
     Ok("deleted")
 }
 
 /// `POST /admin/nodes/{id}/rotate` — issue a new token, invalidating the old.
 pub async fn rotate(
     State(state): State<AppState>,
-    _admin: AdminAuth,
     Path(id): Path<i64>,
 ) -> Result<Json<NodeResponse>, DashError> {
-    let row = sqlx::query_as::<_, NodeRow>("UPDATE nodes SET token = ?1 WHERE id = ?2 RETURNING *")
-        .bind(gen_password())
-        .bind(id)
-        .fetch_optional(&state.pool)
+    let existing = nodes::Entity::find_by_id(id)
+        .one(&state.db)
         .await?
         .ok_or(DashError::NotFound)?;
 
-    Ok(Json(row.to_response()))
+    let updated = nodes::ActiveModel {
+        id: Unchanged(existing.id),
+        token: Set(gen_password()),
+        ..Default::default()
+    }
+    .update(&state.db)
+    .await
+    .map_err(DashError::from_db)?;
+
+    Ok(Json(NodeResponse::from(&updated)))
 }

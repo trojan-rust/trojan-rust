@@ -38,11 +38,14 @@ use tokio_util::sync::CancellationToken;
 use trojan_auth::sha224_hex;
 
 mod auth;
+mod cache;
 mod codec;
 mod config;
 mod db;
+mod entity;
 mod error;
 mod handler;
+mod migration;
 mod routes;
 mod state;
 mod types;
@@ -58,22 +61,23 @@ pub use error::DashError;
 pub async fn run(config: DashConfig, shutdown: CancellationToken) -> Result<(), DashError> {
     let admin_token = config.resolve_admin_token()?;
 
-    let pool = db::connect(&config.database_url()).await?;
-    db::bootstrap(&pool).await?;
+    // Opening the database also brings its schema up to date.
+    let db = db::connect(&config.database_url()).await?;
 
     let state = state::AppState {
-        pool,
+        db,
+        cache: cache::Caches::new(config.verify_cache_ttl(), config.sub_cache_ttl()),
         admin_digest: Arc::new(sha224_hex(&admin_token)),
-        node_last_seen_ttl: config.node_last_seen_ttl,
+        cfg: Arc::new(config.clone()),
     };
 
-    let app = routes::router(state.clone(), config.panel_dir.as_deref());
-    let listener = TcpListener::bind(config.listen).await?;
+    let app = routes::router(state.clone(), config.static_dir.as_deref());
+    let listener = TcpListener::bind(&config.listen).await?;
 
     tracing::info!(
         listen = %config.listen,
-        database = %config.database,
-        panel = ?config.panel_dir,
+        database = %config.database_url,
+        panel = ?config.static_dir,
         "trojan dash listening"
     );
 
@@ -88,6 +92,6 @@ pub async fn run(config: DashConfig, shutdown: CancellationToken) -> Result<(), 
         .with_graceful_shutdown(async move { shutdown.cancelled().await })
         .await?;
 
-    state.pool.close().await;
+    state.db.close().await?;
     Ok(())
 }

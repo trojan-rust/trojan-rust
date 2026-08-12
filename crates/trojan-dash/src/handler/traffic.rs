@@ -1,48 +1,44 @@
-//! Admin view of the traffic log.
+//! Admin views of the traffic log.
 
 use axum::Json;
 use axum::extract::{Query, State};
-use serde::Deserialize;
+use sea_orm::{
+    ColumnTrait, DatabaseBackend, EntityTrait, FromQueryResult, QueryFilter, QueryOrder,
+    QuerySelect, Statement,
+};
 
-use crate::auth::AdminAuth;
+use crate::entity::traffic_logs;
 use crate::error::DashError;
 use crate::state::AppState;
-use crate::types::{DailyTrafficResponse, DailyTrafficRow, TrafficLogResponse, TrafficLogRow};
+use crate::types::{
+    DailyQuery, DailyTrafficResponse, DailyTrafficRow, TrafficLogResponse, TrafficQuery,
+};
 use crate::util::date_days_ago;
 
-/// Optional filters for `GET /admin/traffic`.
-#[derive(Debug, Deserialize)]
-pub struct TrafficQuery {
-    pub user_id: Option<i64>,
-    pub node_id: Option<i64>,
-}
+/// The raw log is unbounded; a page of it is all any view needs.
+const LIMIT: u64 = 1000;
 
 /// `GET /admin/traffic?user_id=&node_id=`
-///
-/// Capped at the most recent 1000 rows, as the Workers version was.
 pub async fn list(
     State(state): State<AppState>,
-    _admin: AdminAuth,
     Query(filter): Query<TrafficQuery>,
 ) -> Result<Json<Vec<TrafficLogResponse>>, DashError> {
-    let rows = sqlx::query_as::<_, TrafficLogRow>(
-        "SELECT * FROM traffic_logs \
-         WHERE (?1 IS NULL OR user_id = ?1) AND (?2 IS NULL OR node_id = ?2) \
-         ORDER BY date DESC, id DESC LIMIT 1000",
-    )
-    .bind(filter.user_id)
-    .bind(filter.node_id)
-    .fetch_all(&state.pool)
-    .await?;
+    let mut select = traffic_logs::Entity::find();
+    if let Some(user_id) = filter.user_id {
+        select = select.filter(traffic_logs::Column::UserId.eq(user_id));
+    }
+    if let Some(node_id) = filter.node_id {
+        select = select.filter(traffic_logs::Column::NodeId.eq(node_id));
+    }
 
-    Ok(Json(rows.iter().map(TrafficLogRow::to_response).collect()))
-}
+    let rows = select
+        .order_by_desc(traffic_logs::Column::Date)
+        .order_by_desc(traffic_logs::Column::Id)
+        .limit(LIMIT)
+        .all(&state.db)
+        .await?;
 
-/// Window for `GET /admin/traffic/daily`.
-#[derive(Debug, Deserialize)]
-pub struct DailyQuery {
-    /// How far back to reach, in days. Defaults to 30, capped at a year.
-    pub days: Option<i64>,
+    Ok(Json(rows.iter().map(TrafficLogResponse::from).collect()))
 }
 
 /// `GET /admin/traffic/daily?days=`
@@ -52,23 +48,22 @@ pub struct DailyQuery {
 /// SQLite instead, so the response is bounded by days × nodes.
 pub async fn daily(
     State(state): State<AppState>,
-    _admin: AdminAuth,
     Query(window): Query<DailyQuery>,
 ) -> Result<Json<Vec<DailyTrafficResponse>>, DashError> {
     let days = window.days.unwrap_or(30).clamp(1, 365);
 
-    let rows = sqlx::query_as::<_, DailyTrafficRow>(
-        "SELECT t.date, t.node_id, n.name AS node_name, SUM(t.bytes) AS bytes \
+    let rows = DailyTrafficRow::find_by_statement(Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "SELECT t.date AS date, t.node_id AS node_id, n.name AS node_name, \
+                SUM(t.bytes) AS bytes \
          FROM traffic_logs t JOIN nodes n ON t.node_id = n.id \
          WHERE t.date >= ?1 \
          GROUP BY t.date, t.node_id \
          ORDER BY t.date, n.name",
-    )
-    .bind(date_days_ago(days - 1))
-    .fetch_all(&state.pool)
+        [date_days_ago(days - 1).into()],
+    ))
+    .all(&state.db)
     .await?;
 
-    Ok(Json(
-        rows.iter().map(DailyTrafficRow::to_response).collect(),
-    ))
+    Ok(Json(rows.iter().map(DailyTrafficResponse::from).collect()))
 }

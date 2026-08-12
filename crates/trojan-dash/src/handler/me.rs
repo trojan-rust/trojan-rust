@@ -2,35 +2,44 @@
 
 use axum::Json;
 use axum::extract::State;
+use axum::http::HeaderMap;
+use sea_orm::{DatabaseBackend, EntityTrait, FromQueryResult, QueryOrder, QuerySelect, Statement};
 
-use crate::auth::UserAuth;
+use crate::auth::check_basic_auth;
+use crate::entity::sub_templates;
 use crate::error::DashError;
 use crate::state::AppState;
-use crate::types::{MeResponse, NodeTrafficRow};
+use crate::types::{MeResponse, NodeTrafficResponse, NodeTrafficRow, UserResponse};
 
 /// `GET /me` — the caller's own account, usage per node, and the subscription
 /// names they can fetch.
 pub async fn me(
     State(state): State<AppState>,
-    UserAuth(user): UserAuth,
+    headers: HeaderMap,
 ) -> Result<Json<MeResponse>, DashError> {
-    let traffic = sqlx::query_as::<_, NodeTrafficRow>(
-        "SELECT t.node_id, n.name AS node_name, SUM(t.bytes) AS total_bytes \
+    let user = check_basic_auth(&headers, &state).await?;
+
+    let traffic = NodeTrafficRow::find_by_statement(Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "SELECT t.node_id AS node_id, n.name AS node_name, SUM(t.bytes) AS total_bytes \
          FROM traffic_logs t JOIN nodes n ON t.node_id = n.id \
          WHERE t.user_id = ?1 GROUP BY t.node_id ORDER BY total_bytes DESC",
-    )
-    .bind(user.id)
-    .fetch_all(&state.pool)
+        [user.id.into()],
+    ))
+    .all(&state.db)
     .await?;
 
-    let sub_templates =
-        sqlx::query_scalar::<_, String>("SELECT name FROM sub_templates ORDER BY id")
-            .fetch_all(&state.pool)
-            .await?;
+    let names = sub_templates::Entity::find()
+        .select_only()
+        .column(sub_templates::Column::Name)
+        .order_by_asc(sub_templates::Column::Id)
+        .into_tuple::<String>()
+        .all(&state.db)
+        .await?;
 
     Ok(Json(MeResponse {
-        user: user.to_response(),
-        traffic_by_node: traffic.iter().map(NodeTrafficRow::to_response).collect(),
-        sub_templates,
+        user: UserResponse::from(&user),
+        traffic_by_node: traffic.iter().map(NodeTrafficResponse::from).collect(),
+        sub_templates: names,
     }))
 }

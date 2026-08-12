@@ -6,22 +6,14 @@
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderValue, header};
 use axum::response::{IntoResponse, Response};
-use serde::Deserialize;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use trojan_auth::sha224_hex;
 
+use crate::entity::{sub_templates, users};
 use crate::error::DashError;
 use crate::state::AppState;
-use crate::types::{SubTemplateRow, UserRow};
+use crate::types::{CacheData, SubQuery};
 use crate::util::{now_secs, parse_duration_secs, percent_encode_rfc5987};
-
-/// Query string of `GET /sub/{name}`.
-#[derive(Debug, Deserialize)]
-pub struct SubQuery {
-    /// The user's password — the subscription's only credential.
-    pub pwd: Option<String>,
-    /// Render inline instead of prompting a download.
-    pub preview: Option<String>,
-}
 
 /// `GET /sub/{name}?pwd=`
 pub async fn sub(
@@ -34,20 +26,27 @@ pub async fn sub(
         .filter(|p| !p.is_empty())
         .ok_or_else(|| DashError::BadRequest("missing pwd parameter".to_owned()))?;
 
-    let template =
-        sqlx::query_as::<_, SubTemplateRow>("SELECT * FROM sub_templates WHERE name = ?1")
-            .bind(&name)
-            .fetch_optional(&state.pool)
-            .await?
-            .ok_or(DashError::NotFound)?;
+    let template = match state.cache.sub.get(&name).await {
+        Some(cached) => cached,
+        None => {
+            let row = sub_templates::Entity::find()
+                .filter(sub_templates::Column::Name.eq(&name))
+                .one(&state.db)
+                .await?
+                .ok_or(DashError::NotFound)?;
+            state.cache.sub.insert(name.clone(), row.clone()).await;
+            row
+        }
+    };
 
-    let user = sqlx::query_as::<_, UserRow>("SELECT * FROM users WHERE hash = ?1")
-        .bind(sha224_hex(&pwd))
-        .fetch_optional(&state.pool)
+    let user = users::Entity::find()
+        .filter(users::Column::Hash.eq(sha224_hex(&pwd)))
+        .one(&state.db)
         .await?
         .ok_or(DashError::Unauthorized)?;
 
-    let auth = user
+    let data = CacheData::from(&user);
+    let auth = data
         .validate(now_secs())
         .map_err(|_| DashError::Unauthorized)?;
     let meta = auth.metadata.ok_or(DashError::Unauthorized)?;
