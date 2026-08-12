@@ -166,6 +166,10 @@ where
     warn!(reason, "websocket rejected");
     let response = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
     tokio::io::AsyncWriteExt::write_all(&mut stream, response).await?;
+    // Deliver close_notify rather than dropping the TLS stream: without it the
+    // client reports `UnexpectedEof` and cannot tell a rejection apart from a
+    // truncation attack. Same contract as the other pre-relay failure paths.
+    let _ = tokio::io::AsyncWriteExt::shutdown(&mut stream).await;
     Ok(())
 }
 
