@@ -2933,6 +2933,131 @@ mod config_surface_tests {
         }
     }
 
+    // ── DNS ──
+
+    /// A minimal UDP nameserver that answers every A query with 127.0.0.1.
+    ///
+    /// Hand-rolled rather than pulled from hickory: the point is to prove the
+    /// server actually talks to the configured nameserver over the wire, which
+    /// a stub sharing the resolver's own code would not.
+    struct MockDnsServer {
+        addr: SocketAddr,
+        queries: Arc<std::sync::atomic::AtomicUsize>,
+        _handle: thread::JoinHandle<()>,
+    }
+
+    impl MockDnsServer {
+        fn start() -> Self {
+            let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let addr = socket.local_addr().unwrap();
+            let queries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counter = Arc::clone(&queries);
+
+            let handle = thread::spawn(move || {
+                let mut buf = [0u8; 512];
+                while let Ok((n, src)) = socket.recv_from(&mut buf) {
+                    if n < 12 {
+                        continue;
+                    }
+
+                    // Walk the QNAME labels to find where the question ends.
+                    // Echoing to `n` instead would drag in the EDNS0 OPT
+                    // record hickory appends, corrupting the reply.
+                    let mut pos = 12;
+                    while pos < n && buf[pos] != 0 {
+                        pos += 1 + buf[pos] as usize;
+                    }
+                    let question_end = pos + 1 + 4; // root label + QTYPE + QCLASS
+                    if question_end > n {
+                        continue;
+                    }
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+                    let mut response = Vec::with_capacity(question_end + 16);
+                    response.extend_from_slice(&buf[0..2]); // transaction id
+                    response.extend_from_slice(&[0x81, 0x80]); // response, recursion available
+                    response.extend_from_slice(&[0x00, 0x01]); // QDCOUNT
+                    response.extend_from_slice(&[0x00, 0x01]); // ANCOUNT
+                    response.extend_from_slice(&[0x00, 0x00]); // NSCOUNT
+                    response.extend_from_slice(&[0x00, 0x00]); // ARCOUNT
+                    response.extend_from_slice(&buf[12..question_end]);
+
+                    response.extend_from_slice(&[0xC0, 0x0C]); // name: pointer to question
+                    response.extend_from_slice(&[0x00, 0x01]); // type A
+                    response.extend_from_slice(&[0x00, 0x01]); // class IN
+                    response.extend_from_slice(&[0x00, 0x00, 0x00, 0x3C]); // TTL 60
+                    response.extend_from_slice(&[0x00, 0x04]); // RDLENGTH
+                    response.extend_from_slice(&[127, 0, 0, 1]); // RDATA
+
+                    let _ = socket.send_to(&response, src);
+                }
+            });
+
+            Self {
+                addr,
+                queries,
+                _handle: handle,
+            }
+        }
+    }
+
+    /// With `dns.strategy = "custom"`, domain targets are resolved through the
+    /// configured nameservers rather than the host's.
+    ///
+    /// Asserts the mock was actually queried, so a server that quietly fell
+    /// back to the system resolver — which also resolves nothing useful for a
+    /// made-up name, and would simply fail — cannot pass.
+    #[tokio::test]
+    async fn test_custom_dns_servers_are_used_for_resolution() {
+        let echo = MockEchoServer::start();
+        let dns = MockDnsServer::start();
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+
+        let dns_addr = dns.addr;
+        let server = ConfiguredServer::start(fallback.addr, move |config, _dir| {
+            config.dns.strategy = trojan_dns::DnsStrategy::Custom;
+            config.dns.servers = vec![format!("udp://{dns_addr}")];
+            config.dns.prefer_ipv4 = true;
+        })
+        .await;
+
+        // Deliberately not a special-use TLD: hickory answers `.invalid` and
+        // friends locally per RFC 6761 and never sends a query, which would
+        // make this test pass or fail without involving the nameserver at all.
+        // The mock answers 127.0.0.1 and the port comes from the request, so
+        // this lands on the echo server.
+        let mut tls = server.tls().await;
+        let address = AddressRef {
+            host: HostRef::Domain(b"resolved-by-mock.example.com"),
+            port: echo.addr.port(),
+        };
+        let mut header = BytesMut::new();
+        write_request_header(
+            &mut header,
+            sha224_hex(PASSWORD).as_bytes(),
+            CMD_CONNECT,
+            &address,
+        )
+        .unwrap();
+        let payload = b"custom-dns-payload";
+        header.extend_from_slice(payload);
+
+        tls.write_all(&header).await.unwrap();
+        tls.flush().await.unwrap();
+
+        let mut echoed = vec![0u8; payload.len()];
+        tokio::time::timeout(Duration::from_secs(10), tls.read_exact(&mut echoed))
+            .await
+            .expect("timed out — the custom nameserver was not used or did not answer")
+            .unwrap();
+        assert_eq!(&echoed[..], payload);
+
+        assert!(
+            dns.queries.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "the configured nameserver was never queried"
+        );
+    }
+
     // ── Optional subsystems ──
 
     /// With a warm fallback pool configured, fallback traffic is still served
