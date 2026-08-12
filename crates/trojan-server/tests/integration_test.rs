@@ -3790,6 +3790,71 @@ mod rules_tests {
         server.stop().await;
     }
 
+    /// A rule-set fetched over HTTP is applied the same as one read from disk.
+    ///
+    /// Only the file provider was covered, so the HTTP fetch — the mode a
+    /// deployment actually uses to pull a shared blocklist — was never
+    /// exercised. Serves the rule body from a mock and asserts the rule takes
+    /// effect, which fails if the fetch, the parse, or the wiring breaks.
+    #[tokio::test]
+    async fn test_rules_http_provider() {
+        let echo = MockEchoServer::start();
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+        // Body is the rule-set itself, in Surge format.
+        let ruleset =
+            MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nDOMAIN,http-blocked.example.com\n");
+
+        let mut rule_providers = HashMap::new();
+        rule_providers.insert(
+            "remote-set".to_string(),
+            RuleProviderConfig {
+                format: "surge".to_string(),
+                behavior: Some("classical".to_string()),
+                source: "http".to_string(),
+                path: None,
+                url: Some(format!("http://{}/blocklist.txt", ruleset.addr)),
+                interval: Some(3600),
+            },
+        );
+
+        let rules = vec![
+            rule_set_ref("remote-set", "REJECT"),
+            rule("IP-CIDR", Some("127.0.0.0/8"), "DIRECT"),
+            rule("FINAL", None, "DIRECT"),
+        ];
+
+        let server =
+            RulesTestServer::start(fallback.addr, HashMap::new(), rules, rule_providers).await;
+
+        // The fetch happens in a background task at startup; give it a moment
+        // to replace the empty cache-only rule-set.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let mut rejected = server
+            .connect_to_domain("http-blocked.example.com", 443, b"")
+            .await;
+        assert_connection_rejected(
+            &mut rejected,
+            "a domain in the HTTP-fetched rule-set should be rejected",
+        )
+        .await;
+
+        // Anything else still routes normally.
+        let mut allowed = server.connect_to_ipv4(echo.addr, b"allowed").await;
+        let mut buf = vec![0u8; 16];
+        let n = tokio::time::timeout(Duration::from_secs(5), allowed.read(&mut buf))
+            .await
+            .expect("read timeout")
+            .unwrap();
+        assert_eq!(&buf[..n], b"allowed");
+
+        // Release both streams first: `stop()` waits out the graceful drain,
+        // and a still-open connection holds it for the full timeout.
+        drop(rejected);
+        drop(allowed);
+        server.stop().await;
+    }
+
     /// Test: Rule-set from a file provider (Surge format).
     #[tokio::test]
     async fn test_rules_file_provider() {
