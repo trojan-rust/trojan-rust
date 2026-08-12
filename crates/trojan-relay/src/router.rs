@@ -9,6 +9,57 @@ use trojan_lb::LoadBalancer;
 
 use crate::config::{ChainConfig, EntryConfig, RuleConfig};
 use crate::error::RelayError;
+use crate::handshake;
+
+/// A chain together with the per-hop password hashes derived from it.
+///
+/// Hashing happens once when the router is built. Doing it per connection
+/// costs a SHA-224 and a `String` allocation per hop on the accept path, and
+/// defers what is really a config error — a hop with no password — until the
+/// first client shows up.
+#[derive(Debug)]
+pub struct CompiledChain {
+    config: ChainConfig,
+    password_hashes: Vec<String>,
+}
+
+impl CompiledChain {
+    /// Hash every hop's password, failing if any hop has none configured.
+    fn new(name: &str, config: ChainConfig) -> Result<Self, RelayError> {
+        let password_hashes = config
+            .nodes
+            .iter()
+            .map(|node| {
+                node.password
+                    .as_deref()
+                    .map(handshake::hash_password)
+                    .ok_or_else(|| {
+                        RelayError::Config(format!(
+                            "chain '{name}': node '{}' is missing a password",
+                            node.addr
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Self {
+            config,
+            password_hashes,
+        })
+    }
+
+    /// The chain's configuration.
+    pub fn config(&self) -> &ChainConfig {
+        &self.config
+    }
+
+    /// SHA-224 hex password hash for each hop, in chain order.
+    ///
+    /// Always the same length as `self.config().nodes`.
+    pub fn password_hashes(&self) -> &[String] {
+        &self.password_hashes
+    }
+}
 
 /// Resolved routing table built from an EntryConfig.
 #[derive(Debug)]
@@ -17,17 +68,17 @@ pub struct Router {
     rules_by_addr: HashMap<SocketAddr, usize>,
     /// All rules in order
     rules: Vec<RuleConfig>,
-    /// Chain name → chain config (Arc-wrapped to avoid cloning per connection)
-    chains: HashMap<String, Arc<ChainConfig>>,
+    /// Chain name → compiled chain (Arc-wrapped to avoid cloning per connection)
+    chains: HashMap<String, Arc<CompiledChain>>,
     /// One LoadBalancer per rule, indexed same as `rules`.
     load_balancers: Vec<Arc<LoadBalancer>>,
 }
 
-/// A resolved route: the chain config + destination + load balancer.
+/// A resolved route: the compiled chain + destination + load balancer.
 #[derive(Debug)]
 pub struct ResolvedRoute<'a> {
     pub rule: &'a RuleConfig,
-    pub chain: Arc<ChainConfig>,
+    pub chain: Arc<CompiledChain>,
     pub lb: &'a Arc<LoadBalancer>,
 }
 
@@ -72,14 +123,19 @@ impl Router {
             load_balancers.push(lb);
         }
 
+        let chains = config
+            .chains
+            .iter()
+            .map(|(name, chain)| {
+                CompiledChain::new(name, chain.clone())
+                    .map(|compiled| (name.clone(), Arc::new(compiled)))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
+
         Ok(Self {
             rules_by_addr,
             rules: config.rules.clone(),
-            chains: config
-                .chains
-                .iter()
-                .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
-                .collect(),
+            chains,
             load_balancers,
         })
     }
@@ -144,14 +200,16 @@ dest = "trojan-sg:443"
         let route = router.resolve(&addr).unwrap();
         assert_eq!(route.rule.name, "japan");
         assert_eq!(route.rule.dest, vec!["trojan-jp:443"]);
-        assert_eq!(route.chain.nodes.len(), 1);
-        assert_eq!(route.chain.nodes[0].addr, "relay-hk:443");
+        assert_eq!(route.chain.config().nodes.len(), 1);
+        assert_eq!(route.chain.config().nodes[0].addr, "relay-hk:443");
+        // One hash per hop, resolved at build time.
+        assert_eq!(route.chain.password_hashes().len(), 1);
         assert_eq!(route.lb.backend_count(), 1);
 
         let addr: SocketAddr = "127.0.0.1:1082".parse().unwrap();
         let route = router.resolve(&addr).unwrap();
         assert_eq!(route.rule.name, "singapore");
-        assert!(route.chain.nodes.is_empty());
+        assert!(route.chain.config().nodes.is_empty());
 
         let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
         assert!(router.resolve(&addr).is_none());
@@ -201,6 +259,34 @@ dest = "other:443"
 
         let err = Router::new(&config).unwrap_err();
         assert!(err.to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn test_router_chain_node_missing_password() {
+        let config: EntryConfig = toml::from_str(
+            r#"
+[chains.jp]
+nodes = [
+  { addr = "relay-hk:443" },
+]
+
+[[rules]]
+name = "japan"
+listen = "127.0.0.1:1080"
+chain = "jp"
+dest = "trojan-jp:443"
+"#,
+        )
+        .unwrap();
+
+        // A hop with no password is a config error. Hashes are resolved when
+        // the router is built, so it surfaces at startup rather than on the
+        // first connection through that chain.
+        let err = Router::new(&config).unwrap_err();
+        assert!(
+            err.to_string().contains("missing a password"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

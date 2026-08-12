@@ -25,7 +25,7 @@ use trojan_lb::LoadBalancer;
 use crate::config::{ChainConfig, EntryConfig, TimeoutConfig, TransportType};
 use crate::error::RelayError;
 use crate::handshake::{self, HandshakeMetadata};
-use crate::router::Router;
+use crate::router::{CompiledChain, Router};
 use crate::transport::plain::PlainTransportConnector;
 use crate::transport::tls::TlsTransportConnector;
 use crate::transport::ws::WsTransportConnector;
@@ -168,7 +168,7 @@ async fn run_listener(
 #[allow(clippy::too_many_arguments)]
 async fn handle_entry_connection(
     client_stream: TcpStream,
-    chain: &ChainConfig,
+    chain: &CompiledChain,
     lb: Arc<LoadBalancer>,
     peer_ip: IpAddr,
     base_tls_connector: TlsTransportConnector,
@@ -179,28 +179,7 @@ async fn handle_entry_connection(
     let connect_timeout = Duration::from_secs(timeouts.connect_timeout_secs);
     let idle_timeout = Duration::from_secs(timeouts.idle_timeout_secs);
     let relay_buffer_size = timeouts.relay_buffer_size;
-
-    // Pre-compute password hashes once (avoids SHA-224 per connection per hop)
-    let prehashed: Vec<String> = chain
-        .nodes
-        .iter()
-        .enumerate()
-        .map(|(i, n)| {
-            n.password
-                .as_deref()
-                .map(handshake::hash_password)
-                .ok_or_else(|| {
-                    RelayError::Config(format!(
-                        "chain node {} missing password",
-                        if i == 0 {
-                            "first".to_string()
-                        } else {
-                            n.addr.clone()
-                        }
-                    ))
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let nodes = &chain.config().nodes;
 
     // Select destination via load balancer
     let selection = lb.select(peer_ip)?;
@@ -213,15 +192,15 @@ async fn handle_entry_connection(
     // Determine the first hop's transport and SNI.
     // - Empty chain (direct): plain TCP to dest (client does its own TLS to trojan-server)
     // - Non-empty chain: use nodes[0].transport/sni to connect to first relay
-    let first_transport = if chain.nodes.is_empty() {
+    let first_transport = if nodes.is_empty() {
         &TransportType::Plain
     } else {
-        &chain.nodes[0].transport
+        &nodes[0].transport
     };
-    let first_sni = if chain.nodes.is_empty() {
+    let first_sni = if nodes.is_empty() {
         ""
     } else {
-        chain.nodes[0].sni.as_str()
+        nodes[0].sni.as_str()
     };
 
     // Build tunnel and relay — dispatch on first hop transport type
@@ -230,7 +209,7 @@ async fn handle_entry_connection(
             let tls_connector = base_tls_connector.with_sni(first_sni.to_string());
             let tunnel = tokio::time::timeout(
                 connect_timeout,
-                build_tunnel(chain, &selected_dest, &tls_connector, &prehashed),
+                build_tunnel(chain, &selected_dest, &tls_connector),
             )
             .await
             .map_err(|_| RelayError::ConnectTimeout(selected_dest.clone()))??;
@@ -248,7 +227,7 @@ async fn handle_entry_connection(
         TransportType::Plain => {
             let tunnel = tokio::time::timeout(
                 connect_timeout,
-                build_tunnel(chain, &selected_dest, &plain_connector, &prehashed),
+                build_tunnel(chain, &selected_dest, &plain_connector),
             )
             .await
             .map_err(|_| RelayError::ConnectTimeout(selected_dest.clone()))??;
@@ -266,7 +245,7 @@ async fn handle_entry_connection(
         TransportType::Ws => {
             let tunnel = tokio::time::timeout(
                 connect_timeout,
-                build_tunnel(chain, &selected_dest, &ws_connector, &prehashed),
+                build_tunnel(chain, &selected_dest, &ws_connector),
             )
             .await
             .map_err(|_| RelayError::ConnectTimeout(selected_dest.clone()))??;
@@ -306,28 +285,31 @@ async fn handle_entry_connection(
 /// Each handshake includes metadata telling the relay node what transport
 /// and SNI to use for its outbound connection to the next hop.
 async fn build_tunnel<C>(
-    chain: &ChainConfig,
+    chain: &CompiledChain,
     dest: &str,
     connector: &C,
-    prehashed: &[String],
 ) -> Result<C::Stream, RelayError>
 where
     C: TransportConnector,
     C::Stream: TransportStream,
 {
-    if chain.nodes.is_empty() {
+    let config = chain.config();
+    // One hash per node, guaranteed by `CompiledChain`'s construction.
+    let prehashed = chain.password_hashes();
+
+    if config.nodes.is_empty() {
         // Direct connection — no relay handshake needed
         return Ok(connector.connect(dest).await?);
     }
 
-    let first_node = &chain.nodes[0];
+    let first_node = &config.nodes[0];
 
     // Determine the target and metadata for the handshake to the first relay node.
     //
     // The metadata tells B1 what transport/sni to use for its outbound connection:
     //   - If there's a B2, metadata = B2's transport/sni (how to reach B2)
     //   - If B1 is the last relay, metadata = rule's transport/sni (how to reach dest)
-    let (handshake_target, handshake_meta) = next_hop_info(chain, dest, 0);
+    let (handshake_target, handshake_meta) = next_hop_info(config, dest, 0);
 
     let mut stream = connector.connect(&first_node.addr).await?;
 
@@ -348,8 +330,8 @@ where
     //   A → B1: handshake(pw=B1, target=B2, meta={how to reach B2})
     //   A → (B1→B2): handshake(pw=B2, target=B3, meta={how to reach B3})
     //   A → (B1→B2→B3): handshake(pw=B3, target=C, meta={how to reach C})
-    for (i, hash) in (1..chain.nodes.len()).zip(&prehashed[1..]) {
-        let (target, meta) = next_hop_info(chain, dest, i);
+    for (i, hash) in (1..config.nodes.len()).zip(&prehashed[1..]) {
+        let (target, meta) = next_hop_info(config, dest, i);
 
         handshake::write_handshake_prehashed(&mut stream, hash, &target, &meta).await?;
     }
