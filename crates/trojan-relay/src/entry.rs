@@ -46,13 +46,14 @@ pub async fn run(
         .map_err(|e| RelayError::Config(format!("dns resolver: {e}")))?;
     info!(dns = ?config.dns.strategy, "dns resolver initialized");
 
-    // Shared insecure TLS client config (SNI set per-connection via with_sni)
-    let base_tls_connector = TlsTransportConnector::new_insecure_with_resolver(
-        "crates.io".to_string(),
-        resolver.clone(),
-    );
-    let plain_connector = PlainTransportConnector::with_resolver(resolver.clone());
-    let ws_connector = WsTransportConnector::with_resolver(resolver);
+    let connectors = Connectors {
+        tls: TlsTransportConnector::new_insecure_with_resolver(
+            "crates.io".to_string(),
+            resolver.clone(),
+        ),
+        plain: PlainTransportConnector::with_resolver(resolver.clone()),
+        ws: WsTransportConnector::with_resolver(resolver),
+    };
 
     // Spawn a listener task for each rule
     let mut handles = Vec::new();
@@ -69,9 +70,7 @@ pub async fn run(
         );
 
         let router = router.clone();
-        let base_tls_connector = base_tls_connector.clone();
-        let plain_connector = plain_connector.clone();
-        let ws_connector = ws_connector.clone();
+        let connectors = connectors.clone();
         let timeouts = timeouts.clone();
         let listen_addr = rule.listen;
         let rule_name = rule.name.clone();
@@ -83,9 +82,7 @@ pub async fn run(
                 listen_addr,
                 &rule_name,
                 router,
-                base_tls_connector,
-                plain_connector,
-                ws_connector,
+                connectors,
                 timeouts,
                 shutdown,
             )
@@ -103,15 +100,12 @@ pub async fn run(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_listener(
     listener: TcpListener,
     listen_addr: std::net::SocketAddr,
     rule_name: &str,
     router: Arc<Router>,
-    base_tls_connector: TlsTransportConnector,
-    plain_connector: PlainTransportConnector,
-    ws_connector: WsTransportConnector,
+    connectors: Connectors,
     timeouts: TimeoutConfig,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<(), RelayError> {
@@ -136,9 +130,7 @@ async fn run_listener(
 
                 let chain = route.chain.clone();
                 let lb = route.lb.clone();
-                let base_tls_connector = base_tls_connector.clone();
-                let plain_connector = plain_connector.clone();
-                let ws_connector = ws_connector.clone();
+                let connectors = connectors.clone();
                 let timeouts = timeouts.clone();
                 let rule_name = route.rule.name.clone();
 
@@ -149,9 +141,7 @@ async fn run_listener(
                             &chain,
                             lb,
                             peer_addr.ip(),
-                            base_tls_connector,
-                            plain_connector,
-                            ws_connector,
+                            connectors,
                             &timeouts,
                         ).await {
                             debug!(error = %e, "entry connection error");
@@ -165,15 +155,12 @@ async fn run_listener(
 }
 
 /// Handle a single client connection: build tunnel through chain, then relay.
-#[allow(clippy::too_many_arguments)]
 async fn handle_entry_connection(
     client_stream: TcpStream,
     chain: &CompiledChain,
     lb: Arc<LoadBalancer>,
     peer_ip: IpAddr,
-    base_tls_connector: TlsTransportConnector,
-    plain_connector: PlainTransportConnector,
-    ws_connector: WsTransportConnector,
+    connectors: Connectors,
     timeouts: &TimeoutConfig,
 ) -> Result<(), RelayError> {
     let connect_timeout = Duration::from_secs(timeouts.connect_timeout_secs);
@@ -211,7 +198,7 @@ async fn handle_entry_connection(
     };
     let outcome = match first_transport {
         TransportType::Tls => {
-            let tls_connector = base_tls_connector.with_sni(first_sni.to_string());
+            let tls_connector = connectors.tls.with_sni(first_sni.to_string());
             connect_and_relay(client_stream, chain, &selected_dest, &tls_connector, params).await
         }
         TransportType::Plain => {
@@ -219,13 +206,13 @@ async fn handle_entry_connection(
                 client_stream,
                 chain,
                 &selected_dest,
-                &plain_connector,
+                &connectors.plain,
                 params,
             )
             .await
         }
         TransportType::Ws => {
-            connect_and_relay(client_stream, chain, &selected_dest, &ws_connector, params).await
+            connect_and_relay(client_stream, chain, &selected_dest, &connectors.ws, params).await
         }
     };
 
@@ -242,6 +229,18 @@ async fn handle_entry_connection(
         }
         TunnelOutcome::Relayed(result) => result,
     }
+}
+
+/// The transports an entry node can dial its first hop over.
+///
+/// Which one is used depends on `nodes[0].transport`, so all three are built
+/// once at startup and cloned per listener and per connection.
+#[derive(Clone)]
+struct Connectors {
+    /// SNI is set per-connection via `with_sni`, so this stays a base config.
+    tls: TlsTransportConnector,
+    plain: PlainTransportConnector,
+    ws: WsTransportConnector,
 }
 
 /// Timeouts and buffer sizing for one tunnel attempt.
