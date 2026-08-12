@@ -135,3 +135,16 @@ pub const DEFAULT_AUTH_BATCH_FLUSH_INTERVAL_SECS: u64 = 30;
 pub const HASH_LEN: usize = 56;
 /// Minimum header bytes (hash + CRLF + cmd + atyp + ipv4 + port + CRLF).
 pub const MIN_HEADER_BYTES: usize = HASH_LEN + 2 + 1 + 1 + 4 + 2 + 2;
+
+/// Initial capacity for the buffer that accumulates a trojan request header.
+///
+/// Must exceed [`MIN_HEADER_BYTES`]: `BytesMut` hands `read_buf` only its
+/// spare capacity, and grows an exhausted buffer by just 64 bytes — less than
+/// the smallest valid header — so starting from zero capacity forces every
+/// connection through a second read and a reallocation before it can parse.
+///
+/// Sized to also absorb the client's first payload when it is coalesced with
+/// the header (commonly a TLS ClientHello), keeping the common case at one
+/// read and one allocation. The buffer still grows on demand up to
+/// `server.max_header_bytes`.
+pub const DEFAULT_HEADER_BUFFER_SIZE: usize = 1024;

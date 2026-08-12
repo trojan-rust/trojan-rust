@@ -19,6 +19,7 @@ use bytes::BytesMut;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tracing::{debug, instrument, warn};
 use trojan_auth::AuthBackend;
+use trojan_core::defaults;
 use trojan_metrics::{
     record_auth_failure, record_auth_success, record_connect_request, record_fallback,
     record_udp_associate_request,
@@ -109,6 +110,13 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     A: AuthBackend + ?Sized,
 {
+    // `read_buf` hands the stream only this buffer's spare capacity, and
+    // `BytesMut` grows an exhausted buffer by 64 bytes — under
+    // `MIN_HEADER_BYTES`. Callers that start from an empty buffer would
+    // therefore always need a second read plus a reallocation before the
+    // header could parse. Reserve once so the common case is a single read.
+    buf.reserve(defaults::DEFAULT_HEADER_BUFFER_SIZE);
+
     loop {
         if !buf.is_empty() {
             match parse_request(&buf) {
