@@ -1,7 +1,7 @@
 //! ClickHouse client creation and utilities.
 
+use crate::config::ClickHouseConfig;
 use clickhouse::Client;
-use trojan_config::ClickHouseConfig;
 
 use crate::error::AnalyticsError;
 

@@ -31,8 +31,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_rustls::TlsConnector;
 use trojan_auth::{MemoryAuth, sha224_hex};
 use trojan_config::{
-    AnalyticsConfig, AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TcpConfig,
-    TlsConfig, WebSocketConfig,
+    AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TcpConfig, TlsConfig,
+    WebSocketConfig,
 };
 use trojan_proto::{
     AddressRef, CMD_CONNECT, CMD_UDP_ASSOCIATE, HostRef, write_request_header, write_udp_packet,
@@ -244,7 +244,7 @@ impl TestServer {
                 listen: None,
                 ..Default::default()
             },
-            analytics: AnalyticsConfig::default(),
+            analytics: Default::default(),
             logging: LoggingConfig {
                 level: Some("warn".to_string()),
                 ..Default::default()
@@ -502,7 +502,7 @@ async fn test_graceful_shutdown() {
             listen: None,
             ..Default::default()
         },
-        analytics: AnalyticsConfig::default(),
+        analytics: Default::default(),
         logging: LoggingConfig {
             level: Some("warn".to_string()),
             ..Default::default()
@@ -669,7 +669,7 @@ async fn test_max_connections_limit() {
             listen: None,
             ..Default::default()
         },
-        analytics: AnalyticsConfig::default(),
+        analytics: Default::default(),
         logging: LoggingConfig {
             level: Some("warn".to_string()),
             ..Default::default()
@@ -824,7 +824,7 @@ async fn test_rate_limiting() {
             listen: None,
             ..Default::default()
         },
-        analytics: AnalyticsConfig::default(),
+        analytics: Default::default(),
         logging: LoggingConfig {
             level: Some("warn".to_string()),
             ..Default::default()
@@ -962,7 +962,7 @@ async fn test_tls13_only() {
             listen: None,
             ..Default::default()
         },
-        analytics: AnalyticsConfig::default(),
+        analytics: Default::default(),
         logging: LoggingConfig {
             level: Some("warn".to_string()),
             ..Default::default()
@@ -1164,7 +1164,7 @@ async fn test_udp_idle_timeout() {
             listen: None,
             ..Default::default()
         },
-        analytics: AnalyticsConfig::default(),
+        analytics: Default::default(),
         logging: LoggingConfig {
             level: Some("warn".to_string()),
             ..Default::default()
@@ -1411,7 +1411,7 @@ async fn test_tcp_idle_timeout() {
             listen: None,
             ..Default::default()
         },
-        analytics: AnalyticsConfig::default(),
+        analytics: Default::default(),
         logging: LoggingConfig {
             level: Some("warn".to_string()),
             ..Default::default()
@@ -2327,7 +2327,7 @@ mod multi_worker_tests {
                     listen: None,
                     ..Default::default()
                 },
-                analytics: AnalyticsConfig::default(),
+                analytics: Default::default(),
                 logging: LoggingConfig {
                     level: Some("warn".to_string()),
                     ..Default::default()
@@ -2609,7 +2609,7 @@ mod config_surface_tests {
                     listen: None,
                     ..Default::default()
                 },
-                analytics: AnalyticsConfig::default(),
+                analytics: Default::default(),
                 logging: LoggingConfig {
                     level: Some("warn".to_string()),
                     ..Default::default()
@@ -3311,7 +3311,7 @@ mod websocket_tests {
                     listen: None,
                     ..Default::default()
                 },
-                analytics: AnalyticsConfig::default(),
+                analytics: Default::default(),
                 logging: LoggingConfig {
                     level: Some("warn".to_string()),
                     ..Default::default()
@@ -3654,7 +3654,7 @@ mod rules_tests {
                     listen: None,
                     ..Default::default()
                 },
-                analytics: AnalyticsConfig::default(),
+                analytics: Default::default(),
                 logging: LoggingConfig {
                     level: Some("debug".to_string()),
                     ..Default::default()

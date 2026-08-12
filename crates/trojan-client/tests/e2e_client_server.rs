@@ -15,8 +15,8 @@ use trojan_auth::MemoryAuth;
 use trojan_client::config::{ClientConfig, ClientSettings, ClientTlsConfig};
 use trojan_client::socks5::udp::{parse_socks5_udp, write_socks5_udp};
 use trojan_config::{
-    AnalyticsConfig, AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TcpConfig,
-    TlsConfig, WebSocketConfig,
+    AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TcpConfig, TlsConfig,
+    WebSocketConfig,
 };
 use trojan_proto::{AddressRef, HostRef};
 
@@ -246,7 +246,7 @@ impl TestServer {
                 listen: None,
                 ..Default::default()
             },
-            analytics: AnalyticsConfig::default(),
+            analytics: Default::default(),
             logging: LoggingConfig {
                 level: Some("warn".to_string()),
                 ..Default::default()
@@ -609,7 +609,7 @@ mod rules_e2e {
                     listen: None,
                     ..Default::default()
                 },
-                analytics: AnalyticsConfig::default(),
+                analytics: Default::default(),
                 logging: LoggingConfig {
                     level: Some("warn".to_string()),
                     ..Default::default()

@@ -9,8 +9,9 @@ mod inner {
     use std::net::IpAddr;
     use std::path::Path;
 
+    use crate::config::GeoipConfig;
     use maxminddb::Reader;
-    use trojan_config::{GeoResult, GeoipConfig};
+    use trojan_core::geo::GeoResult;
 
     use crate::error::RulesError;
 

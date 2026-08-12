@@ -5,10 +5,10 @@ mod file;
 
 use std::time::Duration;
 
+use crate::config::AnalyticsConfig;
 use tokio::sync::mpsc;
 use tokio::time::{interval, timeout};
 use tracing::{debug, error, info, warn};
-use trojan_config::AnalyticsConfig;
 
 use crate::event::ConnectionEvent;
 

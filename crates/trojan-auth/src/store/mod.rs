@@ -28,7 +28,7 @@
 mod auth;
 mod cache;
 mod config;
-mod record;
+pub(crate) mod record;
 mod traits;
 
 #[cfg(feature = "batched-traffic")]
@@ -38,7 +38,6 @@ pub use auth::StoreAuth;
 pub use cache::{AuthCache, CacheLookup, CacheStats, CachedUser};
 pub use config::{StoreAuthConfig, TrafficRecordingMode};
 pub use record::UserRecord;
-pub(crate) use record::to_storage_i64;
 pub use traits::UserStore;
 
 #[cfg(feature = "batched-traffic")]

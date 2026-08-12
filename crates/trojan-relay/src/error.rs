@@ -45,6 +45,10 @@ impl From<trojan_transport::error::TransportError> for RelayError {
             trojan_transport::error::TransportError::Io(e) => RelayError::Io(e),
             trojan_transport::error::TransportError::Tls(e) => RelayError::Tls(e),
             trojan_transport::error::TransportError::Config(s) => RelayError::Config(s),
+            // An unreadable cert or key is a config mistake like any other.
+            trojan_transport::error::TransportError::TlsMaterial(e) => {
+                RelayError::Config(e.to_string())
+            }
             trojan_transport::error::TransportError::CertGeneration(s) => {
                 RelayError::CertGeneration(s)
             }

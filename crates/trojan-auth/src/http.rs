@@ -24,9 +24,10 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::protocol;
+use crate::store::record::to_storage_i64;
 use crate::store::{
     FlushFn, StoreAuth, StoreAuthConfig, TrafficRecorder, TrafficRecordingMode, UserRecord,
-    UserStore, to_storage_i64,
+    UserStore,
 };
 use crate::{AuthBackend, AuthError, AuthResult};
 

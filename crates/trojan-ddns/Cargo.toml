@@ -11,18 +11,25 @@ description = "Dynamic DNS update service for trojan-rs"
 keywords = ["trojan", "ddns", "cloudflare", "dns"]
 categories = ["network-programming"]
 
-[dependencies]
-trojan-config.workspace = true
+[features]
+default = ["updater"]
+# The Cloudflare updater and its HTTP stack. Without it only the config
+# types compile, which is all `trojan-config` needs to compose them.
+updater = ["dep:cloudflare", "dep:reqwest", "dep:thiserror", "dep:tokio", "dep:tokio-util", "dep:tracing"]
 
-cloudflare = { version = "0.14", default-features = false, features = ["rustls-tls"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-thiserror.workspace = true
-tokio = { workspace = true, features = ["time", "sync"] }
-tokio-util.workspace = true
-tracing.workspace = true
+[dependencies]
+serde.workspace = true
+
+cloudflare = { version = "0.14", default-features = false, features = ["rustls-tls"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+thiserror = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["time", "sync"], optional = true }
+tokio-util = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
+toml.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }

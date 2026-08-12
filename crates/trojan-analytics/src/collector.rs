@@ -4,9 +4,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::config::{AnalyticsConfig, AnalyticsPrivacyConfig};
 use tokio::sync::mpsc;
 use tracing::debug;
-use trojan_config::{AnalyticsConfig, AnalyticsPrivacyConfig};
 
 use crate::event::{AuthResult, CloseReason, ConnectionEvent, Protocol, TargetType, Transport};
 
@@ -180,7 +180,7 @@ impl ConnectionEventBuilder {
     /// - `"city"`: fill all geo fields (country, region, city, ASN, org, lat/lon)
     /// - `"country"`: fill only country code
     /// - `"none"` or other: no-op
-    pub fn geo(mut self, result: trojan_config::GeoResult, precision: &str) -> Self {
+    pub fn geo(mut self, result: trojan_core::geo::GeoResult, precision: &str) -> Self {
         match precision {
             "city" => {
                 self.event.peer_country = result.country;
@@ -261,9 +261,10 @@ impl Drop for ConnectionEventBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AnalyticsConfig;
     use std::net::{Ipv4Addr, SocketAddrV4};
     use std::sync::Arc;
-    use trojan_config::{AnalyticsConfig, GeoResult};
+    use trojan_core::geo::GeoResult;
 
     fn test_collector() -> (EventCollector, mpsc::Receiver<ConnectionEvent>) {
         let (tx, rx) = mpsc::channel(64);
@@ -378,7 +379,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel(1);
         let config = Arc::new(AnalyticsConfig {
             enabled: true,
-            sampling: trojan_config::AnalyticsSamplingConfig {
+            sampling: crate::config::AnalyticsSamplingConfig {
                 rate: 0.0,
                 always_record_users: vec!["vip-user".into()],
             },
@@ -394,7 +395,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel(1);
         let config = Arc::new(AnalyticsConfig {
             enabled: true,
-            sampling: trojan_config::AnalyticsSamplingConfig {
+            sampling: crate::config::AnalyticsSamplingConfig {
                 rate: 1.0,
                 always_record_users: vec![],
             },
@@ -406,7 +407,7 @@ mod tests {
         let (tx2, _rx2) = mpsc::channel(1);
         let config2 = Arc::new(AnalyticsConfig {
             enabled: true,
-            sampling: trojan_config::AnalyticsSamplingConfig {
+            sampling: crate::config::AnalyticsSamplingConfig {
                 rate: 0.0,
                 always_record_users: vec![],
             },

@@ -38,7 +38,6 @@ hex.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 rustls.workspace = true
-rustls-pemfile.workspace = true
 rustls-pki-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -66,7 +65,7 @@ tracing-appender.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json"] }
 
 # workspace crates
-trojan-core.workspace = true
+trojan-core = { workspace = true, features = ["tls"] }
 trojan-dns.workspace = true
 trojan-proto.workspace = true
 trojan-auth = { workspace = true, features = ["http"] }
@@ -82,6 +81,7 @@ arc-swap = { workspace = true, optional = true }
 libc = "0.2"
 
 [dev-dependencies]
+rustls-pemfile.workspace = true
 # sql-sqlite is test-only: it lets the SQL auth backend be driven through a
 # real server without adding a database driver to release builds.
 trojan-auth = { workspace = true, features = ["http", "sql-sqlite"] }
@@ -109,6 +109,8 @@ criterion = { workspace = true, features = ["async_tokio"] }
 [[bench]]
 name = "server"
 harness = false
+# Most of it benchmarks `ws::inspect_mixed`, which does not exist without it.
+required-features = ["ws"]
 
 [lints]
 workspace = true

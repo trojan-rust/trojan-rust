@@ -7,8 +7,8 @@ mod udp;
 mod ws;
 
 pub use fallback::handle_fallback;
-pub use tcp::handle_connect;
-pub use udp::handle_udp_associate;
+pub(crate) use tcp::handle_connect;
+pub(crate) use udp::handle_udp_associate;
 #[cfg(feature = "ws")]
 pub use ws::handle_ws_only;
 
@@ -25,21 +25,12 @@ use trojan_metrics::{
     record_auth_failure, record_auth_success, record_connect_request, record_fallback,
     record_udp_associate_request,
 };
-use trojan_proto::{
-    CMD_CONNECT, CMD_UDP_ASSOCIATE, HASH_LEN, ParseError, ParseResult, parse_request,
-};
+use trojan_proto::{CMD_CONNECT, CMD_UDP_ASSOCIATE, ParseError, ParseResult, parse_request};
 
 use crate::error::ServerError;
 use crate::state::ServerState;
 #[cfg(feature = "ws")]
 use crate::ws::{INITIAL_BUFFER_SIZE, WsInspect, WsIo, accept_ws, inspect_mixed, send_reject};
-
-/// The in-flight analytics event for a connection, or `()` when the feature is
-/// off. Aliased so the handler signatures do not need duplicating per feature.
-#[cfg(feature = "analytics")]
-pub(crate) type AnalyticsEvent = Option<trojan_analytics::ConnectionEventBuilder>;
-#[cfg(not(feature = "analytics"))]
-pub(crate) type AnalyticsEvent = ();
 
 /// What the server knows about a connection before its trojan request arrives.
 #[derive(Debug, Clone)]
@@ -65,6 +56,115 @@ pub(crate) struct Account<'a> {
     pub user_id: Option<&'a str>,
     /// Hops to credit alongside this node.
     pub chain: &'a ChainInfo,
+}
+
+/// An authenticated connection, on its way to whatever it asked for.
+///
+/// Every command handler needs the same five things and settles them the same
+/// way at the end, so they travel together rather than as a parameter list
+/// repeated at each signature.
+pub(crate) struct Session<'a, A: ?Sized> {
+    pub state: Arc<ServerState>,
+    pub auth: Arc<A>,
+    /// Who this connection's bytes are charged to.
+    pub account: Account<'a>,
+    /// The client, as attributed — behind a trusted proxy, the real one.
+    pub peer: SocketAddr,
+    /// The in-flight analytics event, filed when the session ends.
+    #[cfg(feature = "analytics")]
+    pub analytics: Option<trojan_analytics::ConnectionEventBuilder>,
+}
+
+impl<A: AuthBackend + ?Sized> Session<'_, A> {
+    /// Note UDP packet counts on the in-flight event.
+    ///
+    /// A no-op without the analytics feature, where there is no event to note
+    /// them on.
+    #[cfg_attr(
+        not(feature = "analytics"),
+        expect(
+            unused_variables,
+            reason = "there is no event to record on when the feature is off"
+        )
+    )]
+    pub fn record_packets(&mut self, to_target: u64, to_client: u64) {
+        #[cfg(feature = "analytics")]
+        if let Some(ref mut event) = self.analytics {
+            event.add_packets(to_target, to_client);
+        }
+    }
+
+    /// Close the books on the connection: charge the user and the hops that
+    /// carried it, then file the analytics event.
+    ///
+    /// Byte counts come from the relay counters rather than the relay's return
+    /// value, so a session that ended in error still accounts for what it
+    /// moved. A client that vanishes without a close_notify — a killed app, a
+    /// dropped mobile link, an RST — is the common case, not the exception,
+    /// and billing only the success path let that traffic through free on a
+    /// server enforcing `traffic_limit`.
+    pub async fn settle<T>(
+        self,
+        counters: &trojan_metrics::RelayCounters,
+        result: &Result<T, ServerError>,
+    ) {
+        self.charge(counters.total_bytes()).await;
+        self.file_event(counters, result);
+    }
+
+    /// Record the session's bytes against its user, and against every hop that
+    /// carried them.
+    ///
+    /// The hops are credited the same count, not a share of it: each one
+    /// really did move all of it. They cannot report it themselves — a relay
+    /// never learns whose traffic it forwards — so this is the only place the
+    /// panel can learn what a chain carried for whom.
+    async fn charge(&self, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        let Some(uid) = self.account.user_id else {
+            return;
+        };
+        let peer = self.peer;
+        if let Err(e) = self.auth.record_traffic(uid, bytes).await {
+            warn!(peer = %peer, user_id = uid, error = %e, "failed to record traffic");
+        }
+        if !self.account.chain.is_empty()
+            && let Err(e) = self
+                .auth
+                .record_chain_traffic(uid, bytes, &self.account.chain.nodes)
+                .await
+        {
+            warn!(peer = %peer, user_id = uid, error = %e, "failed to record chain traffic");
+        }
+    }
+
+    /// Send the analytics event, with its byte counts and how it ended.
+    #[cfg_attr(
+        not(feature = "analytics"),
+        expect(
+            unused_variables,
+            reason = "the body is behind cfg(analytics); with it off there is \
+                      nothing to record and every parameter goes unread"
+        )
+    )]
+    fn file_event<T>(
+        self,
+        counters: &trojan_metrics::RelayCounters,
+        result: &Result<T, ServerError>,
+    ) {
+        #[cfg(feature = "analytics")]
+        if let Some(mut event) = self.analytics {
+            // `add_to_target` is the client → target direction, which the
+            // event records as bytes sent.
+            event.add_bytes(counters.sent_to_target(), counters.sent_to_client());
+            event.finish(match result {
+                Ok(_) => trojan_analytics::CloseReason::Normal,
+                Err(_) => trojan_analytics::CloseReason::Error,
+            });
+        }
+    }
 }
 
 /// Handle a new connection after TLS handshake.
@@ -180,36 +280,16 @@ where
                         .and_then(|db| db.country_code(peer.ip()))
                         .unwrap_or_default();
 
-                    // parse_request already validated hash format via is_valid_hash
-                    let hash = match std::str::from_utf8(req.hash) {
-                        Ok(v) => v,
-                        Err(_) => {
-                            debug!(peer = %peer, reason = "invalid_hash_encoding", "auth failed, fallback");
-                            record_auth_failure();
-                            #[cfg(feature = "geoip")]
-                            if !peer_country.is_empty() {
-                                trojan_metrics::record_auth_failure_with_geo(&peer_country);
-                            }
-                            record_fallback();
-                            return handle_fallback(stream, buf.freeze(), state, peer).await;
-                        }
-                    };
+                    // Hex is case-insensitive on the wire but backends key on
+                    // lowercase, so fold it. `parse_request` yields a fixed
+                    // number of ASCII hex digits, so this fits the stack and
+                    // needs no allocation on the authentication path.
+                    let mut folded = *req.hash;
+                    folded.make_ascii_lowercase();
+                    let hash = std::str::from_utf8(&folded)
+                        .expect("parse_request admits only ASCII hex digits");
 
-                    // Normalize hash to lowercase using stack buffer (avoid heap allocation)
-                    // HASH_LEN is 56 bytes for SHA-224, small enough for stack
-                    let verify_result = if hash.bytes().any(|b| b.is_ascii_uppercase()) {
-                        let mut buf = [0u8; HASH_LEN];
-                        for (i, byte) in hash.bytes().enumerate() {
-                            buf[i] = byte.to_ascii_lowercase();
-                        }
-                        // Safe: ASCII hex digits remain valid UTF-8 after lowercase
-                        let hash_lower =
-                            std::str::from_utf8(&buf).expect("ASCII hex is valid UTF-8");
-                        auth.verify(hash_lower).await
-                    } else {
-                        auth.verify(hash).await
-                    };
-                    let auth_result = match verify_result {
+                    let auth_result = match auth.verify(hash).await {
                         Ok(result) => result,
                         Err(err) => {
                             debug!(peer = %peer, reason = %err, "auth failed, fallback");
@@ -233,7 +313,7 @@ where
 
                     // Analytics: GeoIP lookup for geo fields (city-level)
                     #[cfg(all(feature = "geoip", feature = "analytics"))]
-                    let analytics_geo: Option<trojan_config::GeoResult> = state
+                    let analytics_geo: Option<trojan_core::geo::GeoResult> = state
                         .geoip_analytics
                         .as_ref()
                         .map(|db| db.lookup_city(peer.ip()));
@@ -241,48 +321,56 @@ where
                     // Analytics: record connection event if sampling passes.
                     // The builder sends the event on drop with duration auto-filled.
                     #[cfg(feature = "analytics")]
-                    let analytics_event: AnalyticsEvent =
-                        state.analytics.as_ref().and_then(|collector| {
-                            if !collector.should_sample(user_id.as_deref()) {
-                                return None;
-                            }
-                            let mut builder = collector.connection(conn_id, peer);
+                    let analytics_event = state.analytics.as_ref().and_then(|collector| {
+                        if !collector.should_sample(user_id.as_deref()) {
+                            return None;
+                        }
+                        let mut builder = collector.connection(conn_id, peer);
 
-                            // Everything the request already tells us. Left
-                            // unset these ship as empty strings and zeroes,
-                            // which is what the event looked like before.
-                            let (host, target_type) = match req.address.host {
-                                trojan_proto::HostRef::Ipv4(v4) => (
-                                    std::net::Ipv4Addr::from(v4).to_string(),
-                                    trojan_analytics::TargetType::Ipv4,
-                                ),
-                                trojan_proto::HostRef::Ipv6(v6) => (
-                                    std::net::Ipv6Addr::from(v6).to_string(),
-                                    trojan_analytics::TargetType::Ipv6,
-                                ),
-                                trojan_proto::HostRef::Domain(d) => (
-                                    String::from_utf8_lossy(d).into_owned(),
-                                    trojan_analytics::TargetType::Domain,
-                                ),
-                            };
-                            builder = builder
-                                .target(host, req.address.port, target_type)
-                                .protocol(if req.command == CMD_UDP_ASSOCIATE {
-                                    trojan_analytics::Protocol::Udp
-                                } else {
-                                    trojan_analytics::Protocol::Tcp
-                                });
-                            if let Some(ref uid) = user_id {
-                                builder = builder.user(uid.clone());
-                            }
-                            #[cfg(feature = "geoip")]
-                            if let Some(geo) = analytics_geo {
-                                builder = builder.geo(geo, &collector.privacy().geo_precision);
-                            }
-                            Some(builder)
-                        });
-                    #[cfg(not(feature = "analytics"))]
-                    let analytics_event: AnalyticsEvent = ();
+                        // Everything the request already tells us. Left
+                        // unset these ship as empty strings and zeroes,
+                        // which is what the event looked like before.
+                        let (host, target_type) = match req.address.host {
+                            trojan_proto::HostRef::Ipv4(v4) => (
+                                std::net::Ipv4Addr::from(v4).to_string(),
+                                trojan_analytics::TargetType::Ipv4,
+                            ),
+                            trojan_proto::HostRef::Ipv6(v6) => (
+                                std::net::Ipv6Addr::from(v6).to_string(),
+                                trojan_analytics::TargetType::Ipv6,
+                            ),
+                            trojan_proto::HostRef::Domain(d) => (
+                                String::from_utf8_lossy(d).into_owned(),
+                                trojan_analytics::TargetType::Domain,
+                            ),
+                        };
+                        builder = builder
+                            .target(host, req.address.port, target_type)
+                            .protocol(if req.command == CMD_UDP_ASSOCIATE {
+                                trojan_analytics::Protocol::Udp
+                            } else {
+                                trojan_analytics::Protocol::Tcp
+                            });
+                        if let Some(ref uid) = user_id {
+                            builder = builder.user(uid.clone());
+                        }
+                        #[cfg(feature = "geoip")]
+                        if let Some(geo) = analytics_geo {
+                            builder = builder.geo(geo, &collector.privacy().geo_precision);
+                        }
+                        Some(builder)
+                    });
+                    let session = Session {
+                        state: state.clone(),
+                        auth: auth.clone(),
+                        account: Account {
+                            user_id: user_id.as_deref(),
+                            chain: &conn.chain,
+                        },
+                        peer,
+                        #[cfg(feature = "analytics")]
+                        analytics: analytics_event,
+                    };
 
                     // Rule-based routing: match target against rules
                     #[cfg(feature = "rules")]
@@ -366,14 +454,7 @@ where
                                             req.address,
                                             payload,
                                             outbound.clone(),
-                                            state,
-                                            auth,
-                                            Account {
-                                                user_id: user_id.as_deref(),
-                                                chain: &conn.chain,
-                                            },
-                                            peer,
-                                            analytics_event,
+                                            session,
                                         )
                                         .await;
                                     }
@@ -395,36 +476,11 @@ where
                     return match req.command {
                         CMD_CONNECT => {
                             record_connect_request();
-                            handle_connect(
-                                stream,
-                                req.address,
-                                payload,
-                                state,
-                                auth,
-                                Account {
-                                    user_id: user_id.as_deref(),
-                                    chain: &conn.chain,
-                                },
-                                peer,
-                                analytics_event,
-                            )
-                            .await
+                            handle_connect(stream, req.address, payload, session).await
                         }
                         CMD_UDP_ASSOCIATE => {
                             record_udp_associate_request();
-                            handle_udp_associate(
-                                stream,
-                                payload,
-                                state,
-                                auth,
-                                Account {
-                                    user_id: user_id.as_deref(),
-                                    chain: &conn.chain,
-                                },
-                                peer,
-                                analytics_event,
-                            )
-                            .await
+                            handle_udp_associate(stream, payload, session).await
                         }
                         _ => Err(ServerError::Proto(ParseError::InvalidCommand)),
                     };
@@ -453,20 +509,12 @@ where
 
 /// Handle TCP CONNECT via a named outbound connector.
 #[cfg(feature = "rules")]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one connection's worth of state; a struct here would only rename the fields"
-)]
 async fn handle_connect_via_outbound<S, A>(
     mut stream: S,
     address: trojan_proto::AddressRef<'_>,
     payload: &[u8],
     outbound: Arc<crate::outbound::Outbound>,
-    state: Arc<ServerState>,
-    auth: Arc<A>,
-    account: Account<'_>,
-    peer: SocketAddr,
-    analytics: AnalyticsEvent,
+    session: Session<'_, A>,
 ) -> Result<(), ServerError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -475,10 +523,12 @@ where
     use tokio::io::AsyncWriteExt;
     use trojan_metrics::{record_target_connect_duration, record_target_connection};
 
+    let state = &session.state;
+    let peer = session.peer;
     let target_label = crate::resolve::target_to_label(&address);
     record_target_connection(&target_label);
     // Resolved once here rather than per flush inside the relay loop.
-    let counters = state.relay_counters(&target_label);
+    let counters = state.relay_counters(Some(&target_label));
 
     // Connect via the outbound. Any pre-relay failure (resolve, connect, or
     // initial payload write) drops the TLS stream — call shutdown first so
@@ -536,9 +586,7 @@ where
     )
     .await;
 
-    // Settle the account however the relay ended — see `handler::tcp`.
-    tcp::record_traffic_for_user(&*auth, account, counters.total_bytes(), peer).await;
-    tcp::finish_analytics(analytics, &counters, &result);
+    session.settle(&counters, &result).await;
 
     result?;
     debug!(peer = %peer, target = ?address, "outbound relay finished");

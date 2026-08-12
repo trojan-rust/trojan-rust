@@ -1,8 +1,6 @@
 //! Configuration loading and CLI definitions.
 
-mod analytics;
 mod cli;
-mod ddns;
 mod defaults;
 mod loader;
 mod types;
@@ -10,9 +8,7 @@ mod validate;
 
 use serde::{Deserialize, Serialize};
 
-pub use analytics::*;
 pub use cli::*;
-pub use ddns::*;
 pub use loader::*;
 pub use types::*;
 pub use validate::*;
@@ -29,9 +25,9 @@ pub struct Config {
     #[serde(default)]
     pub logging: LoggingConfig,
     #[serde(default)]
-    pub analytics: AnalyticsConfig,
+    pub analytics: trojan_analytics::AnalyticsConfig,
     #[serde(default)]
     pub dns: trojan_dns::DnsConfig,
     #[serde(default)]
-    pub ddns: DdnsConfig,
+    pub ddns: trojan_ddns::DdnsConfig,
 }

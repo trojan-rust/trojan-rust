@@ -1,8 +1,20 @@
-//! Pluggable transport abstraction for trojan-rs.
+//! Pluggable transport for the relay chain.
 //!
-//! Defines traits for accepting inbound connections and connecting outbound,
-//! allowing the relay system to work with TLS, plain TCP, WebSocket, or future
-//! TCP-based transports without changing core relay logic.
+//! A chain's hops each choose how to reach the next one, and that choice is
+//! config — so an entry or relay node has to dial and accept over a transport
+//! it only learns at runtime. [`TransportAcceptor`] and [`TransportConnector`]
+//! are what let one relay loop serve all of them.
+//!
+//! # Scope
+//!
+//! This is the relay chain's abstraction, not the project's. The exit server
+//! and the SOCKS5 client deliberately do not use it: their streams change type
+//! part-way through — a server connection may turn out to be WebSocket only
+//! after TLS is up and the first bytes are inspected — which a trait fixing
+//! one `Stream` type per acceptor cannot express without boxing the stream and
+//! paying a virtual call on every read. They terminate TLS directly instead,
+//! and share the parts that genuinely have one implementation
+//! (`trojan_core::tls`) rather than the trait.
 //!
 //! # Transports
 //!

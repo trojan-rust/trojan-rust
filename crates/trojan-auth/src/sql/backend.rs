@@ -8,9 +8,9 @@ use sqlx::any::{AnyPoolOptions, AnyRow};
 use sqlx::{AnyPool, Row};
 
 use crate::error::AuthError;
+use crate::store::record::to_storage_i64;
 use crate::store::{
     FlushFn, StoreAuth, TrafficRecorder, TrafficRecordingMode, UserRecord, UserStore,
-    to_storage_i64,
 };
 
 use super::config::SqlAuthConfig;

@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tracing::{Instrument, debug, info, info_span, warn};
 
@@ -23,10 +23,10 @@ use trojan_metrics::{
 use crate::config::{RelayNodeConfig, TimeoutConfig, TransportType};
 use crate::error::RelayError;
 use crate::handshake;
-use crate::transport::TransportAcceptor;
-use crate::transport::plain::{PlainTransportAcceptor, PlainTransportConnector};
-use crate::transport::tls::{TlsTransportAcceptor, TlsTransportConnector};
-use crate::transport::ws::{WsTransportAcceptor, WsTransportConnector};
+use trojan_transport::plain::{PlainTransportAcceptor, PlainTransportConnector};
+use trojan_transport::tls::{TlsTransportAcceptor, TlsTransportConnector};
+use trojan_transport::ws::{WsTransportAcceptor, WsTransportConnector};
+use trojan_transport::{TransportAcceptor, TransportConnector};
 
 use trojan_core::io::relay_bidirectional;
 
@@ -172,9 +172,6 @@ where
 {
     async fn handle(self, tcp_stream: tokio::net::TcpStream) -> Result<(), RelayError> {
         let handshake_timeout = Duration::from_secs(self.timeouts.handshake_timeout_secs);
-        let connect_timeout = Duration::from_secs(self.timeouts.connect_timeout_secs);
-        let idle_timeout = Duration::from_secs(self.timeouts.idle_timeout_secs);
-        let relay_buffer_size = self.timeouts.relay_buffer_size;
 
         // 1. Accept inbound transport
         let mut inbound = tokio::time::timeout(handshake_timeout, self.acceptor.accept(tcp_stream))
@@ -217,77 +214,61 @@ where
             "outbound transport resolved"
         );
 
-        // 5. Connect to target and relay
+        // 5. Connect to target and relay. Only the connector differs per
+        // transport; everything after the dial is the same stream of bytes.
+        let hop = Hop {
+            target: &hs.target,
+            residue: &residue,
+            timeouts: &self.timeouts,
+            counters: &self.counters,
+        };
         match outbound_transport {
             TransportType::Tls => {
                 let connector = self.connectors.tls.with_sni(outbound_sni.to_string());
-                let mut outbound = tokio::time::timeout(
-                    connect_timeout,
-                    crate::transport::TransportConnector::connect(&connector, &hs.target),
-                )
-                .await
-                .map_err(|_| RelayError::ConnectTimeout(hs.target.clone()))??;
-
-                if !residue.is_empty() {
-                    outbound.write_all(&residue).await?;
-                }
-
-                relay_bidirectional(
-                    inbound,
-                    outbound,
-                    idle_timeout,
-                    relay_buffer_size,
-                    &self.counters,
-                )
-                .await?;
+                dial_and_relay(inbound, &connector, hop).await
             }
-            TransportType::Plain => {
-                let mut outbound = tokio::time::timeout(
-                    connect_timeout,
-                    crate::transport::TransportConnector::connect(
-                        &self.connectors.plain,
-                        &hs.target,
-                    ),
-                )
-                .await
-                .map_err(|_| RelayError::ConnectTimeout(hs.target.clone()))??;
-
-                if !residue.is_empty() {
-                    outbound.write_all(&residue).await?;
-                }
-
-                relay_bidirectional(
-                    inbound,
-                    outbound,
-                    idle_timeout,
-                    relay_buffer_size,
-                    &self.counters,
-                )
-                .await?;
-            }
-            TransportType::Ws => {
-                let mut outbound = tokio::time::timeout(
-                    connect_timeout,
-                    crate::transport::TransportConnector::connect(&self.connectors.ws, &hs.target),
-                )
-                .await
-                .map_err(|_| RelayError::ConnectTimeout(hs.target.clone()))??;
-
-                if !residue.is_empty() {
-                    outbound.write_all(&residue).await?;
-                }
-
-                relay_bidirectional(
-                    inbound,
-                    outbound,
-                    idle_timeout,
-                    relay_buffer_size,
-                    &self.counters,
-                )
-                .await?;
-            }
+            TransportType::Plain => dial_and_relay(inbound, &self.connectors.plain, hop).await,
+            TransportType::Ws => dial_and_relay(inbound, &self.connectors.ws, hop).await,
         }
-
-        Ok(())
     }
+}
+
+/// The next hop of one relayed connection, whatever transport reaches it.
+#[derive(Clone, Copy)]
+struct Hop<'a> {
+    /// `host:port` to dial.
+    target: &'a str,
+    /// Bytes already read past the handshake, owed to the target verbatim.
+    residue: &'a [u8],
+    timeouts: &'a TimeoutConfig,
+    counters: &'a RelayCounters,
+}
+
+/// Dial the hop, hand it the residue, then relay `inbound` through it.
+async fn dial_and_relay<I, C>(inbound: I, connector: &C, hop: Hop<'_>) -> Result<(), RelayError>
+where
+    I: AsyncRead + AsyncWrite + Unpin,
+    C: TransportConnector,
+{
+    let mut outbound = tokio::time::timeout(
+        Duration::from_secs(hop.timeouts.connect_timeout_secs),
+        connector.connect(hop.target),
+    )
+    .await
+    .map_err(|_| RelayError::ConnectTimeout(hop.target.to_owned()))??;
+
+    if !hop.residue.is_empty() {
+        outbound.write_all(hop.residue).await?;
+    }
+
+    relay_bidirectional(
+        inbound,
+        outbound,
+        Duration::from_secs(hop.timeouts.idle_timeout_secs),
+        hop.timeouts.relay_buffer_size,
+        hop.counters,
+    )
+    .await?;
+
+    Ok(())
 }

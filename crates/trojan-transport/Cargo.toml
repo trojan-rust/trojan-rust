@@ -12,14 +12,13 @@ keywords = ["trojan", "transport", "tls", "websocket"]
 categories = ["network-programming"]
 
 [dependencies]
-trojan-core = { workspace = true, features = ["ws"] }
+trojan-core = { workspace = true, features = ["ws", "tls"] }
 trojan-dns.workspace = true
 
 tokio = { workspace = true, features = ["net", "io-util"] }
 tokio-rustls.workspace = true
 rustls.workspace = true
 rcgen.workspace = true
-rustls-pemfile.workspace = true
 
 tokio-tungstenite.workspace = true
 

@@ -32,8 +32,8 @@ use trojan_auth::{
     sql::{SqlAuth, SqlAuthConfig, TrafficRecordingMode},
 };
 use trojan_config::{
-    AnalyticsConfig, AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TcpConfig,
-    TlsConfig, WebSocketConfig,
+    AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TcpConfig, TlsConfig,
+    WebSocketConfig,
 };
 use trojan_proto::{AddressRef, CMD_CONNECT, HostRef, write_request_header};
 use trojan_server::{CancellationToken, run_with_shutdown};
@@ -231,7 +231,7 @@ impl TestServer {
                 listen: None,
                 ..Default::default()
             },
-            analytics: AnalyticsConfig::default(),
+            analytics: Default::default(),
             logging: LoggingConfig {
                 level: Some("warn".to_string()),
                 ..Default::default()

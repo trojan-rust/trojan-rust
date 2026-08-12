@@ -33,8 +33,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_rustls::TlsConnector;
 use trojan_auth::{MemoryAuth, sha224_hex};
 use trojan_config::{
-    AnalyticsConfig, AuthConfig, Config, GeoipConfig, LoggingConfig, MetricsConfig,
-    RouteRuleConfig, ServerConfig, TcpConfig, TlsConfig, WebSocketConfig,
+    AuthConfig, Config, LoggingConfig, MetricsConfig, RouteRuleConfig, ServerConfig, TcpConfig,
+    TlsConfig, WebSocketConfig,
 };
 use trojan_proto::{AddressRef, CMD_CONNECT, HostRef, write_request_header};
 use trojan_server::{CancellationToken, run_with_shutdown};
@@ -183,7 +183,7 @@ impl TestServer {
                 outbounds: Default::default(),
                 rule_providers: Default::default(),
                 rules,
-                geoip: Some(GeoipConfig {
+                geoip: Some(trojan_rules::config::GeoipConfig {
                     source: "test-local".to_string(),
                     path: Some(db_path.to_string_lossy().into_owned()),
                     url: None,
@@ -191,6 +191,7 @@ impl TestServer {
                     interval: 0,
                     cache_path: None,
                 }),
+                proxy_protocol: Default::default(),
             },
             tls: TlsConfig {
                 cert: cert_path.to_string_lossy().into_owned(),
@@ -211,7 +212,7 @@ impl TestServer {
                 listen: None,
                 ..Default::default()
             },
-            analytics: AnalyticsConfig::default(),
+            analytics: Default::default(),
             logging: LoggingConfig {
                 level: Some("warn".to_string()),
                 ..Default::default()

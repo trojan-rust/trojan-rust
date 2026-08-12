@@ -12,11 +12,8 @@ use trojan_config::TcpConfig;
 
 use crate::error::ServerError;
 
-// Re-export PrefixedStream from trojan-core for backward compatibility
-pub use trojan_core::io::PrefixedStream;
-
 /// Tracks active connections for graceful shutdown.
-#[derive(Clone)]
+#[derive(Clone, Debug, Default)]
 pub struct ConnectionTracker {
     active: Arc<AtomicUsize>,
     zero_notify: Arc<Notify>,
@@ -24,25 +21,23 @@ pub struct ConnectionTracker {
 
 impl ConnectionTracker {
     pub fn new() -> Self {
-        Self {
-            active: Arc::new(AtomicUsize::new(0)),
-            zero_notify: Arc::new(Notify::new()),
-        }
+        Self::default()
     }
 
-    pub fn increment(&self) {
+    /// Count a connection as active until the returned guard drops.
+    ///
+    /// The count is only ever raised here, so it cannot be raised without a
+    /// guard to lower it again — including when the connection ends by panic
+    /// or early return, which is what a graceful drain depends on.
+    pub fn connection_started(&self) -> ConnectionGuard {
         self.active.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn decrement(&self) {
-        // AcqRel: Acquire to see previous increments, Release to make decrement visible
-        if self.active.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.zero_notify.notify_waiters();
+        ConnectionGuard {
+            tracker: self.clone(),
         }
     }
 
     pub fn count(&self) -> usize {
-        // Acquire to synchronize with Release from decrement
+        // Acquire to synchronize with Release from the guard's drop
         self.active.load(Ordering::Acquire)
     }
 
@@ -60,26 +55,19 @@ impl ConnectionTracker {
     }
 }
 
-impl Default for ConnectionTracker {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Guard that decrements connection count on drop.
+/// Holds a connection's place in the active count until dropped.
+#[derive(Debug)]
 pub struct ConnectionGuard {
     tracker: ConnectionTracker,
 }
 
-impl ConnectionGuard {
-    pub fn new(tracker: ConnectionTracker) -> Self {
-        Self { tracker }
-    }
-}
-
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
-        self.tracker.decrement();
+        // AcqRel: Acquire to see previous increments, Release to make the
+        // decrement visible to whoever is waiting for the count to reach zero.
+        if self.tracker.active.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.tracker.zero_notify.notify_waiters();
+        }
     }
 }
 

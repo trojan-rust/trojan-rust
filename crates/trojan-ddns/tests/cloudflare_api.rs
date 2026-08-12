@@ -10,6 +10,7 @@
 //! crate's `Zone` type has around twenty required fields with nested
 //! structures, and a hand-written fixture for it would break on any upstream
 //! schema change while testing the crate's deserialiser more than our code.
+#![cfg(feature = "updater")]
 #![expect(
     clippy::tests_outside_test_module,
     reason = "integration tests are their own crate, where every #[test] is \
@@ -25,7 +26,7 @@ use std::{
     time::Duration,
 };
 
-use trojan_config::CloudflareDdnsConfig;
+use trojan_ddns::CloudflareDdnsConfig;
 use trojan_ddns::{CloudflareUpdater, DdnsError};
 
 /// One request as the stand-in API saw it.
@@ -150,7 +151,7 @@ async fn updater_queries_the_configured_endpoint() {
     let mut updater = CloudflareUpdater::new(&config_for(api.addr)).expect("build updater");
 
     // No zone matches, so this fails — the point is where it went first.
-    let result = updater.update_ipv4("203.0.113.7".parse().unwrap()).await;
+    let result = updater.update("203.0.113.7".parse().unwrap()).await;
     assert!(
         matches!(result, Err(DdnsError::ZoneNotFound(ref zone)) if zone == "example.com"),
         "expected the configured zone to be reported missing, got {result:?}"
@@ -182,7 +183,7 @@ async fn updater_surfaces_api_errors() {
     let api = MockCloudflare::start("403 Forbidden", API_ERROR);
     let mut updater = CloudflareUpdater::new(&config_for(api.addr)).expect("build updater");
 
-    let result = updater.update_ipv4("203.0.113.7".parse().unwrap()).await;
+    let result = updater.update("203.0.113.7".parse().unwrap()).await;
     let err = result.expect_err("a rejected token must not look like success");
     assert!(
         matches!(err, DdnsError::Cloudflare(_)),
@@ -201,7 +202,7 @@ async fn updater_queries_the_endpoint_for_ipv6_too() {
     let api = MockCloudflare::start("200 OK", NO_ZONES);
     let mut updater = CloudflareUpdater::new(&config_for(api.addr)).expect("build updater");
 
-    let result = updater.update_ipv6("2001:db8::1".parse().unwrap()).await;
+    let result = updater.update("2001:db8::1".parse().unwrap()).await;
     assert!(matches!(result, Err(DdnsError::ZoneNotFound(_))));
 
     // Give the mock thread a moment to record before asserting.

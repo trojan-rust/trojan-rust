@@ -26,8 +26,8 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use trojan_auth::{MemoryAuth, sha224_hex};
 use trojan_config::{
-    AnalyticsConfig, AuthConfig, Config, LoggingConfig, MetricsConfig, ProxyProtocolConfig,
-    RateLimitConfig, ServerConfig, TcpConfig, TlsConfig, WebSocketConfig,
+    AuthConfig, Config, LoggingConfig, MetricsConfig, ProxyProtocolConfig, RateLimitConfig,
+    ServerConfig, TcpConfig, TlsConfig, WebSocketConfig,
 };
 use trojan_core::proxy_protocol::{ChainInfo, ProxyHeader};
 use trojan_proto::{AddressRef, CMD_CONNECT, HostRef, write_request_header};
@@ -148,7 +148,7 @@ impl TestServer {
                 listen: None,
                 ..Default::default()
             },
-            analytics: AnalyticsConfig::default(),
+            analytics: Default::default(),
             logging: LoggingConfig {
                 level: Some("warn".to_string()),
                 ..Default::default()

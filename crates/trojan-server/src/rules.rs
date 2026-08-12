@@ -3,8 +3,11 @@
 //! Converts server config into a compiled RuleEngine.
 
 use std::path::Path;
-#[cfg(feature = "geoip")]
 use std::sync::Arc;
+use std::time::Duration;
+
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, info, warn};
 
 use trojan_config::ServerConfig;
 use trojan_rules::rule::ParsedRule;
@@ -287,7 +290,7 @@ fn parse_inline_rule(rule_type: &str, value: &str) -> Result<ParsedRule, RulesEr
 /// Tries `path` first, then `cache_path`.
 #[cfg(feature = "geoip")]
 fn load_geoip_matcher(
-    cfg: &trojan_config::GeoipConfig,
+    cfg: &trojan_rules::config::GeoipConfig,
 ) -> Result<trojan_rules::matcher::GeoipMatcher, trojan_rules::RulesError> {
     if let Some(ref path) = cfg.path {
         return trojan_rules::matcher::GeoipMatcher::from_file(Path::new(path));
@@ -302,4 +305,62 @@ fn load_geoip_matcher(
         "no local GeoIP database for source '{}'; set 'path' or 'cache_path'",
         cfg.source
     )))
+}
+
+/// Background task that periodically re-fetches HTTP rule-sets and hot-swaps the engine.
+pub(crate) async fn rule_update_loop(
+    engine: Arc<trojan_rules::HotRuleEngine>,
+    server_config: trojan_config::ServerConfig,
+    interval_secs: u64,
+    shutdown: CancellationToken,
+) {
+    use trojan_metrics::{record_rule_update, record_rule_update_error};
+
+    // Initial fetch (immediate) to replace any cache-only startup data
+    match build_rule_engine_async(&server_config).await {
+        Ok(new_engine) => {
+            info!(
+                rule_sets = new_engine.rule_set_count(),
+                rules = new_engine.rule_count(),
+                "initial rule fetch completed, engine updated"
+            );
+            engine.update(new_engine);
+            record_rule_update();
+        }
+        Err(e) => {
+            warn!(error = %e, "initial rule fetch failed, keeping startup rules");
+            record_rule_update_error();
+        }
+    }
+
+    let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+    interval.tick().await; // consume the immediate tick
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                debug!("rule update task shutting down");
+                return;
+            }
+            _ = interval.tick() => {
+                debug!("starting scheduled rule update");
+                match build_rule_engine_async(&server_config).await {
+                    Ok(new_engine) => {
+                        info!(
+                            rule_sets = new_engine.rule_set_count(),
+                            rules = new_engine.rule_count(),
+                            "rule update completed, engine swapped"
+                        );
+                        engine.update(new_engine);
+                        record_rule_update();
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "rule update failed, keeping current rules");
+                        record_rule_update_error();
+                    }
+                }
+            }
+        }
+    }
 }

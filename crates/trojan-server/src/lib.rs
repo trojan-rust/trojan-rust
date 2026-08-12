@@ -7,7 +7,10 @@ pub mod cli;
 #[cfg(feature = "rules")]
 mod debug_api;
 mod error;
+#[cfg(feature = "geoip")]
+mod geoip;
 mod handler;
+mod listener;
 #[cfg(feature = "rules")]
 mod outbound;
 mod pool;

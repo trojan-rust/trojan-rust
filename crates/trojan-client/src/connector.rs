@@ -10,6 +10,7 @@ use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 use tracing::debug;
 use trojan_config::TcpConfig;
+use trojan_core::tls::{SkipServerVerification, load_certs};
 use trojan_dns::DnsResolver;
 
 use crate::error::ClientError;
@@ -74,14 +75,7 @@ pub fn build_tls_config(
     let mut root_store = rustls::RootCertStore::empty();
 
     if let Some(ca_path) = &tls.ca {
-        let ca_data = std::fs::read(ca_path)
-            .map_err(|e| ClientError::Config(format!("failed to read CA cert: {e}")))?;
-
-        let certs = rustls_pemfile::certs(&mut std::io::Cursor::new(&ca_data))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| ClientError::Config(format!("failed to parse CA cert: {e}")))?;
-
-        for cert in certs {
+        for cert in load_certs(ca_path)? {
             root_store
                 .add(cert)
                 .map_err(|e| ClientError::Config(format!("failed to add CA cert: {e}")))?;
@@ -93,7 +87,7 @@ pub fn build_tls_config(
     let mut config = if tls.skip_verify {
         rustls::ClientConfig::builder()
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(NoVerifier))
+            .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
             .with_no_client_auth()
     } else {
         rustls::ClientConfig::builder()
@@ -138,6 +132,20 @@ fn extract_host(remote: &str) -> String {
     remote.to_string()
 }
 
+/// Apply TCP socket options.
+fn apply_tcp_options(stream: &TcpStream, config: &TcpConfig) -> Result<(), ClientError> {
+    stream.set_nodelay(config.no_delay)?;
+
+    if config.keepalive_secs > 0 {
+        let sock = socket2::SockRef::from(stream);
+        let keepalive =
+            socket2::TcpKeepalive::new().with_time(Duration::from_secs(config.keepalive_secs));
+        sock.set_tcp_keepalive(&keepalive)?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{extract_host, resolve_sni};
@@ -159,64 +167,5 @@ mod tests {
         let tls = crate::config::ClientTlsConfig::default();
         let sni = resolve_sni(&tls, "[::1]:443");
         sni.unwrap();
-    }
-}
-
-/// Apply TCP socket options.
-fn apply_tcp_options(stream: &TcpStream, config: &TcpConfig) -> Result<(), ClientError> {
-    stream.set_nodelay(config.no_delay)?;
-
-    if config.keepalive_secs > 0 {
-        let sock = socket2::SockRef::from(stream);
-        let keepalive =
-            socket2::TcpKeepalive::new().with_time(Duration::from_secs(config.keepalive_secs));
-        sock.set_tcp_keepalive(&keepalive)?;
-    }
-
-    Ok(())
-}
-
-/// Certificate verifier that accepts any certificate (for skip_verify mode).
-#[derive(Debug)]
-struct NoVerifier;
-
-impl rustls::client::danger::ServerCertVerifier for NoVerifier {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        rustls::crypto::CryptoProvider::get_default()
-            .map(|provider| {
-                provider
-                    .signature_verification_algorithms
-                    .supported_schemes()
-            })
-            .unwrap_or_default()
     }
 }

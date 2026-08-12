@@ -14,6 +14,9 @@ pub enum TransportError {
     #[error("config error: {0}")]
     Config(String),
 
+    #[error(transparent)]
+    TlsMaterial(#[from] trojan_core::tls::TlsError),
+
     #[error("certificate generation failed: {0}")]
     CertGeneration(String),
 }

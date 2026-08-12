@@ -1,8 +1,10 @@
 //! Analytics configuration for connection event collection.
+//!
+//! Owned here rather than by the config crate because this crate is what acts
+//! on it. The top-level config composes this type.
 
 use serde::{Deserialize, Serialize};
-
-use crate::GeoipConfig;
+use trojan_rules::config::GeoipConfig;
 
 /// Analytics configuration for connection event collection.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -2,44 +2,29 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tokio::time::Instant;
+use tokio::sync::Semaphore;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, info, info_span, warn};
+use tracing::{info, warn};
 
 use crate::error::ServerError;
-use crate::handler::handle_conn;
+use crate::listener::{ListenerContext, ListenerKind};
 use crate::pool::ConnectionPool;
 use crate::rate_limit::RateLimiter;
 use crate::resolve::resolve_sockaddr;
 use crate::state::ServerState;
 use crate::tls::load_tls_config;
-use crate::util::{ConnectionGuard, ConnectionTracker, apply_tcp_options, create_listener};
+use crate::util::{ConnectionTracker, create_listener};
 use trojan_auth::AuthBackend;
 use trojan_config::Config;
 use trojan_core::defaults;
 use trojan_dns::DnsResolver;
-use trojan_metrics::{
-    ERROR_TLS_HANDSHAKE, NodeStats, record_connection_accepted, record_connection_closed,
-    record_connection_rejected, record_error, record_tls_handshake_duration,
-    set_connection_queue_depth,
-};
+use trojan_metrics::NodeStats;
 
 /// Default graceful shutdown timeout.
 pub const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Global connection ID counter.
-static CONN_ID: AtomicU64 = AtomicU64::new(1);
-
-/// Generate a unique connection ID.
-#[inline]
-fn next_conn_id() -> u64 {
-    CONN_ID.fetch_add(1, Ordering::Relaxed)
-}
 
 /// Run the server with a cancellation token for graceful shutdown.
 pub async fn run_with_shutdown(
@@ -151,7 +136,7 @@ pub async fn run_with_stats(
             }
         }
     } else {
-        debug!("analytics disabled in config");
+        tracing::debug!("analytics disabled in config");
         None
     };
 
@@ -172,7 +157,7 @@ pub async fn run_with_stats(
             }
         }
     } else {
-        debug!("no routing rules configured");
+        tracing::debug!("no routing rules configured");
         None
     };
 
@@ -187,7 +172,8 @@ pub async fn run_with_stats(
         let update_shutdown = shutdown.clone();
         info!(interval_secs, "starting background rule update task");
         tokio::spawn(async move {
-            rule_update_loop(engine_ref, server_cfg, interval_secs, update_shutdown).await;
+            crate::rules::rule_update_loop(engine_ref, server_cfg, interval_secs, update_shutdown)
+                .await;
         });
     }
 
@@ -209,12 +195,10 @@ pub async fn run_with_stats(
         map
     };
 
-    // Load GeoIP databases with deduplication. Configs pointing at the same
-    // source share one `Arc`, which happens inside the loader — so the server
-    // handle itself has no user out here.
+    // Configs pointing at the same source share one `Arc`, which happens
+    // inside the loader — so `server` itself has no user out here.
     #[cfg(feature = "geoip")]
-    let (_geoip_server, geoip_metrics, geoip_analytics) =
-        load_geoip_databases(&config, &shutdown).await;
+    let geoip = crate::geoip::load_geoip_databases(&config, &shutdown).await;
 
     // Start metrics server (with debug routes if rules feature is enabled)
     if let Some(ref listen) = config.metrics.listen {
@@ -274,6 +258,7 @@ pub async fn run_with_stats(
         tcp_send_buffer,
         tcp_recv_buffer,
         tcp_config: config.server.tcp.clone(),
+        #[cfg(feature = "ws")]
         websocket: config.websocket.clone(),
         dns_resolver,
         node_stats: stats,
@@ -286,9 +271,9 @@ pub async fn run_with_stats(
         #[cfg(feature = "rules")]
         outbounds,
         #[cfg(feature = "geoip")]
-        geoip_metrics,
+        geoip_metrics: geoip.metrics,
         #[cfg(all(feature = "geoip", feature = "analytics"))]
-        geoip_analytics,
+        geoip_analytics: geoip.analytics,
     });
     let auth = Arc::new(auth);
     let tracker = ConnectionTracker::new();
@@ -315,135 +300,36 @@ pub async fn run_with_stats(
     let listener = create_listener(listen, connection_backlog, &config.server.tcp)?;
     info!(address = %listen, backlog = connection_backlog, "listening");
 
+    // Everything a listener needs beyond its own socket.
+    let ctx = ListenerContext {
+        tls: acceptor,
+        state,
+        auth,
+        tracker: tracker.clone(),
+        conn_limit,
+        rate_limiter: rate_limiter.clone(),
+    };
+
+    // The dedicated WebSocket port, when `split` mode asks for one, runs
+    // alongside the main listener rather than in place of it.
     #[cfg(feature = "ws")]
     if config.websocket.enabled && config.websocket.mode == "split" {
-        let ws_listen = config.websocket.listen.clone().unwrap_or_default();
-        let ws_addr: SocketAddr = ws_listen
+        let ws_addr: SocketAddr = config
+            .websocket
+            .listen
+            .as_deref()
+            .unwrap_or_default()
             .parse()
             .map_err(|_| ServerError::Config("invalid websocket.listen address".into()))?;
-        let ws_listener = create_listener(ws_addr, connection_backlog, &config.server.tcp)?;
-        let ws_acceptor = acceptor.clone();
-        let ws_state = state.clone();
-        let ws_auth = auth.clone();
-        let ws_tracker = tracker.clone();
-        let ws_conn_limit = conn_limit.clone();
-        let ws_rate_limiter = rate_limiter.clone();
+        let ws_listener = ctx.listener(
+            create_listener(ws_addr, connection_backlog, &config.server.tcp)?,
+            ListenerKind::WebSocket,
+        );
         let ws_shutdown = shutdown.clone();
-
         info!(address = %ws_addr, "websocket split listener started");
         tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    biased;
-                    _ = ws_shutdown.cancelled() => break,
-                    result = ws_listener.accept() => {
-                        let (tcp, peer) = match result {
-                            Ok(v) => v,
-                            Err(_) => continue,
-                        };
-
-                        // Apply TCP socket options
-                        if let Err(e) = apply_tcp_options(&tcp, &ws_state.tcp_config) {
-                            tracing::debug!(error = %e, "failed to apply TCP options");
-                        }
-
-                        // Deferred for proxied connections, exactly as on the
-                        // main listener — see the comment there.
-                        let introduced_by_proxy = ws_state.proxy_protocol.trusts(peer.ip());
-
-                        if !introduced_by_proxy
-                            && let Some(ref limiter) = ws_rate_limiter
-                            && !limiter.check_and_increment(peer.ip())
-                        {
-                            record_connection_rejected("rate_limit");
-                            drop(tcp);
-                            continue;
-                        }
-
-                        let permit: Option<OwnedSemaphorePermit> = match &ws_conn_limit {
-                            Some(sem) => match sem.clone().try_acquire_owned() {
-                                Ok(p) => Some(p),
-                                Err(_) => {
-                                    record_connection_rejected("max_connections");
-                                    drop(tcp);
-                                    continue;
-                                }
-                            },
-                            None => None,
-                        };
-
-                        let conn_id = next_conn_id();
-                        let acceptor = ws_acceptor.clone();
-                        let state = ws_state.clone();
-                        let auth = ws_auth.clone();
-                        let rate_limiter = ws_rate_limiter.clone();
-                        ws_tracker.increment();
-                        let guard = ConnectionGuard::new(ws_tracker.clone());
-
-                        let span = info_span!("conn", id = conn_id, peer = %peer, transport = "ws");
-                        tokio::spawn(
-                            async move {
-                                let _guard = guard;
-                                let _permit = permit;
-                                record_connection_accepted();
-                                let start = Instant::now();
-
-                                let result = async {
-                                    let introduced =
-                                        crate::proxy::introduce(tcp, peer, &state.proxy_protocol).await?;
-
-                                    if introduced_by_proxy
-                                        && let Some(ref limiter) = rate_limiter
-                                        && !limiter.check_and_increment(introduced.peer.ip())
-                                    {
-                                        record_connection_rejected("rate_limit");
-                                        return Ok(());
-                                    }
-
-                                    let conn = crate::handler::Connection {
-                                        peer: introduced.peer,
-                                        id: conn_id,
-                                        chain: introduced.chain,
-                                    };
-
-                                    let tls_start = Instant::now();
-                                    let tls_timeout =
-                                        Duration::from_secs(defaults::DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS);
-                                    match tokio::time::timeout(tls_timeout, acceptor.accept(introduced.stream)).await
-                                    {
-                                        Ok(Ok(tls)) => {
-                                            let tls_duration = tls_start.elapsed().as_secs_f64();
-                                            record_tls_handshake_duration(tls_duration);
-                                            crate::handler::handle_ws_only(tls, state, auth, conn).await
-                                        }
-                                        Ok(Err(err)) => {
-                                            record_error(ERROR_TLS_HANDSHAKE);
-                                            warn!(error = %err, "TLS handshake failed");
-                                            Ok(())
-                                        }
-                                        Err(_) => {
-                                            record_error(ERROR_TLS_HANDSHAKE);
-                                            warn!(
-                                                timeout_secs = tls_timeout.as_secs(),
-                                                "TLS handshake timed out"
-                                            );
-                                            Ok(())
-                                        }
-                                    }
-                                }
-                                .await;
-
-                                let duration_secs = start.elapsed().as_secs_f64();
-                                record_connection_closed(duration_secs);
-
-                                if let Err(ref err) = result {
-                                    warn!(error = %err, "connection error");
-                                }
-                            }
-                            .instrument(span),
-                        );
-                    }
-                }
+            if let Err(e) = ws_listener.serve(ws_shutdown).await {
+                warn!(error = %e, "websocket listener stopped");
             }
         });
     }
@@ -453,138 +339,9 @@ pub async fn run_with_stats(
         warn!("websocket.enabled=true but ws feature is disabled; ignoring websocket");
     }
 
-    loop {
-        tokio::select! {
-            biased;
-
-            _ = shutdown.cancelled() => {
-                info!("shutdown signal received, stopping accept loop");
-                break;
-            }
-
-            result = listener.accept() => {
-                let (tcp, peer) = result?;
-
-                // Apply TCP socket options (no_delay, keepalive)
-                if let Err(e) = apply_tcp_options(&tcp, &state.tcp_config) {
-                    debug!(error = %e, "failed to apply TCP options");
-                }
-
-                // Update connection queue depth metric (based on semaphore usage)
-                if let Some(ref sem) = conn_limit {
-                    let available = sem.available_permits();
-                    set_connection_queue_depth(available as f64);
-                }
-
-                // A trusted proxy's address stands for every client behind it,
-                // so limiting on it would throttle a whole relay chain as if
-                // it were one caller. Those connections are limited further
-                // down, once the header names the client they belong to.
-                let introduced_by_proxy = state.proxy_protocol.trusts(peer.ip());
-
-                if !introduced_by_proxy
-                    && let Some(ref limiter) = rate_limiter
-                    && !limiter.check_and_increment(peer.ip())
-                {
-                    debug!(peer = %peer, reason = "rate_limit", "connection rejected");
-                    record_connection_rejected("rate_limit");
-                    drop(tcp);
-                    continue;
-                }
-
-                // Try to acquire connection permit
-                let permit: Option<OwnedSemaphorePermit> = match &conn_limit {
-                    Some(sem) => match sem.clone().try_acquire_owned() {
-                        Ok(p) => Some(p),
-                        Err(_) => {
-                            debug!(peer = %peer, reason = "max_connections", "connection rejected");
-                            record_connection_rejected("max_connections");
-                            drop(tcp); // close immediately
-                            continue;
-                        }
-                    },
-                    None => None,
-                };
-
-                let conn_id = next_conn_id();
-                debug!(conn_id, peer = %peer, "new connection");
-
-                let acceptor = acceptor.clone();
-                let state = state.clone();
-                let auth = auth.clone();
-                let rate_limiter = rate_limiter.clone();
-                tracker.increment();
-                let guard = ConnectionGuard::new(tracker.clone());
-
-                let span = info_span!("conn", id = conn_id, peer = %peer);
-                tokio::spawn(
-                    async move {
-                        let _guard = guard; // ensure decrement on drop
-                        let _permit = permit; // hold permit until connection closes
-                        record_connection_accepted();
-                        let start = Instant::now();
-
-                        let result = async {
-                            let introduced =
-                                crate::proxy::introduce(tcp, peer, &state.proxy_protocol).await?;
-
-                            // The deferred half of the check above, now that
-                            // the client behind the proxy has a name.
-                            if introduced_by_proxy
-                                && let Some(ref limiter) = rate_limiter
-                                && !limiter.check_and_increment(introduced.peer.ip())
-                            {
-                                debug!(client = %introduced.peer, reason = "rate_limit", "connection rejected");
-                                record_connection_rejected("rate_limit");
-                                return Ok(());
-                            }
-
-                            let conn = crate::handler::Connection {
-                                peer: introduced.peer,
-                                id: conn_id,
-                                chain: introduced.chain,
-                            };
-
-                            // Measure TLS handshake duration with timeout
-                            let tls_start = Instant::now();
-                            let tls_timeout =
-                                Duration::from_secs(defaults::DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS);
-                            match tokio::time::timeout(tls_timeout, acceptor.accept(introduced.stream)).await {
-                                Ok(Ok(tls)) => {
-                                    let tls_duration = tls_start.elapsed().as_secs_f64();
-                                    record_tls_handshake_duration(tls_duration);
-                                    debug!(duration_ms = tls_duration * 1000.0, "TLS handshake completed");
-                                    handle_conn(tls, state, auth, conn).await
-                                }
-                                Ok(Err(err)) => {
-                                    record_error(ERROR_TLS_HANDSHAKE);
-                                    warn!(error = %err, "TLS handshake failed");
-                                    Ok(())
-                                }
-                                Err(_) => {
-                                    record_error(ERROR_TLS_HANDSHAKE);
-                                    warn!(timeout_secs = tls_timeout.as_secs(), "TLS handshake timed out");
-                                    Ok(())
-                                }
-                            }
-                        }
-                        .await;
-
-                        let duration_secs = start.elapsed().as_secs_f64();
-                        record_connection_closed(duration_secs);
-
-                        if let Err(ref err) = result {
-                            record_error(err.error_type());
-                            warn!(duration_secs, error = %err, "connection closed with error");
-                        } else {
-                            debug!(duration_secs, "connection closed");
-                        }
-                    }
-                    .instrument(span),
-                );
-            }
-        }
-    }
+    ctx.listener(listener, ListenerKind::Trojan)
+        .serve(shutdown)
+        .await?;
 
     // Shutdown rate limiter cleanup task
     if let Some(ref limiter) = rate_limiter {
@@ -613,188 +370,4 @@ pub async fn run_with_stats(
 /// For backward compatibility with existing code.
 pub async fn run(config: Config, auth: impl AuthBackend + 'static) -> Result<(), ServerError> {
     run_with_shutdown(config, auth, CancellationToken::new()).await
-}
-
-/// Load GeoIP databases from config with deduplication.
-///
-/// Returns `(server_geoip, metrics_geoip, analytics_geoip)`.
-/// If multiple configs point to the same source, the same `Arc` is shared.
-///
-/// Databases can be downloaded from CDN or custom URLs. Auto-update tasks
-/// are spawned for configs with `auto_update = true` and no local `path` set.
-#[cfg(feature = "geoip")]
-async fn load_geoip_databases(
-    config: &Config,
-    shutdown: &CancellationToken,
-) -> (
-    Option<Arc<trojan_rules::geoip_db::GeoipDb>>,
-    Option<Arc<trojan_rules::geoip_db::GeoipDb>>,
-    Option<Arc<trojan_rules::geoip_db::GeoipDb>>,
-) {
-    use std::collections::HashMap;
-    use trojan_rules::geoip_db::GeoipDb;
-
-    // Deduplication key: (path, url, source) tuple identifies a unique database
-    type Key = (Option<String>, Option<String>, String);
-    let mut loaded: HashMap<Key, Arc<GeoipDb>> = HashMap::new();
-
-    // Track configs that need auto-update tasks
-    let mut auto_update_configs: Vec<(trojan_config::GeoipConfig, Arc<GeoipDb>)> = Vec::new();
-
-    // Load a single GeoIP config, deduplicating by key
-    async fn load_or_share(
-        cfg: &trojan_config::GeoipConfig,
-        loaded: &mut HashMap<Key, Arc<GeoipDb>>,
-    ) -> Option<Arc<GeoipDb>> {
-        let key: Key = (cfg.path.clone(), cfg.url.clone(), cfg.source.clone());
-        if let Some(existing) = loaded.get(&key) {
-            return Some(existing.clone());
-        }
-        match trojan_rules::geoip_db::load_geoip(cfg).await {
-            Ok(db) => {
-                let arc = Arc::new(db);
-                loaded.insert(key, arc.clone());
-                Some(arc)
-            }
-            Err(e) => {
-                warn!(source = %cfg.source, error = %e, "failed to load GeoIP database");
-                None
-            }
-        }
-    }
-
-    // Server GeoIP (for rule matching — also shared by metrics/analytics)
-    let server_geoip = if let Some(cfg) = config.server.geoip.as_ref() {
-        load_or_share(cfg, &mut loaded).await
-    } else {
-        None
-    };
-
-    // Metrics GeoIP
-    let metrics_geoip = if let Some(cfg) = config.metrics.geoip.as_ref() {
-        let result = load_or_share(cfg, &mut loaded).await;
-        if let Some(ref db) = result
-            && cfg.auto_update
-            && cfg.path.is_none()
-        {
-            auto_update_configs.push((cfg.clone(), db.clone()));
-        }
-        result
-    } else {
-        server_geoip.clone() // fallback to server's GeoIP
-    };
-
-    // Analytics GeoIP
-    #[cfg(feature = "analytics")]
-    let analytics_geoip = if let Some(cfg) = config.analytics.geoip.as_ref() {
-        let result = load_or_share(cfg, &mut loaded).await;
-        if let Some(ref db) = result
-            && cfg.auto_update
-            && cfg.path.is_none()
-        {
-            auto_update_configs.push((cfg.clone(), db.clone()));
-        }
-        result
-    } else {
-        None
-    };
-    #[cfg(not(feature = "analytics"))]
-    let analytics_geoip: Option<Arc<GeoipDb>> = None;
-
-    if !loaded.is_empty() {
-        info!(
-            databases = loaded.len(),
-            "GeoIP databases loaded (deduplicated)"
-        );
-    }
-
-    // Spawn auto-update tasks for configs that need them
-    {
-        // Deduplicate auto-update tasks by Arc pointer identity
-        let mut seen_ptrs = std::collections::HashSet::new();
-        for (cfg, db) in auto_update_configs {
-            let ptr = Arc::as_ptr(&db) as usize;
-            if !seen_ptrs.insert(ptr) {
-                continue; // already spawned for this database
-            }
-            let cancel = shutdown.clone();
-            let source = cfg.source.clone();
-            info!(source = %source, "spawning GeoIP auto-update task");
-            let swappable = Arc::new(arc_swap::ArcSwap::from(db));
-            tokio::spawn(trojan_rules::geoip_db::geoip_auto_update_task(
-                cfg,
-                swappable,
-                cancel,
-                move |success| {
-                    if success {
-                        trojan_metrics::record_rule_update();
-                    } else {
-                        trojan_metrics::record_rule_update_error();
-                    }
-                },
-            ));
-        }
-    }
-
-    (server_geoip, metrics_geoip, analytics_geoip)
-}
-
-/// Background task that periodically re-fetches HTTP rule-sets and hot-swaps the engine.
-#[cfg(feature = "rules")]
-async fn rule_update_loop(
-    engine: Arc<trojan_rules::HotRuleEngine>,
-    server_config: trojan_config::ServerConfig,
-    interval_secs: u64,
-    shutdown: CancellationToken,
-) {
-    use std::time::Duration;
-    use trojan_metrics::{record_rule_update, record_rule_update_error};
-
-    // Initial fetch (immediate) to replace any cache-only startup data
-    match crate::rules::build_rule_engine_async(&server_config).await {
-        Ok(new_engine) => {
-            info!(
-                rule_sets = new_engine.rule_set_count(),
-                rules = new_engine.rule_count(),
-                "initial rule fetch completed, engine updated"
-            );
-            engine.update(new_engine);
-            record_rule_update();
-        }
-        Err(e) => {
-            warn!(error = %e, "initial rule fetch failed, keeping startup rules");
-            record_rule_update_error();
-        }
-    }
-
-    let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
-    interval.tick().await; // consume the immediate tick
-
-    loop {
-        tokio::select! {
-            biased;
-            _ = shutdown.cancelled() => {
-                debug!("rule update task shutting down");
-                return;
-            }
-            _ = interval.tick() => {
-                debug!("starting scheduled rule update");
-                match crate::rules::build_rule_engine_async(&server_config).await {
-                    Ok(new_engine) => {
-                        info!(
-                            rule_sets = new_engine.rule_set_count(),
-                            rules = new_engine.rule_count(),
-                            "rule update completed, engine swapped"
-                        );
-                        engine.update(new_engine);
-                        record_rule_update();
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "rule update failed, keeping current rules");
-                        record_rule_update_error();
-                    }
-                }
-            }
-        }
-    }
 }

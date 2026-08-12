@@ -30,10 +30,10 @@ use crate::config::{ChainConfig, EntryConfig, TimeoutConfig, TransportType};
 use crate::error::RelayError;
 use crate::handshake::{self, HandshakeMetadata};
 use crate::router::{CompiledChain, Router};
-use crate::transport::plain::PlainTransportConnector;
-use crate::transport::tls::TlsTransportConnector;
-use crate::transport::ws::WsTransportConnector;
-use crate::transport::{TransportConnector, TransportStream};
+use trojan_transport::plain::PlainTransportConnector;
+use trojan_transport::tls::TlsTransportConnector;
+use trojan_transport::ws::WsTransportConnector;
+use trojan_transport::{TransportConnector, TransportStream};
 
 use trojan_core::io::relay_bidirectional;
 

@@ -1,14 +1,14 @@
 //! Background DDNS update loop.
 
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::cloudflare::CloudflareUpdater;
+use crate::config::DdnsConfig;
 use crate::ip::IpDetector;
-use trojan_config::DdnsConfig;
 
 /// Run the DDNS update loop until the shutdown token is cancelled.
 pub async fn ddns_loop(config: DdnsConfig, shutdown: CancellationToken) {
@@ -72,28 +72,28 @@ pub async fn ddns_loop(config: DdnsConfig, shutdown: CancellationToken) {
                     None
                 };
 
-                let ipv4_changed = ipv4.is_some() && ipv4 != cached_ipv4;
-                let ipv6_changed = ipv6.is_some() && ipv6 != cached_ipv6;
+                // A detection that came back empty leaves the cache alone: an
+                // outage at the detection endpoint is no reason to touch DNS.
+                let new_ipv4 = ipv4.filter(|ip| Some(*ip) != cached_ipv4);
+                let new_ipv6 = ipv6.filter(|ip| Some(*ip) != cached_ipv6);
 
-                if !ipv4_changed && !ipv6_changed {
+                if new_ipv4.is_none() && new_ipv6.is_none() {
                     debug!(?ipv4, ?ipv6, "IP unchanged, skipping DDNS update");
                     continue;
                 }
 
-                if ipv4_changed {
-                    let ip = ipv4.unwrap();
+                if let Some(ip) = new_ipv4 {
                     info!(ip = %ip, "IPv4 changed, updating DNS records");
-                    match updater.update_ipv4(ip).await {
-                        Ok(()) => cached_ipv4 = ipv4,
+                    match updater.update(IpAddr::V4(ip)).await {
+                        Ok(()) => cached_ipv4 = Some(ip),
                         Err(e) => warn!(error = %e, "failed to update A records"),
                     }
                 }
 
-                if ipv6_changed {
-                    let ip = ipv6.unwrap();
+                if let Some(ip) = new_ipv6 {
                     info!(ip = %ip, "IPv6 changed, updating DNS records");
-                    match updater.update_ipv6(ip).await {
-                        Ok(()) => cached_ipv6 = ipv6,
+                    match updater.update(IpAddr::V6(ip)).await {
+                        Ok(()) => cached_ipv6 = Some(ip),
                         Err(e) => warn!(error = %e, "failed to update AAAA records"),
                     }
                 }

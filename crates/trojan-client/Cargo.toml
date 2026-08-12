@@ -19,7 +19,6 @@ path = "src/lib.rs"
 bytes.workspace = true
 clap.workspace = true
 rustls.workspace = true
-rustls-pemfile.workspace = true
 rustls-pki-types.workspace = true
 serde.workspace = true
 thiserror.workspace = true
@@ -42,7 +41,7 @@ webpki-roots.workspace = true
 socket2.workspace = true
 
 # workspace crates
-trojan-core.workspace = true
+trojan-core = { workspace = true, features = ["tls"] }
 trojan-dns.workspace = true
 trojan-proto.workspace = true
 trojan-auth.workspace = true

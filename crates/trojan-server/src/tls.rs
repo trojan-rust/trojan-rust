@@ -6,13 +6,13 @@ use tokio_rustls::rustls::{self, RootCertStore, server::WebPkiClientVerifier};
 use tracing::{info, warn};
 use trojan_config::TlsConfig;
 use trojan_core::defaults;
+use trojan_core::tls::load_keypair;
 
 use crate::error::ServerError;
 
 /// Load TLS configuration from config.
 pub fn load_tls_config(cfg: &TlsConfig) -> Result<rustls::ServerConfig, ServerError> {
-    let certs = load_certs(&cfg.cert)?;
-    let key = load_private_key(&cfg.key)?;
+    let (certs, key) = load_keypair(&cfg.cert, &cfg.key)?;
 
     // Build TLS versions based on config
     // Use static slices to avoid heap allocation
@@ -78,7 +78,7 @@ pub fn load_tls_config(cfg: &TlsConfig) -> Result<rustls::ServerConfig, ServerEr
 
     // Configure client authentication
     let config = if let Some(ref ca_path) = cfg.client_ca {
-        let ca_certs = load_certs(ca_path)?;
+        let ca_certs = trojan_core::tls::load_certs(ca_path)?;
         let mut root_store = RootCertStore::empty();
         for cert in ca_certs {
             root_store
@@ -124,33 +124,6 @@ pub fn load_tls_config(cfg: &TlsConfig) -> Result<rustls::ServerConfig, ServerEr
     );
 
     Ok(config)
-}
-
-/// Load certificates from a PEM file.
-fn load_certs(path: &str) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>, ServerError> {
-    let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
-    let certs = rustls_pemfile::certs(&mut reader)
-        .filter_map(|c| c.ok().map(|v| v.into_owned()))
-        .collect();
-    Ok(certs)
-}
-
-/// Load private key from a PEM file.
-fn load_private_key(path: &str) -> Result<rustls::pki_types::PrivateKeyDer<'static>, ServerError> {
-    let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
-    loop {
-        match rustls_pemfile::read_one(&mut reader)? {
-            Some(rustls_pemfile::Item::Pkcs8Key(key)) => {
-                return Ok(rustls::pki_types::PrivateKeyDer::Pkcs8(key));
-            }
-            Some(rustls_pemfile::Item::Pkcs1Key(key)) => {
-                return Ok(rustls::pki_types::PrivateKeyDer::Pkcs1(key));
-            }
-            Some(_) => continue,
-            None => break,
-        }
-    }
-    Err(ServerError::Config("no private key found".into()))
 }
 
 #[cfg(test)]

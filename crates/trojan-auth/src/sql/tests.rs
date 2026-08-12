@@ -140,7 +140,7 @@ async fn test_verify_expired_user() {
     create_schema(&auth).await;
 
     // Set expires_at to 1 second ago
-    let expired_time = crate::store::to_storage_i64(
+    let expired_time = crate::store::record::to_storage_i64(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

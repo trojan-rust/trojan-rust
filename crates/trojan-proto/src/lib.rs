@@ -72,7 +72,12 @@ pub struct AddressRef<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrojanRequest<'a> {
-    pub hash: &'a [u8],
+    /// SHA-224 of the password, as exactly [`HASH_LEN`] ASCII hex digits.
+    ///
+    /// The length is in the type because every consumer depends on it: hex is
+    /// case-insensitive on the wire, so a hash has to be folded to lowercase
+    /// before lookup, and a fixed length is what lets that happen on the stack.
+    pub hash: &'a [u8; HASH_LEN],
     pub command: u8,
     pub address: AddressRef<'a>,
     pub header_len: usize,
@@ -95,11 +100,9 @@ pub fn is_valid_hash(hash: &[u8]) -> bool {
 
 #[inline]
 pub fn parse_request(buf: &[u8]) -> ParseResult<TrojanRequest<'_>> {
-    if buf.len() < HASH_LEN {
+    let Some(hash) = buf.first_chunk::<HASH_LEN>() else {
         return ParseResult::Incomplete(HASH_LEN);
-    }
-
-    let hash = &buf[..HASH_LEN];
+    };
     if !is_valid_hash(hash) {
         return ParseResult::Invalid(ParseError::InvalidHashFormat);
     }

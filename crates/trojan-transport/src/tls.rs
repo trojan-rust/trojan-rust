@@ -14,6 +14,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::rustls;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
+use trojan_core::tls::{SkipServerVerification, load_keypair};
 use trojan_dns::DnsResolver;
 
 use crate::error::TransportError;
@@ -146,7 +147,7 @@ fn build_server_tls_config(
     tls_config: Option<&TlsConfig>,
 ) -> Result<rustls::ServerConfig, TransportError> {
     let (certs, key) = match tls_config {
-        Some(cfg) => load_cert_files(&cfg.cert, &cfg.key)?,
+        Some(cfg) => load_keypair(&cfg.cert, &cfg.key)?,
         None => generate_self_signed()?,
     };
 
@@ -162,7 +163,7 @@ fn build_server_tls_config(
 fn build_insecure_client_tls_config() -> rustls::ClientConfig {
     rustls::ClientConfig::builder()
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(NoVerifier))
+        .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
         .with_no_client_auth()
 }
 
@@ -181,87 +182,4 @@ fn generate_self_signed()
     let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der()));
 
     Ok((vec![cert_der], key_der))
-}
-
-/// Load certificate and private key from PEM files.
-fn load_cert_files(
-    cert_path: &str,
-    key_path: &str,
-) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), TransportError> {
-    let mut reader = std::io::BufReader::new(std::fs::File::open(cert_path)?);
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut reader)
-        .filter_map(|c| c.ok().map(|v| v.into_owned()))
-        .collect();
-
-    if certs.is_empty() {
-        return Err(TransportError::Config(format!(
-            "no certificates found in {}",
-            cert_path
-        )));
-    }
-
-    let mut reader = std::io::BufReader::new(std::fs::File::open(key_path)?);
-    let key = loop {
-        match rustls_pemfile::read_one(&mut reader)? {
-            Some(rustls_pemfile::Item::Pkcs8Key(key)) => {
-                break PrivateKeyDer::Pkcs8(key);
-            }
-            Some(rustls_pemfile::Item::Pkcs1Key(key)) => {
-                break PrivateKeyDer::Pkcs1(key);
-            }
-            Some(_) => continue,
-            None => {
-                return Err(TransportError::Config(format!(
-                    "no private key found in {}",
-                    key_path
-                )));
-            }
-        }
-    };
-
-    Ok((certs, key))
-}
-
-/// A TLS certificate verifier that accepts any certificate.
-///
-/// Used for relay-to-relay and relay-to-exit connections where
-/// nodes use self-signed certificates.
-#[derive(Debug)]
-struct NoVerifier;
-
-impl rustls::client::danger::ServerCertVerifier for NoVerifier {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        rustls::crypto::aws_lc_rs::default_provider()
-            .signature_verification_algorithms
-            .supported_schemes()
-    }
 }

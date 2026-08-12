@@ -16,7 +16,7 @@ use tracing::{debug, warn};
 use trojan_config::WebSocketConfig as WsCfg;
 
 use crate::error::ServerError;
-use crate::util::PrefixedStream;
+use trojan_core::io::PrefixedStream;
 
 // Re-export WsIo from trojan-core for convenience
 pub use trojan_core::transport::WsIo;

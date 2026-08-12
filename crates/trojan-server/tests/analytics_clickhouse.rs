@@ -33,10 +33,13 @@ use rustls::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_rustls::TlsConnector;
+use trojan_analytics::{
+    AnalyticsBufferConfig, AnalyticsConfig, AnalyticsSamplingConfig, ClickHouseConfig,
+};
 use trojan_auth::{MemoryAuth, sha224_hex};
 use trojan_config::{
-    AnalyticsBufferConfig, AnalyticsConfig, AnalyticsSamplingConfig, AuthConfig, ClickHouseConfig,
-    Config, LoggingConfig, MetricsConfig, ServerConfig, TcpConfig, TlsConfig, WebSocketConfig,
+    AuthConfig, Config, LoggingConfig, MetricsConfig, ServerConfig, TcpConfig, TlsConfig,
+    WebSocketConfig,
 };
 use trojan_proto::{AddressRef, CMD_CONNECT, HostRef, write_request_header};
 use trojan_server::{CancellationToken, run_with_shutdown};
@@ -324,7 +327,6 @@ impl TestServer {
                 privacy: Default::default(),
                 server_id: Some(server_id.clone()),
                 geoip: None,
-                proxy_protocol: Default::default(),
             },
             logging: LoggingConfig {
                 level: Some("warn".to_string()),

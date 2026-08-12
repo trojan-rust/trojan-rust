@@ -1,6 +1,6 @@
 //! Cloudflare DNS provider implementation.
 
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 
 use cloudflare::endpoints::dns::dns::{
     CreateDnsRecord, CreateDnsRecordParams, DnsContent, ListDnsRecords, ListDnsRecordsParams,
@@ -13,8 +13,8 @@ use cloudflare::framework::client::ClientConfig;
 use cloudflare::framework::client::async_api::Client;
 use tracing::{debug, info, warn};
 
+use crate::config::CloudflareDdnsConfig;
 use crate::error::DdnsError;
-use trojan_config::CloudflareDdnsConfig;
 
 /// Updates DNS records on Cloudflare when the public IP changes.
 pub struct CloudflareUpdater {
@@ -59,81 +59,64 @@ impl CloudflareUpdater {
         })
     }
 
-    /// Resolve and cache the Cloudflare zone ID for the configured zone name.
-    async fn ensure_zone_id(&mut self) -> Result<&str, DdnsError> {
-        if self.zone_id.is_none() {
-            let zones = self
-                .client
-                .request(&ListZones {
-                    params: ListZonesParams {
-                        name: Some(self.zone_name.clone()),
-                        status: Some(Status::Active),
-                        ..Default::default()
-                    },
-                })
-                .await
-                .map_err(|e| DdnsError::Cloudflare(format!("list zones: {e}")))?;
-
-            let zone = zones
-                .result
-                .into_iter()
-                .find(|z| z.name == self.zone_name)
-                .ok_or_else(|| DdnsError::ZoneNotFound(self.zone_name.clone()))?;
-
-            info!(zone_id = %zone.id, zone = %self.zone_name, "resolved Cloudflare zone");
-            self.zone_id = Some(zone.id);
-        }
-        Ok(self.zone_id.as_deref().unwrap())
+    /// The configured zone's Cloudflare id, looked up once and then kept.
+    async fn zone_id(&mut self) -> Result<&str, DdnsError> {
+        let id = match self.zone_id.take() {
+            Some(cached) => cached,
+            None => self.fetch_zone_id().await?,
+        };
+        Ok(self.zone_id.insert(id).as_str())
     }
 
-    /// Update A records for all configured record names.
-    pub async fn update_ipv4(&mut self, ip: Ipv4Addr) -> Result<(), DdnsError> {
-        let zone_id = self.ensure_zone_id().await?.to_string();
-        let content = DnsContent::A { content: ip };
-        let mut any_failed = false;
+    /// Ask Cloudflare for the id of the zone this updater was configured with.
+    async fn fetch_zone_id(&self) -> Result<String, DdnsError> {
+        let zones = self
+            .client
+            .request(&ListZones {
+                params: ListZonesParams {
+                    name: Some(self.zone_name.clone()),
+                    status: Some(Status::Active),
+                    ..Default::default()
+                },
+            })
+            .await
+            .map_err(|e| DdnsError::Cloudflare(format!("list zones: {e}")))?;
 
-        for record_name in self.records.clone() {
-            if let Err(e) = self
-                .upsert_record(&zone_id, &record_name, content.clone())
-                .await
-            {
-                warn!(name = %record_name, error = %e, "failed to update A record");
-                any_failed = true;
+        let zone = zones
+            .result
+            .into_iter()
+            .find(|z| z.name == self.zone_name)
+            .ok_or_else(|| DdnsError::ZoneNotFound(self.zone_name.clone()))?;
+
+        info!(zone_id = %zone.id, zone = %self.zone_name, "resolved Cloudflare zone");
+        Ok(zone.id)
+    }
+
+    /// Point every configured record at `ip`.
+    ///
+    /// One record failing does not stop the others: they are separate names
+    /// that happen to share a config, and leaving the rest stale would make a
+    /// single bad record cost the whole zone. The error reports how many.
+    pub async fn update(&mut self, ip: IpAddr) -> Result<(), DdnsError> {
+        let content = dns_content(ip);
+        let kind = record_type(&content);
+        let zone_id = self.zone_id().await?.to_owned();
+
+        let mut failed = 0usize;
+        for name in &self.records {
+            if let Err(e) = self.upsert_record(&zone_id, name, content.clone()).await {
+                warn!(name = %name, kind, error = %e, "failed to update DNS record");
+                failed += 1;
             }
         }
 
-        if any_failed {
-            Err(DdnsError::Cloudflare(
-                "some A records failed to update".into(),
-            ))
-        } else {
-            Ok(())
+        if failed > 0 {
+            return Err(DdnsError::Cloudflare(format!(
+                "{failed} of {} {kind} records failed to update",
+                self.records.len()
+            )));
         }
-    }
-
-    /// Update AAAA records for all configured record names.
-    pub async fn update_ipv6(&mut self, ip: Ipv6Addr) -> Result<(), DdnsError> {
-        let zone_id = self.ensure_zone_id().await?.to_string();
-        let content = DnsContent::AAAA { content: ip };
-        let mut any_failed = false;
-
-        for record_name in self.records.clone() {
-            if let Err(e) = self
-                .upsert_record(&zone_id, &record_name, content.clone())
-                .await
-            {
-                warn!(name = %record_name, error = %e, "failed to update AAAA record");
-                any_failed = true;
-            }
-        }
-
-        if any_failed {
-            Err(DdnsError::Cloudflare(
-                "some AAAA records failed to update".into(),
-            ))
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
 
     /// Create or update a single DNS record.
@@ -219,5 +202,26 @@ fn content_matches(a: &DnsContent, b: &DnsContent) -> bool {
         (DnsContent::A { content: a }, DnsContent::A { content: b }) => a == b,
         (DnsContent::AAAA { content: a }, DnsContent::AAAA { content: b }) => a == b,
         _ => false,
+    }
+}
+
+/// The record content that points at `ip`.
+///
+/// A free function rather than a `From` impl: `DnsContent` belongs to the
+/// `cloudflare` crate, so the orphan rule puts that out of reach.
+fn dns_content(ip: IpAddr) -> DnsContent {
+    match ip {
+        IpAddr::V4(content) => DnsContent::A { content },
+        IpAddr::V6(content) => DnsContent::AAAA { content },
+    }
+}
+
+/// The record type `content` belongs to, for logs and error messages.
+fn record_type(content: &DnsContent) -> &'static str {
+    match content {
+        DnsContent::A { .. } => "A",
+        DnsContent::AAAA { .. } => "AAAA",
+        // Only ever built from an `IpAddr`, so nothing else reaches here.
+        _ => "unknown",
     }
 }

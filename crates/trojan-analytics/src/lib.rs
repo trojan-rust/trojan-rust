@@ -16,7 +16,7 @@
 //!
 //! ```ignore
 //! use trojan_analytics::{EventCollector, init};
-//! use trojan_config::AnalyticsConfig;
+//! use trojan_analytics::AnalyticsConfig;
 //!
 //! // Initialize analytics
 //! let collector = init(config).await?;
@@ -30,25 +30,36 @@
 //! // Event is automatically sent on drop
 //! ```
 
+#[cfg(feature = "collector")]
 mod collector;
+pub mod config;
+#[cfg(feature = "collector")]
 mod error;
+#[cfg(feature = "collector")]
 mod event;
 /// Backend writers.
 ///
 /// Public so integration tests can reuse the shipped table schema instead of
 /// keeping a second copy that could drift from it.
+#[cfg(feature = "collector")]
 pub mod writer;
 
+#[cfg(feature = "collector")]
 pub use collector::{ConnectionEventBuilder, EventCollector};
-pub use error::AnalyticsError;
-pub use event::*;
-pub use trojan_config::{
+pub use config::{
     AnalyticsBufferConfig, AnalyticsConfig, AnalyticsPrivacyConfig, AnalyticsSamplingConfig,
     ClickHouseConfig,
 };
+#[cfg(feature = "collector")]
+pub use error::AnalyticsError;
+#[cfg(feature = "collector")]
+pub use event::*;
 
+#[cfg(feature = "collector")]
 use std::sync::Arc;
+#[cfg(feature = "collector")]
 use tokio::sync::mpsc;
+#[cfg(feature = "collector")]
 use tracing::info;
 
 /// Initialize the analytics module.
@@ -59,6 +70,7 @@ use tracing::info;
 /// # Errors
 ///
 /// Returns an error if ClickHouse configuration is missing or connection fails.
+#[cfg(feature = "collector")]
 pub async fn init(config: AnalyticsConfig) -> Result<EventCollector, AnalyticsError> {
     if !config.enabled {
         return Err(AnalyticsError::Disabled);

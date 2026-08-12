@@ -11,6 +11,9 @@ pub enum ClientError {
     #[error("TLS error: {0}")]
     Tls(#[from] tokio_rustls::rustls::Error),
 
+    #[error(transparent)]
+    TlsMaterial(#[from] trojan_core::tls::TlsError),
+
     #[error("DNS resolution failed for {0}")]
     Resolve(String),
 

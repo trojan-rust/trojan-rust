@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::pool::ConnectionPool;
-use trojan_config::{ProxyProtocolConfig, TcpConfig, WebSocketConfig};
+#[cfg(feature = "ws")]
+use trojan_config::WebSocketConfig;
+use trojan_config::{ProxyProtocolConfig, TcpConfig};
 use trojan_dns::DnsResolver;
 use trojan_metrics::{NodeStats, RelayCounters};
 
@@ -23,6 +25,7 @@ pub struct ServerState {
     pub tcp_send_buffer: usize,
     pub tcp_recv_buffer: usize,
     pub tcp_config: TcpConfig,
+    #[cfg(feature = "ws")]
     pub websocket: WebSocketConfig,
     pub dns_resolver: DnsResolver,
     /// Traffic and connection totals for this node, for the panel agent.
@@ -51,15 +54,17 @@ pub struct ServerState {
 }
 
 impl ServerState {
-    /// Resolve the counter handles for one relay session.
+    /// Resolve the counter handles for one session's worth of traffic.
     ///
     /// Done once per connection rather than per flush; see [`RelayCounters`].
-    /// Falls back to global-only counters when `metrics.per_target` is off.
-    pub fn relay_counters(&self, target_label: &str) -> RelayCounters {
-        let counters = if self.per_target_metrics {
-            RelayCounters::with_target(target_label)
-        } else {
-            RelayCounters::global()
+    /// `target` is the destination to break the bytes down by, and `None` for a
+    /// session that has no single one — a UDP association reaches a different
+    /// target per packet. A breakdown is only ever added when
+    /// `metrics.per_target` asked for one.
+    pub fn relay_counters(&self, target: Option<&str>) -> RelayCounters {
+        let counters = match target {
+            Some(label) if self.per_target_metrics => RelayCounters::with_target(label),
+            _ => RelayCounters::global(),
         };
         counters.with_node_stats(self.node_stats.clone())
     }

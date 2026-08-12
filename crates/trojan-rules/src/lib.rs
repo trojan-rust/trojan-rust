@@ -38,6 +38,7 @@
 //! assert_eq!(engine.match_request(&ctx), &Action::Reject);
 //! ```
 
+pub mod config;
 pub mod engine;
 pub mod error;
 #[cfg(feature = "geoip")]

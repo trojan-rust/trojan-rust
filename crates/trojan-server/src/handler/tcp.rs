@@ -1,54 +1,47 @@
 //! TCP CONNECT command handler.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::Instant;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, instrument};
 use trojan_auth::AuthBackend;
 use trojan_metrics::{record_target_connect_duration, record_target_connection};
 use trojan_proto::AddressRef;
 
 use crate::error::ServerError;
-use crate::handler::{Account, AnalyticsEvent};
+use crate::handler::Session;
 use crate::relay::relay_with_counters;
 use crate::resolve::{resolve_all_addresses, target_to_label};
 use crate::state::ServerState;
 use crate::util::connect_with_buffers;
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one connection's worth of state; a struct here would only rename the fields"
-)]
 /// Handle TCP CONNECT command.
-#[instrument(level = "debug", skip(stream, payload, state, auth, account), fields(target = ?address))]
-pub async fn handle_connect<S, A>(
+#[instrument(level = "debug", skip(stream, payload, session), fields(target = ?address))]
+pub(crate) async fn handle_connect<S, A>(
     mut stream: S,
     address: AddressRef<'_>,
     payload: &[u8],
-    state: Arc<ServerState>,
-    auth: Arc<A>,
-    account: Account<'_>,
-    peer: SocketAddr,
-    analytics: AnalyticsEvent,
+    session: Session<'_, A>,
 ) -> Result<(), ServerError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     A: AuthBackend + ?Sized,
 {
+    let state = &session.state;
+    let peer = session.peer;
     let target_label = target_to_label(&address);
     record_target_connection(&target_label);
     // Resolved once here rather than per flush inside the relay loop.
-    let counters = state.relay_counters(&target_label);
+    let counters = state.relay_counters(Some(&target_label));
 
     // Resolve + connect with fallthrough across address families. On any
     // pre-relay failure, send TLS close_notify before dropping the stream so
     // the client sees a clean close rather than UnexpectedEof — that bare
     // EOF masks resolve/connect failures and is the symptom users hit when
     // the target's first-resolved family is unreachable.
-    let (mut outbound, target) = match dial_target(&address, &state, peer).await {
+    let (mut outbound, target) = match dial_target(&address, state, peer).await {
         Ok(pair) => pair,
         Err(e) => {
             let _ = stream.shutdown().await;
@@ -82,13 +75,7 @@ where
     )
     .await;
 
-    // Account for the bytes however the relay ended. A client that vanishes
-    // without a close_notify — a killed app, a dropped mobile link, an RST —
-    // makes this an error, and billing only the success path let that traffic
-    // through free on a server enforcing `traffic_limit`. The counters carry a
-    // running total precisely so this does not depend on `RelayStats`.
-    record_traffic_for_user(&*auth, account, counters.total_bytes(), peer).await;
-    finish_analytics(analytics, &counters, &result);
+    session.settle(&counters, &result).await;
 
     result?;
     debug!(peer = %peer, target = %target, "relay finished");
@@ -136,66 +123,4 @@ async fn dial_target(
             "no resolved address connected",
         )
     })))
-}
-
-/// Settle a connection's traffic against the user it belongs to, and against
-/// the relay hops that carried it.
-///
-/// The hops are credited the same byte count, not a share of it: each one
-/// really did move all of it. They cannot report it themselves — a relay never
-/// learns whose traffic it forwards — so this is the only place the panel can
-/// learn what a chain carried for whom.
-pub(crate) async fn record_traffic_for_user<A: AuthBackend + ?Sized>(
-    auth: &A,
-    account: Account<'_>,
-    bytes: u64,
-    peer: SocketAddr,
-) {
-    if bytes == 0 {
-        return;
-    }
-    let Some(uid) = account.user_id else {
-        return;
-    };
-    if let Err(e) = auth.record_traffic(uid, bytes).await {
-        warn!(peer = %peer, user_id = uid, error = %e, "failed to record traffic");
-    }
-    if !account.chain.is_empty()
-        && let Err(e) = auth
-            .record_chain_traffic(uid, bytes, &account.chain.nodes)
-            .await
-    {
-        warn!(peer = %peer, user_id = uid, error = %e, "failed to record chain traffic");
-    }
-}
-
-/// Complete the connection's analytics event.
-///
-/// Byte counts come from the relay counters rather than `RelayStats`, so an
-/// aborted session still reports what it moved, and the close reason
-/// distinguishes a clean end from a failure. Without this the event shipped
-/// with its byte fields at zero.
-#[cfg_attr(
-    not(feature = "analytics"),
-    expect(
-        unused_variables,
-        reason = "the whole body is behind cfg(analytics); with it off there is \
-                  nothing to record and every parameter goes unread"
-    )
-)]
-pub(crate) fn finish_analytics(
-    analytics: crate::handler::AnalyticsEvent,
-    counters: &trojan_metrics::RelayCounters,
-    result: &Result<trojan_core::io::RelayStats, ServerError>,
-) {
-    #[cfg(feature = "analytics")]
-    if let Some(mut event) = analytics {
-        // `add_to_target` is the client → target direction, which the event
-        // records as bytes sent.
-        event.add_bytes(counters.sent_to_target(), counters.sent_to_client());
-        event.finish(match result {
-            Ok(_) => trojan_analytics::CloseReason::Normal,
-            Err(_) => trojan_analytics::CloseReason::Error,
-        });
-    }
 }

@@ -197,18 +197,6 @@ pub fn record_fallback() {
     counter!(FALLBACK_TOTAL).increment(1);
 }
 
-/// Record bytes received from client.
-#[inline]
-pub fn record_bytes_received(bytes: u64) {
-    counter!(BYTES_RECEIVED_TOTAL).increment(bytes);
-}
-
-/// Record bytes sent to client.
-#[inline]
-pub fn record_bytes_sent(bytes: u64) {
-    counter!(BYTES_SENT_TOTAL).increment(bytes);
-}
-
 /// Record a CONNECT request.
 #[inline]
 pub fn record_connect_request() {

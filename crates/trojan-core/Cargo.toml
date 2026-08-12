@@ -15,15 +15,24 @@ readme = "README.md"
 [features]
 default = []
 ws = ["tokio-tungstenite", "futures-util"]
+# Reading certificates and keys, and the verifier relay hops use. Off by
+# default so crates that only want the io helpers do not compile rustls.
+tls = ["dep:rustls", "dep:rustls-pemfile"]
 
 [dependencies]
 bytes.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "time", "macros", "sync"] }
 tokio-tungstenite = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+rustls-pemfile = { workspace = true, optional = true }
 
 [dev-dependencies]
+rcgen.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "time", "sync"] }
 criterion = { workspace = true, features = ["async_tokio"] }
 

@@ -25,6 +25,5 @@ pub mod handshake;
 mod metrics;
 pub mod relay;
 pub mod router;
-pub mod transport;
 
 pub use trojan_metrics::{NodeSnapshot, NodeStats};
