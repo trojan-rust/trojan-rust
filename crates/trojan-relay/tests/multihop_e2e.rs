@@ -297,6 +297,60 @@ async fn entry_round_robin_spreads_across_destinations() {
     shutdown.cancel();
 }
 
+/// IP hash sends the same client to the same destination every time.
+///
+/// The property that makes it useful is stickiness, so the assertion is that
+/// repeated connections from one source all land on one backend — which
+/// round-robin, the default, would fail.
+///
+/// One source address cannot tell stickiness apart from a policy that always
+/// picks the first destination; distribution *across* sources is covered by
+/// the unit tests in trojan-lb, which can vary the peer IP directly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn entry_ip_hash_is_sticky_per_client() {
+    init_crypto();
+
+    let echo_a = spawn_tagged_echo(b'A').await;
+    let echo_b = spawn_tagged_echo(b'B').await;
+    let entry_addr = pick_addr().await;
+    let shutdown = CancellationToken::new();
+
+    spawn_entry_with_dests(
+        entry_addr,
+        vec![echo_a.to_string(), echo_b.to_string()],
+        trojan_lb::LbStrategy::IpHash,
+        &shutdown,
+    )
+    .await;
+
+    let mut served = std::collections::BTreeSet::new();
+    for i in 0..6 {
+        let mut sock = TcpStream::connect(entry_addr).await.unwrap();
+        let payload = format!("hash-{i}");
+        sock.write_all(payload.as_bytes()).await.unwrap();
+        sock.flush().await.unwrap();
+
+        let mut buf = vec![0u8; payload.len() + 1];
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            AsyncReadExt::read_exact(&mut sock, &mut buf),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("ip-hash connection {i} timed out"))
+        .unwrap();
+
+        assert_eq!(&buf[1..], payload.as_bytes());
+        served.insert(buf[0]);
+    }
+
+    assert_eq!(
+        served.len(),
+        1,
+        "ip hash must be sticky for one source address, saw {served:?}"
+    );
+    shutdown.cancel();
+}
+
 /// Failover skips a destination that refuses connections.
 ///
 /// The first attempt lands on the dead address and fails — the entry marks it

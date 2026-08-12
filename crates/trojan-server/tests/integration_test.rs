@@ -2515,7 +2515,7 @@ mod multi_worker_tests {
 mod config_surface_tests {
     use super::*;
     use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
-    use trojan_config::{FallbackPoolConfig, UserEntry};
+    use trojan_config::{FallbackPoolConfig, ResourceLimitsConfig, UserEntry};
     use trojan_server::{CancellationToken, run_with_shutdown};
 
     const PASSWORD: &str = "test_password_123";
@@ -2969,6 +2969,54 @@ mod config_surface_tests {
                 "fallback {i} returned {body:?}"
             );
         }
+    }
+
+    /// A relay buffer far smaller than the payload must still move it intact.
+    ///
+    /// `resource_limits.relay_buffer_size` is tunable, and shrinking it changes
+    /// how many read/write/flush cycles a transfer takes. A 1 KiB buffer turns
+    /// a 512 KiB transfer into hundreds of cycles per direction, which is where
+    /// an off-by-one in the copy state machine would show up.
+    #[tokio::test]
+    async fn test_small_relay_buffer_still_transfers_intact() {
+        const TRANSFER_BYTES: usize = 512 * 1024;
+
+        let echo = MockEchoServer::start();
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+        let server = ConfiguredServer::start(fallback.addr, |config, _dir| {
+            config.server.resource_limits = Some(ResourceLimitsConfig {
+                relay_buffer_size: 1024,
+                tcp_send_buffer: 0,
+                tcp_recv_buffer: 0,
+                connection_backlog: 128,
+            });
+        })
+        .await;
+
+        let tls = server.tls().await;
+        let header = connect_header(&sha224_hex(PASSWORD), echo.addr);
+        let payload: Vec<u8> = (0..=250u8).cycle().take(TRANSFER_BYTES).collect();
+
+        let (mut reader, mut writer) = tokio::io::split(tls);
+        let to_send = payload.clone();
+        let write_task = tokio::spawn(async move {
+            writer.write_all(&header).await.unwrap();
+            writer.write_all(&to_send).await.unwrap();
+            writer.flush().await.unwrap();
+        });
+
+        let mut received = vec![0u8; TRANSFER_BYTES];
+        tokio::time::timeout(Duration::from_secs(120), reader.read_exact(&mut received))
+            .await
+            .expect("timed out — a small relay buffer stalled the transfer")
+            .expect("stream truncated");
+        write_task.await.unwrap();
+
+        assert_eq!(
+            first_difference(&received, &payload),
+            None,
+            "payload corrupted with a 1 KiB relay buffer"
+        );
     }
 
     /// Passwords declared under `auth.users` authenticate like plain ones —
