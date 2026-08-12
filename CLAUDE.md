@@ -11,21 +11,29 @@ cargo build --release                          # optimized (LTO + strip)
 
 # Test
 cargo test --workspace                         # all tests
+cargo test --workspace --all-features          # also the feature-gated tests
 cargo test -p trojan-server                    # single crate
 cargo test -p trojan-relay test_router_resolve # single test
 
 # Lint (matches CI exactly)
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # Check (fast compile check)
-cargo check --workspace --all-targets
+cargo check --workspace --all-targets --all-features
 
 # Benchmarks
 cargo bench -p trojan-proto
 ```
 
-CI runs: check, fmt, clippy, test (linux/macos/windows), doc, MSRV (1.90).
+**`--all-targets` does not imply `--all-features`.** Tests behind a feature —
+`geoip_rules`, `analytics_clickhouse` — do not compile without it, so a change
+that breaks them leaves the plain clippy and test runs green and fails CI.
+Run both forms before pushing.
+
+CI runs: check, fmt, clippy, test (linux/macos/windows), interop, analytics
+(ClickHouse), coverage, doc, MSRV (1.90).
 
 ## Architecture
 
@@ -69,7 +77,9 @@ credits each hop over `/traffic/chain` when it settles the user.
 **Standalone utility crates (no trojan internal dependencies):**
 - `trojan-transport` — `TransportAcceptor`/`TransportConnector` traits + plain/TLS/WS implementations
 - `trojan-lb` — `LbPolicy` trait + round-robin, IP hash, least-connections, failover strategies
-- `trojan-config` — loads TOML/YAML/JSON/JSONC via serde
+- `trojan-config` — loads TOML/YAML/JSON/JSONC via serde. It owns the shape of a
+  node's config file, not every crate's settings: analytics, GeoIP acquisition
+  and the like are defined by the crate that reads them
 - `trojan-proto` — zero-copy Trojan protocol parser using `bytes::BytesMut`
 
 **Key trait abstractions:**
