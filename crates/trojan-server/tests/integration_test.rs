@@ -2933,6 +2933,35 @@ mod config_surface_tests {
         }
     }
 
+    /// Every TCP socket option enabled at once must still yield a working
+    /// listener.
+    ///
+    /// None of these are observable from a client — they are `setsockopt`
+    /// calls — so the only thing worth asserting is that turning them on does
+    /// not break the server. `create_listener` propagates a failed
+    /// `setsockopt` as an error, which would take the listener down; TCP Fast
+    /// Open only warns. Without this, a platform where one of them is
+    /// unsupported fails at startup with no test to catch it.
+    #[tokio::test]
+    async fn test_all_tcp_options_enabled_still_serves() {
+        let echo = MockEchoServer::start();
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+        let server = ConfiguredServer::start(fallback.addr, |config, _dir| {
+            config.server.tcp = TcpConfig {
+                no_delay: true,
+                keepalive_secs: 30,
+                reuse_port: true,
+                fast_open: true,
+                fast_open_qlen: 16,
+                ..Default::default()
+            };
+        })
+        .await;
+
+        let mut tls = server.tls().await;
+        assert_relay_works(&mut tls, &sha224_hex(PASSWORD), echo.addr).await;
+    }
+
     // ── DNS ──
 
     /// A minimal UDP nameserver that answers every A query with 127.0.0.1.
