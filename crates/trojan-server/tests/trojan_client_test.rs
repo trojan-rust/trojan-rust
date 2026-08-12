@@ -391,7 +391,11 @@ impl Drop for TrojanClient {
 // ============================================================================
 
 /// Test CONNECT relay using trojan-go client.
-/// This test is ignored by default because it requires trojan-go to be installed.
+///
+/// Ignored by default because it needs `trojan-go` on PATH, which the default
+/// test matrix does not provide. The dev shell installs it, and CI's `interop`
+/// job runs this with `--include-ignored`. It panics rather than skipping when
+/// the binary is absent, so neither can pass without actually exercising it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn test_with_trojan_go_client() {
@@ -410,18 +414,16 @@ async fn test_with_trojan_go_client() {
     let server = TestServer::start(fallback.addr).await;
 
     // Start trojan-go client
-    let client = match TrojanClient::start(
+    // Deliberately fatal rather than a silent skip: a test that reports "ok"
+    // without the client it exists to exercise is worse than no test. The dev
+    // shell and the CI interop job both provide the binary.
+    let client = TrojanClient::start(
         TrojanClientType::TrojanGo,
         server.addr,
         &server.password,
         None,
-    ) {
-        Ok(c) => c,
-        Err(e) => {
-            println!("Skipping test: {}", e);
-            return;
-        }
-    };
+    )
+    .unwrap_or_else(|e| panic!("trojan-go interop test cannot run: {e}"));
 
     // Connect through SOCKS5 proxy to echo server
     let mut stream = client
@@ -442,8 +444,11 @@ async fn test_with_trojan_go_client() {
     assert_eq!(&response[..n], message);
 }
 
-/// Test CONNECT relay using original trojan client.
-/// This test is ignored by default because it requires trojan to be installed.
+/// Test CONNECT relay using the original (C++) trojan client.
+///
+/// Ignored, and not yet wired into CI: unlike trojan-go there is no packaged
+/// build in nixpkgs for the dev shell. Run it manually with the binary on
+/// PATH; it panics rather than skipping if it is missing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn test_with_trojan_client() {
@@ -458,18 +463,14 @@ async fn test_with_trojan_client() {
     println!("Server started on {}", server.addr);
 
     // Start trojan client
-    let client = match TrojanClient::start(
+    // Fatal for the same reason as the trojan-go test above.
+    let client = TrojanClient::start(
         TrojanClientType::Trojan,
         server.addr,
         &server.password,
         None,
-    ) {
-        Ok(c) => c,
-        Err(e) => {
-            println!("Skipping test: {}", e);
-            return;
-        }
-    };
+    )
+    .unwrap_or_else(|e| panic!("trojan interop test cannot run: {e}"));
     println!("Client SOCKS5 proxy on {}", client.socks_addr);
 
     // Connect through SOCKS5 proxy to echo server

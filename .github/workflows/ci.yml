@@ -53,6 +53,23 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
 
+  interop:
+    name: Client Interop
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install trojan-go
+        run: |
+          go install github.com/p4gefau1t/trojan-go@latest
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+      # Kept out of the main test matrix because they need a client binary on
+      # PATH, which is why they carry #[ignore]. They fail loudly rather than
+      # skipping when it is missing, so this job cannot pass vacuously.
+      - name: Run interop tests
+        run: cargo test -p trojan-server --test trojan_client_test -- --include-ignored --test-threads=1 test_with_trojan_go_client
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest

@@ -25,6 +25,10 @@
       pkg-config
       # libsqlite3-sys, built by the sql-sqlite auth feature.
       sqlite
+      # Reference implementation, for the interop tests in
+      # trojan-server/tests/trojan_client_test.rs. Those tests look it up on
+      # PATH and skip themselves when it is absent.
+      trojan-go
     ]
     ++ lib.optionals stdenv.isDarwin [
       # aws-lc-sys reads `nm` while assembling its object list.
