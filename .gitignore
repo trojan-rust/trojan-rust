@@ -1,6 +1,12 @@
 target/
 out
 
+# devenv / nix
+.devenv/
+.devenv.flake.nix
+devenv.local.nix
+.direnv/
+
 # Environment and secrets
 .env
 .env.*
