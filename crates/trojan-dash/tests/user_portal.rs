@@ -87,6 +87,35 @@ async fn a_template_renders_the_basic_credential() {
     assert_eq!(username, "user=alice");
 }
 
+/// A generated password is base64, so it can contain `+` — which a query
+/// string reads as a space. A template that writes the password into a URL,
+/// as a `#!MANAGED-CONFIG` line does, needs it encoded.
+#[tokio::test]
+async fn a_password_in_a_url_is_percent_encoded() {
+    let dash = Dash::start().await;
+    let password = "a+b/c=d";
+    dash.admin_post(
+        "/admin/users",
+        json!({ "username": "eve", "password": password }),
+    )
+    .await;
+    dash.admin_post(
+        "/admin/sub-templates",
+        json!({ "name": "conf", "content": "{{ pwd_url }}" }),
+    )
+    .await;
+
+    let encoded = dash.sub("conf", password).await;
+    assert_eq!(encoded, "a%2Bb%2Fc%3Dd");
+
+    // The rendered form is what a client sends back verbatim.
+    let echoed = dash.get(&format!("/sub/conf?pwd={encoded}")).await;
+    assert_eq!(echoed.status(), 200, "the encoded password authenticates");
+
+    let raw = dash.get(&format!("/sub/conf?pwd={password}")).await;
+    assert_eq!(raw.status(), 401, "`+` arrives as a space, so it must not");
+}
+
 /// Surge fetches the script itself, so it has to be served as a script rather
 /// than as whatever the panel directory falls back to.
 #[tokio::test]

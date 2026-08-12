@@ -191,6 +191,15 @@ impl Dash {
         resp.json().await.unwrap()
     }
 
+    /// A raw public GET, for asserting on the status rather than the body.
+    pub async fn get(&self, path: &str) -> reqwest::Response {
+        self.client
+            .get(format!("{}{path}", self.base))
+            .send()
+            .await
+            .unwrap()
+    }
+
     /// Fetch a rendered subscription the way a client does.
     ///
     /// The password goes through `query` rather than into the string: a

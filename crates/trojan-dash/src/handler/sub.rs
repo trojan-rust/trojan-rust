@@ -13,7 +13,9 @@ use crate::entity::{sub_templates, users};
 use crate::error::DashError;
 use crate::state::AppState;
 use crate::types::{CacheData, SubQuery};
-use crate::util::{basic_auth, now_secs, parse_duration_secs, percent_encode_rfc5987};
+use crate::util::{
+    basic_auth, now_secs, parse_duration_secs, percent_encode_query, percent_encode_rfc5987,
+};
 
 /// `GET /sub/{name}?pwd=`
 pub async fn sub(
@@ -56,6 +58,7 @@ pub async fn sub(
     let rendered = template
         .content
         .replace("{{ pwd }}", &pwd)
+        .replace("{{ pwd_url }}", &percent_encode_query(&pwd))
         .replace("{{ name }}", &name)
         .replace("{{ username }}", &user.username)
         .replace("{{ basic_auth }}", &basic_auth(&user.username, &pwd))

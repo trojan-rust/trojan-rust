@@ -110,6 +110,20 @@ pub fn parse_duration_secs(s: &str) -> u64 {
     total
 }
 
+/// Percent-encode a value being written into a URL, leaving only the
+/// unreserved characters alone.
+///
+/// A generated password is base64: written raw into a query string its `+`
+/// arrives as a space, and the subscription it authenticates stops updating.
+pub fn percent_encode_query(s: &str) -> String {
+    const UNRESERVED: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'.')
+        .remove(b'_')
+        .remove(b'~');
+    percent_encoding::utf8_percent_encode(s, UNRESERVED).to_string()
+}
+
 /// Percent-encode for RFC 5987's `filename*` parameter.
 pub fn percent_encode_rfc5987(s: &str) -> String {
     /// RFC 5987 attr-char, minus the characters that still need escaping

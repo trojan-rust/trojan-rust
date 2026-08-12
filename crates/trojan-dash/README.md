@@ -46,6 +46,7 @@ is text with these placeholders:
 | Placeholder | Rendered as |
 | --- | --- |
 | `{{ pwd }}` | the caller's password |
+| `{{ pwd_url }}` | the same, percent-encoded — what a URL in the template needs, since a generated password is base64 and a raw `+` arrives as a space |
 | `{{ username }}` | their username |
 | `{{ basic_auth }}` | base64 of `username:password` — the credential `/me` takes |
 | `{{ name }}` | the template's own name |
