@@ -1,6 +1,7 @@
 //! Universal user record from any store.
 
 use super::cache::CachedUser;
+use crate::result::NodeQuota;
 
 /// User data returned by a [`UserStore`](super::UserStore) implementation.
 ///
@@ -18,6 +19,11 @@ pub struct UserRecord {
     pub expires_at: i64,
     /// Whether the account is enabled.
     pub enabled: bool,
+    /// Per-node allowances the panel published for this user.
+    ///
+    /// Empty for every store that has no notion of other nodes, which is all
+    /// of them but the panel-backed one.
+    pub node_quotas: Vec<NodeQuota>,
 }
 
 /// Convert a domain counter into the signed form the stores use.
@@ -39,6 +45,7 @@ impl From<CachedUser> for UserRecord {
             traffic_used: cached.traffic_used,
             expires_at: cached.expires_at,
             enabled: cached.enabled,
+            node_quotas: cached.node_quotas,
         }
     }
 }

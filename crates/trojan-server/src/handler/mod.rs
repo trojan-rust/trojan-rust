@@ -304,6 +304,30 @@ where
                     };
                     let user_id = auth_result.user_id;
 
+                    // A relay hop cannot enforce its own allowance — it never
+                    // learns whose traffic it carries — so the exit does it
+                    // here, where the user and the path are both known. What
+                    // this node has recorded but not yet reported counts too,
+                    // or a limit would only bite one report behind.
+                    if let Some(uid) = user_id.as_deref()
+                        && let Some(meta) = auth_result.metadata.as_ref()
+                        && let Some(hop) = meta.exhausted_hop(&conn.chain.nodes, |node| {
+                            auth.pending_chain_bytes(uid, node)
+                        })
+                    {
+                        // Refused like any other unauthenticated connection:
+                        // a prober must not be able to tell the difference.
+                        debug!(
+                            peer = %peer,
+                            user_id = uid,
+                            node = %hop.node_id,
+                            "chain allowance spent, fallback"
+                        );
+                        record_auth_failure();
+                        record_fallback();
+                        return handle_fallback(stream, buf.freeze(), state, peer).await;
+                    }
+
                     record_auth_success();
                     #[cfg(feature = "geoip")]
                     if !peer_country.is_empty() {

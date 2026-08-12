@@ -10,8 +10,8 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DatabaseBackend, EntityTrait, QueryFilter, Statement,
-    TransactionTrait,
+    ColumnTrait, ConnectionTrait, DatabaseBackend, EntityTrait, FromQueryResult, QueryFilter,
+    Statement, TransactionTrait,
 };
 use trojan_auth::protocol::{
     AuthError, AuthResult, ChainTrafficRequest, TrafficRequest, VerifyRequest,
@@ -22,8 +22,8 @@ use crate::codec::{Wire, encode};
 use crate::entity::users;
 use crate::error::DashError;
 use crate::state::AppState;
-use crate::types::{CacheData, clamp_i64};
-use crate::util::{now_secs, today_date};
+use crate::types::{CacheData, NodeQuota, clamp_i64};
+use crate::util::{current_hour, month_start, now_secs, today_date};
 
 /// `POST /verify` — is this password hash allowed to connect?
 pub async fn verify(
@@ -46,7 +46,8 @@ pub async fn verify(
 
     let result: Result<AuthResult, AuthError> = match user {
         Some(ref model) => {
-            let data = CacheData::from(model);
+            let mut data = CacheData::from(model);
+            data.node_quotas = node_quotas(&state, model.id).await?;
             state
                 .cache
                 .verify
@@ -58,6 +59,28 @@ pub async fn verify(
     };
 
     encode(codec, &result)
+}
+
+/// This user's per-node allowances, with what the current UTC month has spent.
+///
+/// One query, and usually no rows: an allowance exists only where an operator
+/// set one. The spend is summed rather than stored, so a month rolls over on
+/// its own.
+async fn node_quotas(state: &AppState, user_id: i64) -> Result<Vec<NodeQuota>, DashError> {
+    NodeQuota::find_by_statement(Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "SELECT l.node_id AS node_id, l.monthly_bytes AS monthly_bytes, \
+                COALESCE(SUM(t.bytes), 0) AS used \
+         FROM user_node_limits l \
+         LEFT JOIN traffic_logs t \
+           ON t.user_id = l.user_id AND t.node_id = l.node_id AND t.date >= ?2 \
+         WHERE l.user_id = ?1 \
+         GROUP BY l.node_id, l.monthly_bytes",
+        [user_id.into(), month_start().into()],
+    ))
+    .all(&state.db)
+    .await
+    .map_err(Into::into)
 }
 
 /// `POST /traffic` — add to a user's usage, and to today's per-node total.
@@ -112,7 +135,29 @@ pub(crate) async fn apply_traffic(
         return Ok(false);
     }
 
-    tx.execute(Statement::from_sql_and_values(
+    record_usage(&tx, user_id, node_id, bytes).await?;
+
+    tx.commit().await?;
+
+    // The cached copy still carries the old total, and a user near their limit
+    // would keep connecting until it expired.
+    invalidate_user(state, user_id).await;
+
+    Ok(true)
+}
+
+/// Record `bytes` against one user and node in both rollups.
+///
+/// The daily row is the record of history; the hourly one is what a short
+/// range reads, and is pruned once it ages out. They describe one event, so a
+/// caller writes them inside a transaction and they move together.
+async fn record_usage<C: ConnectionTrait>(
+    conn: &C,
+    user_id: i64,
+    node_id: i64,
+    bytes: i64,
+) -> Result<(), DashError> {
+    conn.execute(Statement::from_sql_and_values(
         DatabaseBackend::Sqlite,
         "INSERT INTO traffic_logs (user_id, node_id, bytes, date) VALUES (?1, ?2, ?3, ?4) \
          ON CONFLICT(user_id, node_id, date) DO UPDATE SET bytes = bytes + excluded.bytes",
@@ -125,13 +170,20 @@ pub(crate) async fn apply_traffic(
     ))
     .await?;
 
-    tx.commit().await?;
+    conn.execute(Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "INSERT INTO traffic_hourly (user_id, node_id, bytes, hour) VALUES (?1, ?2, ?3, ?4) \
+         ON CONFLICT(user_id, node_id, hour) DO UPDATE SET bytes = bytes + excluded.bytes",
+        [
+            user_id.into(),
+            node_id.into(),
+            bytes.into(),
+            current_hour().into(),
+        ],
+    ))
+    .await?;
 
-    // The cached copy still carries the old total, and a user near their limit
-    // would keep connecting until it expired.
-    invalidate_user(state, user_id).await;
-
-    Ok(true)
+    Ok(())
 }
 
 /// Drop a user's cached verification after their row changed.
@@ -146,9 +198,9 @@ async fn invalidate_user(state: &AppState, user_id: i64) {
 /// `POST /traffic/chain` — credit a relay hop for traffic it carried.
 ///
 /// Sent by an exit node on behalf of the hops in front of it, which never see
-/// whose traffic they forward. Only the per-node daily total moves: the user's
-/// own quota is settled once, by `/traffic`, so a three-hop chain does not
-/// bill a user three times for one download.
+/// whose traffic they forward. Only the per-node rollups move: the user's own
+/// quota is settled once, by `/traffic`, so a three-hop chain does not bill a
+/// user three times for one download.
 pub async fn chain_traffic(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -179,20 +231,9 @@ pub async fn chain_traffic(
         return encode(codec, &Err::<(), _>(AuthError::NotFound));
     }
 
-    state
-        .db
-        .execute(Statement::from_sql_and_values(
-            DatabaseBackend::Sqlite,
-            "INSERT INTO traffic_logs (user_id, node_id, bytes, date) VALUES (?1, ?2, ?3, ?4) \
-             ON CONFLICT(user_id, node_id, date) DO UPDATE SET bytes = bytes + excluded.bytes",
-            [
-                user_id.into(),
-                node_id.into(),
-                clamp_i64(body.bytes).into(),
-                today_date().into(),
-            ],
-        ))
-        .await?;
+    let tx = state.db.begin().await?;
+    record_usage(&tx, user_id, node_id, clamp_i64(body.bytes)).await?;
+    tx.commit().await?;
 
     encode(codec, &Ok::<(), AuthError>(()))
 }

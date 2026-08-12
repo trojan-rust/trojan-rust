@@ -114,6 +114,23 @@ impl Dash {
         resp.json().await.unwrap()
     }
 
+    pub async fn admin_put(&self, path: &str, body: Value) -> Value {
+        let resp = self
+            .client
+            .put(format!("{}{path}", self.base))
+            .bearer_auth(ADMIN_TOKEN)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            resp.status().is_success(),
+            "PUT {path}: {:?}",
+            resp.status()
+        );
+        resp.json().await.unwrap()
+    }
+
     pub async fn admin_get(&self, path: &str) -> Value {
         let resp = self
             .client
@@ -155,6 +172,55 @@ impl Dash {
             user["id"].as_u64().unwrap(),
             user["password"].as_str().unwrap().to_owned(),
         )
+    }
+
+    /// A user-facing GET, authenticated the way the portal authenticates.
+    pub async fn user_get(&self, path: &str, username: &str, password: &str) -> Value {
+        let resp = self
+            .client
+            .get(format!("{}{path}", self.base))
+            .basic_auth(username, Some(password))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            resp.status().is_success(),
+            "GET {path}: {:?}",
+            resp.status()
+        );
+        resp.json().await.unwrap()
+    }
+
+    /// Fetch a rendered subscription the way a client does.
+    ///
+    /// The password goes through `query` rather than into the string: a
+    /// generated one is base64, and a `+` written straight into a query string
+    /// arrives as a space.
+    pub async fn sub(&self, name: &str, pwd: &str) -> String {
+        let resp = self
+            .client
+            .get(format!("{}/sub/{name}", self.base))
+            .query(&[("pwd", pwd)])
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            resp.status().is_success(),
+            "GET /sub/{name}: {:?}",
+            resp.status()
+        );
+        resp.text().await.unwrap()
+    }
+
+    /// Report `bytes` for a user from a node, flushing what the client batches.
+    pub async fn report_traffic(&self, node_token: &str, user_id: u64, bytes: u64) {
+        use trojan_auth::AuthBackend;
+
+        let auth = self.node_auth(node_token);
+        auth.record_traffic(&user_id.to_string(), bytes)
+            .await
+            .unwrap();
+        auth.shutdown().await;
     }
 
     /// An auth backend configured the way a node would configure it.

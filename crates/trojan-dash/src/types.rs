@@ -5,13 +5,13 @@
 
 use sea_orm::FromQueryResult;
 use serde::{Deserialize, Serialize};
-use trojan_auth::protocol::{AuthError, AuthMetadata, AuthResult};
+use trojan_auth::protocol::{self, AuthError, AuthMetadata, AuthResult};
 
 use crate::entity::{nodes, sub_templates, traffic_logs, users};
 
 /// Clamp a column to the unsigned range. Negative values are not reachable
 /// through the API; a hand-edited database is not worth a panic.
-fn nonneg(v: i64) -> u64 {
+pub(crate) fn nonneg(v: i64) -> u64 {
     u64::try_from(v).unwrap_or(0)
 }
 
@@ -31,6 +31,12 @@ pub struct CacheData {
     pub traffic_used: u64,
     pub expires_at: u64,
     pub enabled: bool,
+    /// Allowances on individual nodes, and what this month has spent of them.
+    ///
+    /// Cached with the rest, so the spend a node enforces against is at most
+    /// one verify TTL out of date — the limit is a budget, not a gate.
+    #[serde(default)]
+    pub node_quotas: Vec<NodeQuota>,
 }
 
 impl From<&users::Model> for CacheData {
@@ -41,6 +47,26 @@ impl From<&users::Model> for CacheData {
             traffic_used: nonneg(m.traffic_used),
             expires_at: nonneg(m.expires_at),
             enabled: m.enabled != 0,
+            node_quotas: Vec::new(),
+        }
+    }
+}
+
+/// One node's monthly allowance for a user, and the spend against it.
+#[derive(Debug, Clone, Serialize, Deserialize, FromQueryResult)]
+pub struct NodeQuota {
+    pub node_id: i64,
+    pub monthly_bytes: i64,
+    pub used: i64,
+}
+
+impl NodeQuota {
+    /// The wire form nodes receive.
+    pub fn to_protocol(&self) -> protocol::NodeQuota {
+        protocol::NodeQuota {
+            node_id: self.node_id.to_string(),
+            limit: nonneg(self.monthly_bytes),
+            used: nonneg(self.used),
         }
     }
 }
@@ -62,10 +88,29 @@ impl CacheData {
                     traffic_used: self.traffic_used,
                     expires_at: self.expires_at,
                     enabled: self.enabled,
+                    node_quotas: self
+                        .node_quotas
+                        .iter()
+                        .map(NodeQuota::to_protocol)
+                        .collect(),
                 }),
             })
         }
     }
+}
+
+/// `PUT /admin/users/{id}/limits/{node_id}` body.
+#[derive(Debug, Deserialize)]
+pub struct NodeLimitRequest {
+    /// Bytes per calendar month, UTC. Zero means unlimited.
+    pub monthly_bytes: u64,
+}
+
+/// One allowance as the panel sees it.
+#[derive(Debug, Serialize)]
+pub struct NodeLimitResponse {
+    pub node_id: u64,
+    pub monthly_bytes: u64,
 }
 
 // ── users ─────────────────────────────────────────────────────────
@@ -233,40 +278,103 @@ pub struct TrafficQuery {
     pub node_id: Option<i64>,
 }
 
-/// Window for `GET /admin/traffic/daily`.
-#[derive(Debug, Deserialize)]
-pub struct DailyQuery {
-    /// How far back to reach, in days. Defaults to 30, capped at a year.
-    pub days: Option<i64>,
+// ── traffic series ────────────────────────────────────────────────
+
+/// How far back a chart reaches.
+///
+/// The two shortest read the hourly rollup, which is the only place sub-day
+/// resolution exists; the rest read the daily table, which keeps history.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub enum Range {
+    #[serde(rename = "24h")]
+    Day,
+    #[serde(rename = "3d")]
+    ThreeDays,
+    #[serde(rename = "7d")]
+    Week,
+    #[default]
+    #[serde(rename = "30d")]
+    Month,
+    #[serde(rename = "90d")]
+    Quarter,
+    #[serde(rename = "all")]
+    All,
 }
 
-/// One day's total for one node, as the aggregate query returns it.
+/// How wide one point is. Chosen by the range, reported so the panel can label
+/// an axis without repeating the rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Bucket {
+    Hour,
+    Day,
+    Week,
+    Month,
+}
+
+/// What a series breaks down by.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Grouping {
+    /// One line per node.
+    #[default]
+    Node,
+    /// One line per user.
+    User,
+    /// One line, everything summed.
+    None,
+}
+
+/// Query string of `GET /admin/traffic/series`.
+#[derive(Debug, Default, Deserialize)]
+pub struct SeriesQuery {
+    #[serde(default)]
+    pub range: Range,
+    #[serde(default)]
+    pub group: Grouping,
+    pub user_id: Option<i64>,
+    pub node_id: Option<i64>,
+}
+
+/// One bucket of one series, as the aggregate query returns it.
 #[derive(Debug, FromQueryResult)]
-pub struct DailyTrafficRow {
-    pub date: String,
-    pub node_id: i64,
-    pub node_name: String,
+pub struct SeriesRow {
+    pub t: String,
+    /// The node or user id this line belongs to; absent when ungrouped.
+    pub key: Option<i64>,
+    pub label: Option<String>,
     pub bytes: i64,
 }
 
-/// A point on the traffic chart.
+/// A point on a traffic chart.
 #[derive(Debug, Serialize)]
-pub struct DailyTrafficResponse {
-    pub date: String,
-    pub node_id: u64,
-    pub node_name: String,
+pub struct SeriesPoint {
+    pub t: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     pub bytes: u64,
 }
 
-impl From<&DailyTrafficRow> for DailyTrafficResponse {
-    fn from(r: &DailyTrafficRow) -> Self {
+impl From<&SeriesRow> for SeriesPoint {
+    fn from(r: &SeriesRow) -> Self {
         Self {
-            date: r.date.clone(),
-            node_id: nonneg(r.node_id),
-            node_name: r.node_name.clone(),
+            t: r.t.clone(),
+            key: r.key.map(nonneg),
+            label: r.label.clone(),
             bytes: nonneg(r.bytes),
         }
     }
+}
+
+/// A traffic chart: the points, and enough about the window to draw the axis.
+#[derive(Debug, Serialize)]
+pub struct SeriesResponse {
+    pub bucket: Bucket,
+    /// Inclusive lower bound, in the same form as a point's `t`.
+    pub start: String,
+    pub points: Vec<SeriesPoint>,
 }
 
 /// Per-node totals for one user, as the aggregate query returns them.
@@ -373,6 +481,19 @@ pub struct SubQuery {
 #[derive(Debug, Serialize)]
 pub struct MeResponse {
     pub user: UserResponse,
+    /// Bytes over the last 24 hourly buckets. A window rather than a calendar
+    /// day, so it reads the same from any timezone.
+    pub last_24h_bytes: u64,
+    /// Bytes since the first of the month, UTC — the window a node allowance
+    /// is counted over.
+    pub month_bytes: u64,
     pub traffic_by_node: Vec<NodeTrafficResponse>,
     pub sub_templates: Vec<String>,
+}
+
+/// The two figures above, as the aggregate query returns them.
+#[derive(Debug, Default, FromQueryResult)]
+pub struct UsageRow {
+    pub last_24h: i64,
+    pub month: i64,
 }

@@ -51,6 +51,17 @@ pub trait AuthBackend: Send + Sync {
         Ok(())
     }
 
+    /// Optional: bytes recorded for one hop of a relay chain but not yet
+    /// reported to the backend.
+    ///
+    /// A per-node allowance is checked against a figure the backend computed
+    /// when it last answered; this is what has happened since. Backends that
+    /// do not buffer, or know nothing of other nodes, report nothing.
+    #[inline]
+    fn pending_chain_bytes(&self, _user_id: &str, _node_id: &str) -> u64 {
+        0
+    }
+
     /// Optional: drain any buffered state (e.g. batched traffic updates) and
     /// wait for it to reach the backend before returning.
     ///
@@ -88,6 +99,11 @@ impl<A: AuthBackend + ?Sized> AuthBackend for Arc<A> {
     }
 
     #[inline]
+    fn pending_chain_bytes(&self, user_id: &str, node_id: &str) -> u64 {
+        (**self).pending_chain_bytes(user_id, node_id)
+    }
+
+    #[inline]
     async fn shutdown(&self) {
         (**self).shutdown().await
     }
@@ -114,6 +130,11 @@ impl<A: AuthBackend + ?Sized> AuthBackend for Box<A> {
         nodes: &[String],
     ) -> Result<(), AuthError> {
         (**self).record_chain_traffic(user_id, bytes, nodes).await
+    }
+
+    #[inline]
+    fn pending_chain_bytes(&self, user_id: &str, node_id: &str) -> u64 {
+        (**self).pending_chain_bytes(user_id, node_id)
     }
 
     #[inline]

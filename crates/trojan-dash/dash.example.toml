@@ -23,4 +23,9 @@ node_last_seen_ttl = 180
 verify_cache_ttl = 3600
 sub_cache_ttl = 3600
 
+# Days of hour-resolution traffic to keep. The hourly rollup is what the 24h
+# and 3d charts read; the daily table keeps history either way, so this only
+# bounds how far back a short-range chart can reach. 0 disables pruning.
+hourly_retention_days = 14
+
 # log_level = "info"

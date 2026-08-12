@@ -71,6 +71,8 @@ impl SqlStore {
             .unwrap_or(true);
 
         Ok(UserRecord {
+            // A SQL store knows one node: the one it runs on.
+            node_quotas: Vec::new(),
             user_id: row.try_get("user_id").ok(),
             traffic_limit: row.try_get("traffic_limit").unwrap_or(0),
             traffic_used: row.try_get("traffic_used").unwrap_or(0),

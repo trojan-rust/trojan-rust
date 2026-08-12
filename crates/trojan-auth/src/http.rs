@@ -24,6 +24,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::protocol;
+use crate::result::NodeQuota;
 use crate::store::record::to_storage_i64;
 use crate::store::{
     FlushFn, StoreAuth, StoreAuthConfig, TrafficRecorder, TrafficRecordingMode, UserRecord,
@@ -214,6 +215,16 @@ impl UserStore for HttpStore {
                     traffic_used: meta.map_or(0, |m| to_storage_i64(m.traffic_used)),
                     expires_at: meta.map_or(0, |m| to_storage_i64(m.expires_at)),
                     enabled: meta.is_none_or(|m| m.enabled),
+                    node_quotas: meta.map_or_else(Vec::new, |m| {
+                        m.node_quotas
+                            .iter()
+                            .map(|q| NodeQuota {
+                                node_id: q.node_id.clone(),
+                                limit: q.limit,
+                                used: q.used,
+                            })
+                            .collect()
+                    }),
                 }))
             }
             Err(protocol::AuthError::Invalid | protocol::AuthError::NotFound) => Ok(None),
@@ -373,6 +384,15 @@ impl AuthBackend for HttpAuth {
             );
         }
         Ok(())
+    }
+
+    fn pending_chain_bytes(&self, user_id: &str, node_id: &str) -> u64 {
+        self.chain_recorder.as_ref().map_or(0, |recorder| {
+            recorder.pending_for(&ChainCredit {
+                user_id: user_id.to_owned(),
+                node_id: node_id.to_owned(),
+            })
+        })
     }
 
     async fn shutdown(&self) {

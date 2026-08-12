@@ -61,7 +61,7 @@ pub use error::AuthError;
 pub use hash::{sha224_hex, verify_password};
 pub use memory::MemoryAuth;
 pub use reloadable::ReloadableAuth;
-pub use result::{AuthMetadata, AuthResult};
+pub use result::{AuthMetadata, AuthResult, NodeQuota};
 pub use traits::AuthBackend;
 
 #[cfg(feature = "cli")]

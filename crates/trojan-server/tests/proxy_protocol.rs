@@ -24,7 +24,9 @@ use rustls::{ClientConfig, RootCertStore};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
-use trojan_auth::{MemoryAuth, sha224_hex};
+use trojan_auth::{
+    AuthBackend, AuthError, AuthMetadata, AuthResult, MemoryAuth, NodeQuota, sha224_hex,
+};
 use trojan_config::{
     AuthConfig, Config, LoggingConfig, MetricsConfig, ProxyProtocolConfig, RateLimitConfig,
     ServerConfig, TcpConfig, TlsConfig, TlsVersion, WebSocketConfig,
@@ -66,10 +68,36 @@ struct TestServer {
     _temp_dir: tempfile::TempDir,
 }
 
+/// What a test varies about the server it starts.
+struct Options<A> {
+    /// Per-client connection limit, or none.
+    rate_limit: Option<RateLimitConfig>,
+    /// The backend that answers `verify`.
+    auth: A,
+    /// Where refused connections are sent, so a test can tell "served" from
+    /// "turned away" by who answered.
+    fallback: SocketAddr,
+}
+
+impl Options<MemoryAuth> {
+    /// The plain setup: one known password, an echo as the fallback.
+    fn new(rate_limit: Option<RateLimitConfig>) -> Self {
+        Self {
+            rate_limit,
+            auth: MemoryAuth::from_passwords(&[PASSWORD.to_string()]),
+            fallback: spawn_echo(),
+        }
+    }
+}
+
 impl TestServer {
-    /// Start a server that trusts loopback senders, with the given per-client
-    /// connection limit.
-    async fn start(rate_limit: Option<RateLimitConfig>) -> Self {
+    /// Start a server that trusts loopback senders.
+    async fn start<A: AuthBackend + 'static>(options: Options<A>) -> Self {
+        let Options {
+            rate_limit,
+            auth,
+            fallback,
+        } = options;
         use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
 
         let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
@@ -105,8 +133,6 @@ impl TestServer {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener);
-
-        let fallback = spawn_echo();
 
         let config = Config {
             server: ServerConfig {
@@ -157,7 +183,6 @@ impl TestServer {
             ddns: Default::default(),
         };
 
-        let auth = MemoryAuth::from_passwords(&config.auth.passwords);
         tokio::spawn(async move {
             if let Err(e) = trojan_server::run(config, auth).await {
                 eprintln!("server exited: {e}");
@@ -257,7 +282,7 @@ fn header_from(client: &str) -> ProxyHeader {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn clients_behind_a_trusted_proxy_are_counted_separately() {
     let echo = spawn_echo();
-    let server = TestServer::start(Some(one_per_client())).await;
+    let server = TestServer::start(Options::new(Some(one_per_client()))).await;
 
     let first = server
         .round_trip(Some(header_from("203.0.113.1:40001")), echo, b"first")
@@ -276,7 +301,7 @@ async fn clients_behind_a_trusted_proxy_are_counted_separately() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_repeat_client_behind_the_proxy_still_hits_the_limit() {
     let echo = spawn_echo();
-    let server = TestServer::start(Some(one_per_client())).await;
+    let server = TestServer::start(Options::new(Some(one_per_client()))).await;
 
     let first = server
         .round_trip(Some(header_from("198.51.100.9:40001")), echo, b"first")
@@ -300,7 +325,7 @@ async fn a_repeat_client_behind_the_proxy_still_hits_the_limit() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_trusted_sender_without_a_header_is_served_normally() {
     let echo = spawn_echo();
-    let server = TestServer::start(None).await;
+    let server = TestServer::start(Options::new(None)).await;
 
     let reply = server
         .round_trip(None, echo, b"direct")
@@ -308,4 +333,126 @@ async fn a_trusted_sender_without_a_header_is_served_normally() {
         .expect("direct client rejected");
 
     assert_eq!(reply, b"direct");
+}
+
+// ── Per-node allowances ──
+
+/// A backend that knows one user and caps them on one node.
+///
+/// Stands in for the panel: only a panel-backed backend ever publishes
+/// allowances, and what the exit does with them is what these tests are about.
+#[derive(Debug)]
+struct CappedAuth {
+    inner: MemoryAuth,
+    quota: NodeQuota,
+}
+
+impl CappedAuth {
+    fn new(node_id: &str, limit: u64, used: u64) -> Self {
+        let mut inner = MemoryAuth::new();
+        inner.add_password(PASSWORD, Some("u-1".to_string()));
+        Self {
+            inner,
+            quota: NodeQuota {
+                node_id: node_id.to_owned(),
+                limit,
+                used,
+            },
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl AuthBackend for CappedAuth {
+    async fn verify(&self, hash: &str) -> Result<AuthResult, AuthError> {
+        let result = self.inner.verify(hash).await?;
+        Ok(AuthResult {
+            metadata: Some(AuthMetadata {
+                node_quotas: vec![self.quota.clone()],
+                ..AuthMetadata::new()
+            }),
+            ..result
+        })
+    }
+}
+
+/// Replies with a marker instead of echoing, so a test can tell which side
+/// answered: the target, or the fallback a refused connection is sent to.
+fn spawn_marker(marker: &'static [u8]) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                if stream.read(&mut buf).is_ok() {
+                    let _ = stream.write_all(marker);
+                }
+            });
+        }
+    });
+    addr
+}
+
+/// A connection through a hop whose allowance is spent is turned away — and
+/// turned away the same way an unauthenticated one is, so a prober learns
+/// nothing from the difference.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_chain_through_a_spent_hop_is_refused() {
+    let echo = spawn_echo();
+    let server = TestServer::start(Options {
+        rate_limit: None,
+        auth: CappedAuth::new("entry-1", 1024, 1024),
+        fallback: spawn_marker(b"FALLBACK"),
+    })
+    .await;
+
+    let reply = server
+        .round_trip(Some(header_from("203.0.113.1:40001")), echo, b"blocked!")
+        .await
+        .expect("the connection should be served, just not by the target");
+
+    assert_eq!(
+        reply, b"FALLBACK",
+        "a spent allowance must send the connection to the fallback"
+    );
+}
+
+/// The same user on the same node, under the limit, is served normally.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_chain_within_its_allowance_is_served() {
+    let echo = spawn_echo();
+    let server = TestServer::start(Options {
+        rate_limit: None,
+        auth: CappedAuth::new("entry-1", 1024, 512),
+        fallback: spawn_marker(b"FALLBACK"),
+    })
+    .await;
+
+    let reply = server
+        .round_trip(Some(header_from("203.0.113.2:40002")), echo, b"allowed!")
+        .await
+        .expect("an allowance with room left must not block");
+
+    assert_eq!(reply, b"allowed!");
+}
+
+/// A direct connection crosses no hops, so a spent allowance on one cannot
+/// touch it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_direct_connection_ignores_hop_allowances() {
+    let echo = spawn_echo();
+    let server = TestServer::start(Options {
+        rate_limit: None,
+        auth: CappedAuth::new("entry-1", 1024, 1024),
+        fallback: spawn_marker(b"FALLBACK"),
+    })
+    .await;
+
+    let reply = server
+        .round_trip(None, echo, b"direct!!")
+        .await
+        .expect("a direct client should be unaffected");
+
+    assert_eq!(reply, b"direct!!");
 }

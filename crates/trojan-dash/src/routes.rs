@@ -4,12 +4,12 @@ use std::path::Path;
 
 use axum::Router;
 use axum::middleware;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use crate::auth::require_admin;
-use crate::handler::{agent, me, node_api, nodes, sub, templates, traffic, users};
+use crate::handler::{agent, limits, me, node_api, nodes, sub, surge, templates, traffic, users};
 use crate::state::AppState;
 
 /// Build the router. When the panel directory exists its contents are served
@@ -26,7 +26,10 @@ pub fn router(state: AppState, panel_dir: Option<&Path>) -> Router {
         .route("/ws/agent", get(agent::ws))
         // User-facing
         .route("/sub/{name}", get(sub::sub))
-        .route("/me", get(me::me));
+        .route("/me", get(me::me))
+        .route("/me/traffic", get(me::traffic))
+        // Client-facing: the script a Surge panel runs against /me.
+        .route("/surge/panel.js", get(surge::panel_js));
 
     // One guard for the whole admin surface: a route added here cannot forget
     // to authenticate.
@@ -36,6 +39,11 @@ pub fn router(state: AppState, panel_dir: Option<&Path>) -> Router {
             "/admin/users/{id}",
             get(users::get).patch(users::update).delete(users::remove),
         )
+        .route("/admin/users/{id}/limits", get(limits::list))
+        .route(
+            "/admin/users/{id}/limits/{node_id}",
+            put(limits::set).delete(limits::remove),
+        )
         .route("/admin/nodes", get(nodes::list).post(nodes::add))
         .route(
             "/admin/nodes/{id}",
@@ -43,7 +51,7 @@ pub fn router(state: AppState, panel_dir: Option<&Path>) -> Router {
         )
         .route("/admin/nodes/{id}/rotate", post(nodes::rotate))
         .route("/admin/traffic", get(traffic::list))
-        .route("/admin/traffic/daily", get(traffic::daily))
+        .route("/admin/traffic/series", get(traffic::series))
         .route(
             "/admin/sub-templates",
             get(templates::list).post(templates::add),

@@ -1,0 +1,18 @@
+#!name=Trojan Panel ({{ username }})
+#!desc=Quota, recent usage and expiry in a Surge information panel.
+
+; Needs Surge iOS 4.9.3+ or Surge Mac 5.7.5+.
+;
+; Store this as the content of a subscription template, leave its filename
+; empty, and hand the user their /sub URL to install as a module. Both
+; dash.example.com are the dashboard's own address; {{ basic_auth }} is the
+; only part rendered per user.
+;
+; The panel's static title and content are what shows until the script has run
+; once. Optional arguments: nodes, lang, policy, icon, icon-color.
+
+[Panel]
+TrojanPanel = title="Trojan",content="Pull to refresh",style=info,script-name=trojan-panel,update-interval=600
+
+[Script]
+trojan-panel = type=generic,timeout=10,script-path=https://dash.example.com/surge/panel.js,script-update-interval=86400,argument=url=https://dash.example.com&auth={{ basic_auth }}

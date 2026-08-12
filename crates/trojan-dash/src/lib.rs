@@ -8,7 +8,8 @@
 //! - **agents** — `/ws/agent`, where a node registers with its token, is
 //!   handed its service config, and reports heartbeats and per-user traffic
 //! - **operators** — `/admin/*`, guarded by a bearer token
-//! - **users** — `/me` and `/sub/{name}`, for usage and subscription links
+//! - **users** — `/me` and `/sub/{name}`, for usage and subscription links,
+//!   plus `/surge/panel.js`, the script a Surge information panel runs
 //!
 //! Storage is SQLite. The built web panel, if configured, is served from the
 //! same origin, so the browser needs no CORS exemption.
@@ -46,6 +47,7 @@ mod entity;
 mod error;
 mod handler;
 mod migration;
+mod retention;
 mod routes;
 mod state;
 mod types;
@@ -81,6 +83,15 @@ pub async fn run(config: DashConfig, shutdown: CancellationToken) -> Result<(), 
         "trojan dash listening"
     );
 
+    // A child token so the sweeper stops when the server does, without
+    // cancelling the caller's token on the way out.
+    let internal = shutdown.child_token();
+    let sweeper = tokio::spawn(retention::sweep(
+        state.db.clone(),
+        config.hourly_retention_days,
+        internal.clone(),
+    ));
+
     // ConnectInfo is what lets a node's source address reach the node list
     // when no reverse proxy is in front to set X-Forwarded-For.
     let serve = axum::serve(
@@ -88,10 +99,14 @@ pub async fn run(config: DashConfig, shutdown: CancellationToken) -> Result<(), 
         app.into_make_service_with_connect_info::<SocketAddr>(),
     );
 
-    serve
+    let served = serve
         .with_graceful_shutdown(async move { shutdown.cancelled().await })
-        .await?;
+        .await;
+
+    internal.cancel();
+    let _ = sweeper.await;
 
     state.db.close().await?;
+    served?;
     Ok(())
 }

@@ -76,6 +76,25 @@ pub struct AuthMetadata {
     pub expires_at: u64,
     /// Whether the account is active.
     pub enabled: bool,
+    /// Allowances on individual nodes, for the nodes that have one.
+    ///
+    /// Usually empty. Appended after `enabled`, which per the module note
+    /// makes this a breaking change: roll the worker out before the nodes.
+    pub node_quotas: Vec<NodeQuota>,
+}
+
+/// One node's allowance for a user, over a window the worker chooses.
+///
+/// Relay hops cannot enforce their own: a hop never learns whose traffic it
+/// carries, so the exit checks the hops a connection crossed on their behalf.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NodeQuota {
+    /// The node the allowance is for, named as the relay chain names it.
+    pub node_id: String,
+    /// Bytes allowed in the window, `0` for unlimited.
+    pub limit: u64,
+    /// Bytes spent in the window when this answer was built.
+    pub used: u64,
 }
 
 /// Error response, mirroring [`crate::AuthError`]'s public variants.

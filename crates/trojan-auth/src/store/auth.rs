@@ -202,6 +202,7 @@ impl<S: UserStore> StoreAuth<S> {
             traffic_used: u64::try_from(record.traffic_used).unwrap_or(0),
             expires_at: u64::try_from(record.expires_at).unwrap_or(0),
             enabled: record.enabled,
+            node_quotas: record.node_quotas.clone(),
         };
 
         AuthResult {
@@ -249,6 +250,7 @@ impl<S: UserStore + 'static> StoreAuth<S> {
                         traffic_used: record.traffic_used,
                         expires_at: record.expires_at,
                         enabled: record.enabled,
+                        node_quotas: record.node_quotas.clone(),
                         cached_at: Instant::now(),
                     };
                     cache.insert(hash.clone(), cached_user);
@@ -351,6 +353,7 @@ impl<S: UserStore + 'static> AuthBackend for StoreAuth<S> {
                 traffic_used: record.traffic_used,
                 expires_at: record.expires_at,
                 enabled: record.enabled,
+                node_quotas: record.node_quotas.clone(),
                 cached_at: Instant::now(),
             };
             cache.insert(hash.to_string(), cached_user);
@@ -420,6 +423,7 @@ mod tests {
     #[test]
     fn negative_counters_clamp_to_the_zero_sentinel() {
         let record = UserRecord {
+            node_quotas: Vec::new(),
             user_id: Some("u1".to_owned()),
             traffic_limit: -1,
             traffic_used: -1,
@@ -439,6 +443,7 @@ mod tests {
     #[test]
     fn non_negative_counters_pass_through() {
         let record = UserRecord {
+            node_quotas: Vec::new(),
             user_id: Some("u1".to_owned()),
             traffic_limit: 1024,
             traffic_used: 512,

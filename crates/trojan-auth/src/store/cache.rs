@@ -39,6 +39,8 @@ pub struct CachedUser {
     pub expires_at: i64,
     /// Whether the user is enabled.
     pub enabled: bool,
+    /// Per-node allowances the panel published for this user.
+    pub node_quotas: Vec<crate::result::NodeQuota>,
     /// When this cache entry was created.
     pub cached_at: Instant,
 }
@@ -374,6 +376,7 @@ mod tests {
 
     fn make_user(user_id: &str, traffic_limit: i64, traffic_used: i64) -> CachedUser {
         CachedUser {
+            node_quotas: Vec::new(),
             user_id: Some(user_id.to_string()),
             traffic_limit,
             traffic_used,
@@ -430,6 +433,7 @@ mod tests {
     fn test_cache_stats() {
         let cache = make_cache();
         let user = CachedUser {
+            node_quotas: Vec::new(),
             user_id: None,
             traffic_limit: 0,
             traffic_used: 0,

@@ -123,11 +123,11 @@ async fn reported_traffic_lands_on_the_user_and_the_node() {
         "serving a node call should stamp last_seen"
     );
 
-    let daily = dash.admin_get("/admin/traffic/daily?days=7").await;
-    let daily = daily.as_array().unwrap();
-    assert_eq!(daily.len(), 1, "one node, one day: {daily:?}");
-    assert_eq!(daily[0]["bytes"].as_u64(), Some(5120));
-    assert_eq!(daily[0]["node_name"].as_str(), Some("node-a"));
+    let series = dash.admin_get("/admin/traffic/series?range=7d").await;
+    let points = series["points"].as_array().unwrap();
+    assert_eq!(points.len(), 1, "one node, one day: {points:?}");
+    assert_eq!(points[0]["bytes"].as_u64(), Some(5120));
+    assert_eq!(points[0]["label"].as_str(), Some("node-a"));
 }
 
 #[tokio::test]
@@ -187,14 +187,14 @@ async fn chain_traffic_credits_each_hop_without_double_billing_the_user() {
         "the chain must not multiply what the user is charged"
     );
 
-    let daily = dash.admin_get("/admin/traffic/daily?days=7").await;
-    let mut by_node: Vec<(String, u64)> = daily
+    let series = dash.admin_get("/admin/traffic/series?range=7d").await;
+    let mut by_node: Vec<(String, u64)> = series["points"]
         .as_array()
         .unwrap()
         .iter()
         .map(|row| {
             (
-                row["node_name"].as_str().unwrap().to_owned(),
+                row["label"].as_str().unwrap().to_owned(),
                 row["bytes"].as_u64().unwrap(),
             )
         })
@@ -235,4 +235,85 @@ async fn chain_traffic_for_an_unknown_hop_is_refused() {
         logs.as_array().unwrap().is_empty(),
         "an unknown hop must not produce a row: {logs:?}"
     );
+}
+
+/// An allowance on one node travels to the exit with the verify answer, and
+/// carries what the month has already spent — the exit enforces it, because a
+/// relay hop cannot: it never learns whose traffic it is carrying.
+#[tokio::test]
+async fn a_node_allowance_reaches_the_exit_with_the_months_spend() {
+    let dash = Dash::start().await;
+    let exit_token = dash.add_node("exit").await;
+    let entry_id = dash.add_node_id("entry").await;
+    let (user_id, password) = dash.add_user("gina").await;
+
+    dash.admin_put(
+        &format!("/admin/users/{user_id}/limits/{entry_id}"),
+        serde_json::json!({ "monthly_bytes": 4096 }),
+    )
+    .await;
+
+    // Spend part of it before the first verify, so the answer cannot come
+    // from a cache that predates the traffic.
+    let auth = dash.node_auth(&exit_token);
+    auth.record_chain_traffic(&user_id.to_string(), 1024, &[entry_id.to_string()])
+        .await
+        .unwrap();
+    auth.shutdown().await;
+
+    let auth = dash.node_auth(&exit_token);
+    let result = auth.verify(&sha224_hex(&password)).await.unwrap();
+    let quotas = result.metadata.expect("metadata").node_quotas;
+
+    assert_eq!(quotas.len(), 1, "only capped nodes appear: {quotas:?}");
+    assert_eq!(quotas[0].node_id, entry_id.to_string());
+    assert_eq!(quotas[0].limit, 4096);
+    assert_eq!(quotas[0].used, 1024);
+}
+
+/// An uncapped user carries no allowances at all — the common case must not
+/// pay for the feature.
+#[tokio::test]
+async fn a_user_with_no_caps_carries_no_allowances() {
+    let dash = Dash::start().await;
+    let exit_token = dash.add_node("exit").await;
+    let (_user_id, password) = dash.add_user("hank").await;
+
+    let auth = dash.node_auth(&exit_token);
+    let result = auth.verify(&sha224_hex(&password)).await.unwrap();
+
+    assert!(result.metadata.expect("metadata").node_quotas.is_empty());
+}
+
+/// Raising a cap has to reach the nodes, so the write settles the verify cache
+/// the way every other write on a user does.
+#[tokio::test]
+async fn changing_a_cap_invalidates_the_cached_answer() {
+    let dash = Dash::start().await;
+    let exit_token = dash.add_node("exit").await;
+    let entry_id = dash.add_node_id("entry").await;
+    let (user_id, password) = dash.add_user("iris").await;
+
+    let auth = dash.node_auth(&exit_token);
+    auth.verify(&sha224_hex(&password)).await.unwrap();
+
+    dash.admin_put(
+        &format!("/admin/users/{user_id}/limits/{entry_id}"),
+        serde_json::json!({ "monthly_bytes": 8192 }),
+    )
+    .await;
+
+    let result = auth.verify(&sha224_hex(&password)).await.unwrap();
+    let quotas = result.metadata.expect("metadata").node_quotas;
+    assert_eq!(
+        quotas.len(),
+        1,
+        "the cached answer should have been dropped"
+    );
+    assert_eq!(quotas[0].limit, 8192);
+
+    let listed = dash
+        .admin_get(&format!("/admin/users/{user_id}/limits"))
+        .await;
+    assert_eq!(listed[0]["monthly_bytes"].as_u64(), Some(8192));
 }

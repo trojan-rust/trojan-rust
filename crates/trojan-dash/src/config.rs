@@ -52,6 +52,14 @@ pub struct DashConfig {
     #[serde(default = "default_sub_cache_ttl")]
     pub sub_cache_ttl: u64,
 
+    /// How many days of hour-resolution traffic to keep.
+    ///
+    /// The hourly rollup exists for the short chart ranges and costs 24 rows a
+    /// day per user per node; the daily table keeps history regardless. 0
+    /// disables pruning.
+    #[serde(default = "default_hourly_retention_days")]
+    pub hourly_retention_days: u32,
+
     /// Log level override (e.g. "info", "debug").
     #[serde(default)]
     pub log_level: Option<String>,
@@ -75,6 +83,12 @@ fn default_verify_cache_ttl() -> u64 {
 
 fn default_sub_cache_ttl() -> u64 {
     3600
+}
+
+/// Twice the longest hour-resolution range, so a chart never runs into the
+/// prune and the window can be widened without a config change.
+fn default_hourly_retention_days() -> u32 {
+    14
 }
 
 impl DashConfig {

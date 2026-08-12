@@ -10,6 +10,8 @@ use sea_orm_migration::prelude::*;
 
 mod m_001_init;
 mod m_002_agent_columns;
+mod m_003_hourly_traffic;
+mod m_004_user_node_limits;
 
 pub struct Migrator;
 
@@ -19,6 +21,8 @@ impl MigratorTrait for Migrator {
         vec![
             Box::new(m_001_init::Migration),
             Box::new(m_002_agent_columns::Migration),
+            Box::new(m_003_hourly_traffic::Migration),
+            Box::new(m_004_user_node_limits::Migration),
         ]
     }
 }

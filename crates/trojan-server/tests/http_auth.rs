@@ -185,7 +185,10 @@ impl MockAuthWorker {
         let payload = if path.ends_with("/verify") {
             calls.verify.fetch_add(1, Ordering::SeqCst);
             if body.contains(good_hash) {
-                r#"{"Ok":{"user_id":"alice","metadata":{"traffic_limit":0,"traffic_used":0,"expires_at":0,"enabled":true}}}"#
+                // `node_quotas` is required, not defaulted: the wire format
+                // is positional under bincode, so a worker that omits a field
+                // is a worker the node cannot decode at all.
+                r#"{"Ok":{"user_id":"alice","metadata":{"traffic_limit":0,"traffic_used":0,"expires_at":0,"enabled":true,"node_quotas":[]}}}"#
                     .to_string()
             } else {
                 r#"{"Err":"NotFound"}"#.to_string()

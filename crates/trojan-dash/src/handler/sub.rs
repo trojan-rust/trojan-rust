@@ -13,7 +13,7 @@ use crate::entity::{sub_templates, users};
 use crate::error::DashError;
 use crate::state::AppState;
 use crate::types::{CacheData, SubQuery};
-use crate::util::{now_secs, parse_duration_secs, percent_encode_rfc5987};
+use crate::util::{basic_auth, now_secs, parse_duration_secs, percent_encode_rfc5987};
 
 /// `GET /sub/{name}?pwd=`
 pub async fn sub(
@@ -57,6 +57,8 @@ pub async fn sub(
         .content
         .replace("{{ pwd }}", &pwd)
         .replace("{{ name }}", &name)
+        .replace("{{ username }}", &user.username)
+        .replace("{{ basic_auth }}", &basic_auth(&user.username, &pwd))
         .replace("{{ update_interval_seconds }}", &interval_secs.to_string())
         .replace("{{ update_interval_hours }}", &interval_hours.to_string());
 
