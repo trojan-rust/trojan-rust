@@ -16,11 +16,11 @@ readme = "README.md"
 trojan-core.workspace = true
 trojan-dns.workspace = true
 # Only for `GeoipConfig`; the engine, GeoIP loader and HTTP providers stay out.
-trojan-rules = { version = "0.11.0", path = "../trojan-rules", default-features = false }
+trojan-rules = { version = "0.12.0", path = "../trojan-rules", default-features = false }
 # Only for `DdnsConfig`; the Cloudflare updater stays out.
-trojan-ddns = { version = "0.11.0", path = "../trojan-ddns", default-features = false }
+trojan-ddns = { version = "0.12.0", path = "../trojan-ddns", default-features = false }
 # Only for `AnalyticsConfig`; the collector and ClickHouse writer stay out.
-trojan-analytics = { version = "0.11.0", path = "../trojan-analytics", default-features = false }
+trojan-analytics = { version = "0.12.0", path = "../trojan-analytics", default-features = false }
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
