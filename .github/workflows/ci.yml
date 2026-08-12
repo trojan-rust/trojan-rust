@@ -49,6 +49,10 @@ jobs:
     name: Test
     runs-on: ${{ matrix.os }}
     strategy:
+      # One platform failing says nothing about the others, and cancelling them
+      # hides whether a failure is platform-specific — which is the first thing
+      # worth knowing about it.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
@@ -74,7 +78,10 @@ jobs:
       # also what users actually run, and matches the dev shell's trojan-go.
       - name: Install reference clients
         run: |
-          curl -fsSL -o /tmp/trojan-go.zip \
+          # A release download that dies mid-transfer (curl 56) is the whole
+          # job lost to something no change here caused.
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 \
+            -o /tmp/trojan-go.zip \
             https://github.com/p4gefau1t/trojan-go/releases/latest/download/trojan-go-linux-amd64.zip
           sudo unzip -o -q /tmp/trojan-go.zip trojan-go -d /usr/local/bin
           sudo chmod +x /usr/local/bin/trojan-go
