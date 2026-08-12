@@ -94,12 +94,18 @@ impl DashConfig {
     /// Connection URL, accepting a bare path for convenience.
     ///
     /// Without `mode=rwc` sqlite refuses to create a missing database.
+    ///
+    /// A path becomes the URL's *path*, never its authority: `sqlite://C:\dir`
+    /// parses with the drive letter as a host, and the database opens without
+    /// one. Spelling out the empty authority and normalising separators keeps
+    /// Windows and unix paths the same shape.
     pub fn database_url(&self) -> String {
         if self.database_url.starts_with("sqlite:") {
-            self.database_url.clone()
-        } else {
-            format!("sqlite://{}?mode=rwc", self.database_url)
+            return self.database_url.clone();
         }
+
+        let path = self.database_url.replace('\\', "/");
+        format!("sqlite:///{}?mode=rwc", path.trim_start_matches('/'))
     }
 
     pub fn verify_cache_ttl(&self) -> Duration {
@@ -108,5 +114,48 @@ impl DashConfig {
 
     pub fn sub_cache_ttl(&self) -> Duration {
         Duration::from_secs(self.sub_cache_ttl)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_database(database: &str) -> DashConfig {
+        toml::from_str(&format!(
+            "database_url = {}\nadmin_token = \"t\"",
+            toml::Value::from(database)
+        ))
+        .expect("a backslashed path must not be read as a unicode escape")
+    }
+
+    /// A path becomes the URL's path, whatever separators it arrived with.
+    ///
+    /// `sqlite://C:\dir\dash.db` parses with `C` as the host, so the database
+    /// opens without its drive letter. Asserting on the string means a
+    /// regression fails everywhere, not only on the platform that has drives.
+    #[test]
+    fn a_windows_path_keeps_its_drive_letter() {
+        assert_eq!(
+            with_database(r"C:\ProgramData\trojan\dash.db").database_url(),
+            "sqlite:///C:/ProgramData/trojan/dash.db?mode=rwc"
+        );
+    }
+
+    #[test]
+    fn a_unix_path_keeps_one_leading_slash() {
+        assert_eq!(
+            with_database("/var/lib/trojan-dash/dash.db").database_url(),
+            "sqlite:///var/lib/trojan-dash/dash.db?mode=rwc"
+        );
+    }
+
+    /// Anything already spelled as a URL is the operator's business.
+    #[test]
+    fn an_explicit_url_is_left_alone() {
+        assert_eq!(
+            with_database("sqlite://memory:?cache=shared").database_url(),
+            "sqlite://memory:?cache=shared"
+        );
     }
 }

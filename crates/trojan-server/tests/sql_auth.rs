@@ -106,8 +106,23 @@ struct SeedUser {
 ///
 /// A file-backed database rather than `:memory:`, because sqlx hands out a
 /// pool and an in-memory database is private to a single connection.
+/// Build the connection URL for a sqlite file.
+///
+/// `SqlAuth` connects through sqlx's `any` driver, which parses the string as
+/// a strict URL. `sqlite://C:\dir\auth.db` therefore reads the drive letter as
+/// a *host* and loses it from the path, and the open fails with "unable to
+/// open database file" — on Windows only, since a unix path starts with the
+/// slash that makes `sqlite://` an empty authority by accident.
+///
+/// The empty authority is spelled out instead, and separators normalised, so
+/// both platforms take the same shape.
+fn sqlite_url(db_path: &std::path::Path) -> String {
+    let path = db_path.display().to_string().replace('\\', "/");
+    format!("sqlite:///{}?mode=rwc", path.trim_start_matches('/'))
+}
+
 async fn seeded_sql_auth(db_path: &std::path::Path, users: &[SeedUser]) -> SqlAuth {
-    let url = format!("sqlite://{}?mode=rwc", db_path.display());
+    let url = sqlite_url(db_path);
     let auth = SqlAuth::connect(
         SqlAuthConfig::new(&url)
             .max_connections(4)
@@ -303,6 +318,28 @@ impl Drop for TestServer {
     }
 }
 
+/// A Windows path must keep its drive letter in the connection URL.
+///
+/// `sqlite://C:\dir\auth.db` parses with `C` as the *host*, leaving a path
+/// with no drive — every sql_auth test failed on Windows with "unable to open
+/// database file" while passing everywhere else. Asserting on the string means
+/// a regression fails on every platform, not only the one nobody runs locally.
+#[test]
+fn sqlite_url_keeps_a_windows_drive_letter() {
+    let url = sqlite_url(std::path::Path::new(r"C:\Users\RUNNER~1\Temp\.tmp\auth.db"));
+    assert_eq!(
+        url,
+        "sqlite:///C:/Users/RUNNER~1/Temp/.tmp/auth.db?mode=rwc"
+    );
+
+    // A unix path must come out with the same single leading slash it went in
+    // with, not two.
+    assert_eq!(
+        sqlite_url(std::path::Path::new("/tmp/dir/auth.db")),
+        "sqlite:///tmp/dir/auth.db?mode=rwc"
+    );
+}
+
 /// The database decides who gets through.
 ///
 /// One valid user and four that must each be refused for a different reason.
@@ -387,12 +424,9 @@ async fn sql_auth_persists_traffic() {
     // A second `SqlAuth` over the same file gives a pool with the Any drivers
     // already installed.
     let db = server._temp_dir.path().join("auth.db");
-    let verifier = SqlAuth::connect(SqlAuthConfig::new(format!(
-        "sqlite://{}?mode=rwc",
-        db.display()
-    )))
-    .await
-    .expect("reopen sqlite");
+    let verifier = SqlAuth::connect(SqlAuthConfig::new(sqlite_url(&db)))
+        .await
+        .expect("reopen sqlite");
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
