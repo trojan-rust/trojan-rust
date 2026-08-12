@@ -1760,6 +1760,44 @@ fn connect_header(hash: &str, target: SocketAddr) -> BytesMut {
     header
 }
 
+/// A TCP server that reads until EOF and only then replies.
+///
+/// Makes half-close observable: the reply can only arrive if the relay both
+/// propagated the client's FIN to the target *and* kept the target→client
+/// direction open afterwards.
+struct MockDrainThenReplyServer {
+    addr: SocketAddr,
+    _handle: thread::JoinHandle<()>,
+}
+
+impl MockDrainThenReplyServer {
+    fn start(reply: &'static [u8]) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                thread::spawn(move || {
+                    // Drain to EOF: this only returns once the client's
+                    // half-close has been relayed through as a FIN.
+                    let mut sink = Vec::new();
+                    if stream.read_to_end(&mut sink).is_err() {
+                        return;
+                    }
+                    let _ = stream.write_all(reply);
+                    let _ = stream.flush();
+                    let _ = stream.shutdown(std::net::Shutdown::Write);
+                });
+            }
+        });
+
+        Self {
+            addr,
+            _handle: handle,
+        }
+    }
+}
+
 /// Index of the first differing byte, for asserting on large buffers without
 /// dumping megabytes into the failure output.
 fn first_difference(a: &[u8], b: &[u8]) -> Option<usize> {
@@ -1928,6 +1966,542 @@ async fn test_tls_session_resumption() {
         Some(rustls::HandshakeKind::Resumed),
         "second handshake should resume; the server is not offering resumable sessions"
     );
+}
+
+/// A client half-close must reach the target, and the return path must stay
+/// open afterwards.
+///
+/// This is the shape of the 0.8 "stalling under back-pressure" bug: treating
+/// either side's EOF as end-of-session drops data the target had not sent yet.
+/// The relay drives each direction as an independent state machine precisely
+/// so this works.
+#[tokio::test]
+async fn test_half_close_still_delivers_target_reply() {
+    const REPLY: &[u8] = b"reply-after-eof";
+
+    let target = MockDrainThenReplyServer::start(REPLY);
+    let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+    let server = TestServer::start(fallback.addr).await;
+
+    let tcp_stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+    let server_name = ServerName::try_from("localhost").unwrap();
+    let mut tls_stream = server
+        .tls_connector
+        .connect(server_name, tcp_stream)
+        .await
+        .unwrap();
+
+    let mut header = connect_header(&server.hash(), target.addr);
+    header.extend_from_slice(b"request-body");
+    tls_stream.write_all(&header).await.unwrap();
+    tls_stream.flush().await.unwrap();
+
+    // Close only our write side. The target is blocked on read-to-EOF, so it
+    // cannot reply until this FIN reaches it.
+    tls_stream.shutdown().await.unwrap();
+
+    let mut reply = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), tls_stream.read_to_end(&mut reply))
+        .await
+        .expect("timed out — half-close was not relayed, or the return path was torn down")
+        .unwrap();
+
+    assert_eq!(reply, REPLY);
+}
+
+/// Read `count` trojan-framed UDP payloads, tolerating any split across reads.
+async fn read_udp_payloads(
+    tls: &mut tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
+    count: usize,
+) -> Vec<Vec<u8>> {
+    use bytes::Buf;
+    use trojan_proto::{ParseResult, parse_udp_packet};
+
+    let mut acc = BytesMut::new();
+    let mut out = Vec::new();
+    let mut chunk = vec![0u8; 4096];
+
+    while out.len() < count {
+        let n = tokio::time::timeout(Duration::from_secs(10), tls.read(&mut chunk))
+            .await
+            .expect("timed out waiting for UDP responses")
+            .unwrap();
+        assert_ne!(
+            n,
+            0,
+            "stream closed after {} of {count} responses",
+            out.len()
+        );
+        acc.extend_from_slice(&chunk[..n]);
+
+        loop {
+            match parse_udp_packet(&acc) {
+                ParseResult::Complete(pkt) => {
+                    let payload = pkt.payload.to_vec();
+                    let consumed = pkt.packet_len;
+                    out.push(payload);
+                    acc.advance(consumed);
+                }
+                ParseResult::Incomplete(_) => break,
+                ParseResult::Invalid(err) => panic!("server sent an invalid UDP frame: {err:?}"),
+            }
+        }
+    }
+    out
+}
+
+/// UDP framing must survive packets split across reads and packets coalesced
+/// into one read.
+///
+/// The UDP path re-parses a growing buffer and advances past each complete
+/// packet, which is the same framing problem behind the 0.9 over-read bug: get
+/// the boundary wrong and the stream desyncs into garbage rather than failing
+/// loudly.
+#[tokio::test]
+async fn test_udp_packets_split_and_coalesced() {
+    let udp_echo = MockUdpEchoServer::start();
+    let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+    let server = TestServer::start(fallback.addr).await;
+
+    let tcp_stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+    let server_name = ServerName::try_from("localhost").unwrap();
+    let mut tls_stream = server
+        .tls_connector
+        .connect(server_name, tcp_stream)
+        .await
+        .unwrap();
+
+    let ip = match udp_echo.addr.ip() {
+        std::net::IpAddr::V4(v4) => v4,
+        other => panic!("expected IPv4 echo server, got {other}"),
+    };
+    let target = AddressRef {
+        host: HostRef::Ipv4(ip.octets()),
+        port: udp_echo.addr.port(),
+    };
+
+    let mut header = BytesMut::new();
+    write_request_header(
+        &mut header,
+        server.hash().as_bytes(),
+        CMD_UDP_ASSOCIATE,
+        &target,
+    )
+    .unwrap();
+    tls_stream.write_all(&header).await.unwrap();
+    tls_stream.flush().await.unwrap();
+
+    let frame = |payload: &[u8]| {
+        let mut buf = BytesMut::new();
+        write_udp_packet(&mut buf, &target, payload).unwrap();
+        buf
+    };
+
+    // First packet: dribbled out 3 bytes per TLS record, so the server parses
+    // an incomplete frame several times before it completes.
+    let split = frame(b"split-packet");
+    for piece in split.chunks(3) {
+        tls_stream.write_all(piece).await.unwrap();
+        tls_stream.flush().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+
+    // Then a burst concatenated into a single write. Individually they are
+    // tiny, so many complete frames land in one read and the server has to
+    // drain them all before awaiting more — enough of them that a server
+    // handling one frame per read would stall instead of finishing.
+    const BURST: usize = 16;
+    let mut coalesced = BytesMut::new();
+    for i in 0..BURST {
+        coalesced.extend_from_slice(&frame(format!("burst-{i:02}").as_bytes()));
+    }
+    tls_stream.write_all(&coalesced).await.unwrap();
+    tls_stream.flush().await.unwrap();
+
+    // UDP has no ordering guarantee, so compare as a set.
+    let received: std::collections::BTreeSet<Vec<u8>> =
+        read_udp_payloads(&mut tls_stream, BURST + 1)
+            .await
+            .into_iter()
+            .collect();
+
+    let mut expected: std::collections::BTreeSet<Vec<u8>> =
+        [b"ECHO:split-packet".to_vec()].into_iter().collect();
+    for i in 0..BURST {
+        expected.insert(format!("ECHO:burst-{i:02}").into_bytes());
+    }
+
+    assert_eq!(received, expected);
+}
+
+/// Concurrent connections must not interfere with each other.
+///
+/// Per-connection state was reshaped when relay metrics moved to per-session
+/// handles; distinct payloads per connection would surface any cross-talk, and
+/// a shared bottleneck would surface as a timeout.
+#[tokio::test]
+async fn test_concurrent_connections_stay_independent() {
+    const CONNECTIONS: usize = 32;
+
+    let echo_server = MockEchoServer::start();
+    let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+    let server = TestServer::start(fallback.addr).await;
+    let server_name = ServerName::try_from("localhost").unwrap();
+    let hash = server.hash();
+
+    let mut tasks = Vec::with_capacity(CONNECTIONS);
+    for i in 0..CONNECTIONS {
+        let connector = server.tls_connector.clone();
+        let server_name = server_name.clone();
+        let header = connect_header(&hash, echo_server.addr);
+        let addr = server.addr;
+
+        tasks.push(tokio::spawn(async move {
+            // Distinct per connection, and long enough to span several reads.
+            let payload = format!("connection-{i:04}-").repeat(512).into_bytes();
+
+            let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let tls = connector.connect(server_name, tcp).await.unwrap();
+            let (mut reader, mut writer) = tokio::io::split(tls);
+
+            let to_send = payload.clone();
+            let write_task = tokio::spawn(async move {
+                writer.write_all(&header).await.unwrap();
+                writer.write_all(&to_send).await.unwrap();
+                writer.flush().await.unwrap();
+            });
+
+            let mut echoed = vec![0u8; payload.len()];
+            reader.read_exact(&mut echoed).await.unwrap();
+            write_task.await.unwrap();
+
+            assert_eq!(
+                first_difference(&echoed, &payload),
+                None,
+                "connection {i} received another connection's bytes"
+            );
+        }));
+    }
+
+    for (i, task) in tasks.into_iter().enumerate() {
+        tokio::time::timeout(Duration::from_secs(60), task)
+            .await
+            .unwrap_or_else(|_| panic!("connection {i} timed out"))
+            .unwrap_or_else(|e| panic!("connection {i} failed: {e}"));
+    }
+}
+
+// ============================================================================
+// Multi-Worker (SO_REUSEPORT) Tests
+// ============================================================================
+//
+// `server.tcp.reuse_port` is how this server scales past a single process:
+// several processes bind the same port and the kernel hands each of them
+// connections. Nothing exercised that shape, and it interacts with TLS
+// session resumption — ticket keys are generated per process, so a resuming
+// client can land on a worker that cannot decrypt its ticket.
+
+mod multi_worker_tests {
+    use super::*;
+    use trojan_server::{CancellationToken, run_with_shutdown};
+
+    const PASSWORD: &str = "test_password_123";
+
+    /// A self-signed certificate shared by every worker.
+    ///
+    /// Workers behind one port have to be interchangeable to the client, which
+    /// means presenting the same certificate — in production they read the same
+    /// cert files, which is what this models.
+    struct SharedPki {
+        cert_path: std::path::PathBuf,
+        key_path: std::path::PathBuf,
+        cert_der: Vec<u8>,
+        _temp_dir: tempfile::TempDir,
+    }
+
+    impl SharedPki {
+        fn generate() -> Self {
+            let (cert_pem, key_pem) = generate_test_certs();
+            let temp_dir = tempfile::Builder::new()
+                .prefix("trojan-multiworker-")
+                .tempdir()
+                .unwrap();
+            let cert_path = temp_dir.path().join("cert.pem");
+            let key_path = temp_dir.path().join("key.pem");
+            fs::write(&cert_path, &cert_pem).unwrap();
+            fs::write(&key_path, &key_pem).unwrap();
+
+            let cert_der = rustls_pemfile::certs(&mut cert_pem.as_bytes())
+                .next()
+                .unwrap()
+                .unwrap()
+                .to_vec();
+
+            Self {
+                cert_path,
+                key_path,
+                cert_der,
+                _temp_dir: temp_dir,
+            }
+        }
+
+        /// A connector with its own session cache. Clone the result to share
+        /// resumption state across connections; call again for a fresh client.
+        fn connector(&self) -> TlsConnector {
+            let mut root_store = RootCertStore::empty();
+            root_store
+                .add(CertificateDer::from(self.cert_der.clone()))
+                .unwrap();
+            TlsConnector::from(Arc::new(
+                ClientConfig::builder()
+                    .with_root_certificates(root_store)
+                    .with_no_client_auth(),
+            ))
+        }
+    }
+
+    /// One server process, as spawned in a multi-worker deployment.
+    struct Worker {
+        shutdown: CancellationToken,
+        _handle: tokio::task::JoinHandle<()>,
+    }
+
+    impl Worker {
+        async fn spawn(
+            pki: &SharedPki,
+            listen: SocketAddr,
+            fallback_addr: SocketAddr,
+            reuse_port: bool,
+        ) -> Self {
+            let config = Config {
+                server: ServerConfig {
+                    listen: listen.to_string(),
+                    fallback: fallback_addr.to_string(),
+                    tcp_idle_timeout_secs: 30,
+                    udp_timeout_secs: 30,
+                    max_udp_payload: 8192,
+                    max_udp_buffer_bytes: 65536,
+                    max_header_bytes: 8192,
+                    max_connections: None,
+                    rate_limit: None,
+                    fallback_pool: None,
+                    resource_limits: None,
+                    tcp: TcpConfig {
+                        reuse_port,
+                        ..Default::default()
+                    },
+                    outbounds: Default::default(),
+                    rule_providers: Default::default(),
+                    rules: Default::default(),
+                    geoip: None,
+                },
+                tls: TlsConfig {
+                    cert: pki.cert_path.to_string_lossy().into_owned(),
+                    key: pki.key_path.to_string_lossy().into_owned(),
+                    alpn: vec![],
+                    min_version: "tls12".to_string(),
+                    max_version: "tls13".to_string(),
+                    client_ca: None,
+                    cipher_suites: vec![],
+                },
+                auth: AuthConfig {
+                    passwords: vec![PASSWORD.to_string()],
+                    users: vec![],
+                    ..Default::default()
+                },
+                websocket: WebSocketConfig::default(),
+                metrics: MetricsConfig {
+                    listen: None,
+                    ..Default::default()
+                },
+                analytics: AnalyticsConfig::default(),
+                logging: LoggingConfig {
+                    level: Some("warn".to_string()),
+                    ..Default::default()
+                },
+                dns: Default::default(),
+                ddns: Default::default(),
+            };
+
+            let auth = MemoryAuth::from_passwords(&config.auth.passwords);
+            let shutdown = CancellationToken::new();
+            let token = shutdown.clone();
+            let handle = tokio::spawn(async move {
+                let _ = run_with_shutdown(config, auth, token).await;
+            });
+
+            Self {
+                shutdown,
+                _handle: handle,
+            }
+        }
+    }
+
+    impl Drop for Worker {
+        fn drop(&mut self) {
+            self.shutdown.cancel();
+        }
+    }
+
+    /// Reserve an address by binding and immediately releasing it.
+    async fn free_addr() -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        addr
+    }
+
+    /// Connect, relay one payload through, and report how the handshake went.
+    ///
+    /// The round trip matters: TLS 1.3 sends its NewSessionTicket *after* the
+    /// handshake, so the client only banks a ticket once it has read.
+    async fn handshake_kind_after_round_trip(
+        connector: &TlsConnector,
+        server_name: &ServerName<'static>,
+        addr: SocketAddr,
+        header: &BytesMut,
+    ) -> Option<rustls::HandshakeKind> {
+        let payload = b"ticket-probe";
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut tls = connector.connect(server_name.clone(), tcp).await.unwrap();
+        let kind = tls.get_ref().1.handshake_kind();
+
+        tls.write_all(header).await.unwrap();
+        tls.write_all(payload).await.unwrap();
+        tls.flush().await.unwrap();
+
+        let mut echoed = vec![0u8; payload.len()];
+        tokio::time::timeout(Duration::from_secs(10), tls.read_exact(&mut echoed))
+            .await
+            .expect("echo timeout")
+            .unwrap();
+        assert_eq!(&echoed[..], payload);
+        kind
+    }
+
+    /// Two workers must be able to share one port, and every connection must be
+    /// served correctly whichever worker accepts it.
+    ///
+    /// Which worker gets a given connection is kernel policy and differs
+    /// between Linux (load-balanced across listeners) and the BSDs, so this
+    /// asserts that every connection is served — not how they are distributed.
+    #[tokio::test]
+    async fn test_reuse_port_workers_share_one_port() {
+        let pki = SharedPki::generate();
+        let listen = free_addr().await;
+
+        // Distinct fallback bodies make the serving worker observable: a
+        // non-trojan request is proxied to whichever fallback that worker owns.
+        let fallback_a = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nworker-A");
+        let fallback_b = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nworker-B");
+
+        let _worker_a = Worker::spawn(&pki, listen, fallback_a.addr, true).await;
+        let _worker_b = Worker::spawn(&pki, listen, fallback_b.addr, true).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let connector = pki.connector();
+        let server_name = ServerName::try_from("localhost").unwrap();
+
+        // Padded past 56 bytes so the server can reject the hash and fall back
+        // rather than waiting for more header.
+        let request =
+            b"GET /this-is-a-long-path-to-make-the-request-longer HTTP/1.1\r\nHost: localhost\r\n\r\n";
+
+        let mut seen = std::collections::BTreeSet::new();
+        for i in 0..12 {
+            let tcp = tokio::net::TcpStream::connect(listen)
+                .await
+                .unwrap_or_else(|e| panic!("connection {i} refused: {e}"));
+            let mut tls = connector
+                .connect(server_name.clone(), tcp)
+                .await
+                .unwrap_or_else(|e| panic!("connection {i} handshake failed: {e}"));
+
+            tls.write_all(request).await.unwrap();
+            tls.flush().await.unwrap();
+
+            let mut body = Vec::new();
+            tokio::time::timeout(Duration::from_secs(10), tls.read_to_end(&mut body))
+                .await
+                .expect("fallback read timeout")
+                .unwrap();
+
+            let body = String::from_utf8_lossy(&body).into_owned();
+            let worker = if body.contains("worker-A") {
+                "A"
+            } else if body.contains("worker-B") {
+                "B"
+            } else {
+                panic!("connection {i} got an unexpected fallback body: {body:?}");
+            };
+            seen.insert(worker);
+        }
+
+        assert!(!seen.is_empty(), "no connection was served");
+        eprintln!(
+            "reuse_port: {}/2 workers observed over 12 connections ({:?})",
+            seen.len(),
+            seen
+        );
+    }
+
+    /// A ticket issued by one worker does not resume on another.
+    ///
+    /// `Ticketer::new()` generates its key at process start, so every worker
+    /// has its own, and rustls keys the client session cache by server name
+    /// only. A client that reconnects therefore offers whatever ticket it holds
+    /// to whichever worker answers, and pays for a full handshake when that is
+    /// the wrong one.
+    ///
+    /// This pins the cost of `reuse_port` so it is visible rather than
+    /// folklore. It will start failing if workers ever gain a shared ticket
+    /// key — at which point the assertion, and the caveat in `load_tls_config`,
+    /// should be inverted.
+    #[tokio::test]
+    async fn test_tls_tickets_do_not_resume_across_workers() {
+        let pki = SharedPki::generate();
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+        let echo = MockEchoServer::start();
+
+        // Two workers on separate ports, each with its own TLS config — the
+        // same independence two processes behind one reuse_port socket have,
+        // without depending on the kernel to steer connections.
+        let addr_a = free_addr().await;
+        let addr_b = free_addr().await;
+        let _worker_a = Worker::spawn(&pki, addr_a, fallback.addr, false).await;
+        let _worker_b = Worker::spawn(&pki, addr_b, fallback.addr, false).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // One client config, so its session cache spans both workers: rustls
+        // keys that cache by server name, and both answer to "localhost".
+        let connector = pki.connector();
+        let server_name = ServerName::try_from("localhost").unwrap();
+        let header = connect_header(&sha224_hex(PASSWORD), echo.addr);
+
+        let first =
+            handshake_kind_after_round_trip(&connector, &server_name, addr_a, &header).await;
+        assert_eq!(
+            first,
+            Some(rustls::HandshakeKind::Full),
+            "the first handshake has nothing to resume from"
+        );
+
+        let same_worker =
+            handshake_kind_after_round_trip(&connector, &server_name, addr_a, &header).await;
+        assert_eq!(
+            same_worker,
+            Some(rustls::HandshakeKind::Resumed),
+            "a worker must resume the ticket it issued itself"
+        );
+
+        let other_worker =
+            handshake_kind_after_round_trip(&connector, &server_name, addr_b, &header).await;
+        assert_eq!(
+            other_worker,
+            Some(rustls::HandshakeKind::Full),
+            "a ticket from another worker must not resume — workers hold independent keys"
+        );
+    }
 }
 
 // ============================================================================
