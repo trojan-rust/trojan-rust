@@ -8,10 +8,10 @@
     reason = "each test binary compiles this module and uses a subset of it"
 )]
 
-use std::net::TcpListener;
 use std::time::Duration;
 
 use serde_json::Value;
+use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use trojan_auth::http::{Codec, HttpAuth, HttpAuthConfig};
 use trojan_dash::DashConfig;
@@ -56,19 +56,17 @@ impl Dash {
         let dir = tempfile::tempdir().unwrap();
         let database = dir.path().join("dash.db");
 
-        // Claim a port, then release it: the service binds it a moment later.
-        let port = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
 
         let config: DashConfig = toml::from_str(&config_toml(port, &database)).unwrap();
 
         let shutdown = CancellationToken::new();
         let token = shutdown.clone();
         tokio::spawn(async move {
-            trojan_dash::run(config, token).await.unwrap();
+            trojan_dash::run_with_listener(config, listener, token)
+                .await
+                .unwrap();
         });
 
         let dash = Self {

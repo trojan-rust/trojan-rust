@@ -61,7 +61,20 @@ pub use error::DashError;
 
 /// Run the service until `shutdown` is cancelled.
 pub async fn run(config: DashConfig, shutdown: CancellationToken) -> Result<(), DashError> {
+    let listener = TcpListener::bind(&config.listen).await?;
+    run_with_listener(config, listener, shutdown).await
+}
+
+/// Run the service on an existing listener until `shutdown` is cancelled.
+///
+/// The listener determines the bound address; `config.listen` is not used.
+pub async fn run_with_listener(
+    config: DashConfig,
+    listener: TcpListener,
+    shutdown: CancellationToken,
+) -> Result<(), DashError> {
     let admin_token = config.resolve_admin_token()?;
+    let listen = listener.local_addr()?;
 
     // Opening the database also brings its schema up to date.
     let db = db::connect(&config.database_url()).await?;
@@ -74,10 +87,9 @@ pub async fn run(config: DashConfig, shutdown: CancellationToken) -> Result<(), 
     };
 
     let app = routes::router(state.clone(), config.static_dir.as_deref());
-    let listener = TcpListener::bind(&config.listen).await?;
 
     tracing::info!(
-        listen = %config.listen,
+        %listen,
         database = %config.database_url,
         panel = ?config.static_dir,
         "trojan dash listening"

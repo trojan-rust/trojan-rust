@@ -18,6 +18,8 @@ See [`dash.example.toml`](dash.example.toml) for the settings, and
 [`contrib/trojan-dash.service`](../../contrib/trojan-dash.service) for a unit
 file.
 
+Library callers may pass a bound `tokio::net::TcpListener` to `run_with_listener(config, listener, shutdown)`. The listener determines the bound address; `config.listen` is not used. This preserves the reserved port during startup.
+
 `/admin/*` is guarded by a bearer token, read from `TROJAN_DASH_ADMIN_TOKEN` if
 set and from `admin_token` otherwise. Prefer the environment: the config file
 sits next to the panel directory a backup may copy. The unit reads it from a
