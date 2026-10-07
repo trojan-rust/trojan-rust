@@ -1,4 +1,5 @@
 target/
+results/
 out
 
 # devenv / nix
