@@ -105,12 +105,18 @@ tempfile.workspace = true
 serde_json.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 criterion = { workspace = true, features = ["async_tokio"] }
+sysinfo.workspace = true
 
 [[bench]]
 name = "server"
 harness = false
 # Most of it benchmarks `ws::inspect_mixed`, which does not exist without it.
 required-features = ["ws"]
+
+[[bench]]
+name = "network"
+path = "benches/network/main.rs"
+harness = false
 
 [lints]
 workspace = true
