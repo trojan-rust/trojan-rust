@@ -252,14 +252,16 @@ where
             return Ok(());
         }
 
+        let Some(tls) = handshake(&self.ctx.tls, introduced.stream).await else {
+            return Ok(());
+        };
+
         let conn = Connection {
             peer: introduced.peer,
             id: self.id,
             chain: introduced.chain,
-        };
-
-        let Some(tls) = handshake(&self.ctx.tls, introduced.stream).await else {
-            return Ok(());
+            auth_deadline: Instant::now()
+                + Duration::from_secs(defaults::DEFAULT_AUTH_TIMEOUT_SECS),
         };
 
         match self.kind {

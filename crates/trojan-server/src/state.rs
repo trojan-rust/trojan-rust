@@ -54,6 +54,43 @@ pub struct ServerState {
 }
 
 impl ServerState {
+    /// Match the actual destination and retain any address resolved for IP rules.
+    #[cfg(feature = "rules")]
+    pub async fn route(
+        &self,
+        address: &trojan_proto::AddressRef<'_>,
+        peer: SocketAddr,
+    ) -> Result<(trojan_rules::Action, Option<SocketAddr>), crate::error::ServerError> {
+        use trojan_proto::HostRef;
+        use trojan_rules::rule::MatchContext;
+
+        let Some(engine) = &self.rule_engine else {
+            return Ok((trojan_rules::Action::Direct, None));
+        };
+        let mut ctx = MatchContext {
+            domain: match address.host {
+                HostRef::Domain(domain) => std::str::from_utf8(domain).ok(),
+                _ => None,
+            },
+            dest_ip: match address.host {
+                HostRef::Ipv4(ip) => Some(ip.into()),
+                HostRef::Ipv6(ip) => Some(ip.into()),
+                _ => None,
+            },
+            dest_port: address.port,
+            src_ip: peer.ip(),
+        };
+        if ctx.dest_ip.is_none() && ctx.domain.is_some() && engine.has_ip_rules() {
+            if let Some(action) = engine.match_request_lazy_ip(&ctx) {
+                return Ok((action, None));
+            }
+            let resolved = crate::resolve::resolve_address(address, &self.dns_resolver).await?;
+            ctx.dest_ip = Some(resolved.ip());
+            return Ok((engine.match_request(&ctx), Some(resolved)));
+        }
+        Ok((engine.match_request(&ctx), None))
+    }
+
     /// Resolve the counter handles for one session's worth of traffic.
     ///
     /// Done once per connection rather than per flush; see [`RelayCounters`].

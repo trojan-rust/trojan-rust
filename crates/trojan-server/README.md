@@ -15,6 +15,14 @@ This crate contains the complete server runtime:
 - **TCP tuning** — TCP_NODELAY, Keep-Alive, SO_REUSEPORT, TCP Fast Open
 - **Graceful shutdown** — Connection draining on SIGTERM/SIGINT, config reload on SIGHUP (Unix)
 
+Clients must authenticate within 10 seconds after TLS completes. This deadline
+includes the WebSocket upgrade and authentication backend response. Authenticated
+connections use the configured idle timeout.
+
+UDP routing rules apply to each datagram destination. Rejected datagrams are
+dropped. UDP supports DIRECT and named direct outbounds without a bind address;
+other named outbounds are dropped because UDP forwarding through them is unsupported.
+
 ## Architecture
 
 ```text

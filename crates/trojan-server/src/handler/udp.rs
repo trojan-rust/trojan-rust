@@ -55,8 +55,76 @@ where
     // including the `?`s below — passes through the settle that follows. An
     // I/O error mid-association used to return straight out, taking the
     // traffic it had already carried with it.
+    counters.add_to_target(initial.len() as u64);
     let result = async {
         loop {
+            if tcp_buf.len() > state.max_udp_buffer_bytes {
+                warn!(peer = %peer, bytes = tcp_buf.len(), max = state.max_udp_buffer_bytes, "UDP buffer too large");
+                return Err(ServerError::Config("udp buffer too large".into()));
+            }
+            // Process all complete UDP packets in buffer
+            loop {
+                match parse_udp_packet(&tcp_buf) {
+                    ParseResult::Complete(pkt) => {
+                        if pkt.length > state.max_udp_payload {
+                            warn!(peer = %peer, size = pkt.length, max = state.max_udp_payload, "UDP payload too large");
+                            return Err(ServerError::UdpPayloadTooLarge);
+                        }
+                        #[cfg(feature = "rules")]
+                        let resolved = {
+                            let (action, resolved) = state.route(&pkt.address, peer).await?;
+                            let direct = match action {
+                                trojan_rules::Action::Direct => true,
+                                trojan_rules::Action::Reject => false,
+                                trojan_rules::Action::Outbound(name) => matches!(
+                                    state.outbounds.get(&name).map(AsRef::as_ref),
+                                    Some(crate::outbound::Outbound::Direct { bind: None })
+                                ),
+                            };
+                            if !direct {
+                                debug!(peer = %peer, target = ?pkt.address, "UDP packet rejected by route");
+                                tcp_buf.advance(pkt.packet_len);
+                                continue;
+                            }
+                            resolved
+                        };
+                        #[cfg(not(feature = "rules"))]
+                        let resolved = None;
+                        let target = match resolved {
+                            Some(target) => target,
+                            None => resolve_address(&pkt.address, &state.dns_resolver).await?,
+                        };
+
+                        // Select or create appropriate socket based on target address family
+                        let udp: &UdpSocket = match target {
+                            SocketAddr::V4(_) => {
+                                if udp_v4.is_none() {
+                                    udp_v4 = Some(UdpSocket::bind("0.0.0.0:0").await?);
+                                    debug!(peer = %peer, "bound UDP v4 socket");
+                                }
+                                // Just set above when it was absent.
+                                udp_v4.as_ref().expect("udp_v4 was just set")
+                            }
+                            SocketAddr::V6(_) => {
+                                if udp_v6.is_none() {
+                                    udp_v6 = Some(UdpSocket::bind("[::]:0").await?);
+                                    debug!(peer = %peer, "bound UDP v6 socket");
+                                }
+                                // Just set above when it was absent.
+                                udp_v6.as_ref().expect("udp_v6 was just set")
+                            }
+                        };
+
+                        udp.send_to(pkt.payload, target).await?;
+                        record_udp_packet("outbound");
+                        packets_out += 1;
+                        tcp_buf.advance(pkt.packet_len);
+                    }
+                    ParseResult::Incomplete(_) => break,
+                    ParseResult::Invalid(err) => return Err(ServerError::Proto(err)),
+                }
+            }
+
             tokio::select! {
                 res = stream.read_buf(&mut tcp_buf) => {
                     let n = res?;
@@ -64,52 +132,10 @@ where
                         debug!(peer = %peer, packets_out, packets_in, "UDP associate ended (client closed)");
                         return Ok(());
                     }
-                    if tcp_buf.len() > state.max_udp_buffer_bytes {
-                        warn!(peer = %peer, bytes = tcp_buf.len(), max = state.max_udp_buffer_bytes, "UDP buffer too large");
-                        return Err(ServerError::Config("udp buffer too large".into()));
-                    }
                     counters.add_to_target(n as u64);
                     idle_sleep.as_mut().reset(Instant::now() + state.udp_idle_timeout);
 
-                    // Process all complete UDP packets in buffer
-                    loop {
-                        match parse_udp_packet(&tcp_buf) {
-                            ParseResult::Complete(pkt) => {
-                                if pkt.length > state.max_udp_payload {
-                                    warn!(peer = %peer, size = pkt.length, max = state.max_udp_payload, "UDP payload too large");
-                                    return Err(ServerError::UdpPayloadTooLarge);
-                                }
-                                let target = resolve_address(&pkt.address, &state.dns_resolver).await?;
 
-                                // Select or create appropriate socket based on target address family
-                                let udp: &UdpSocket = match target {
-                                    SocketAddr::V4(_) => {
-                                        if udp_v4.is_none() {
-                                            udp_v4 = Some(UdpSocket::bind("0.0.0.0:0").await?);
-                                            debug!(peer = %peer, "bound UDP v4 socket");
-                                        }
-                                        // Just set above when it was absent.
-                                        udp_v4.as_ref().expect("udp_v4 was just set")
-                                    }
-                                    SocketAddr::V6(_) => {
-                                        if udp_v6.is_none() {
-                                            udp_v6 = Some(UdpSocket::bind("[::]:0").await?);
-                                            debug!(peer = %peer, "bound UDP v6 socket");
-                                        }
-                                        // Just set above when it was absent.
-                                        udp_v6.as_ref().expect("udp_v6 was just set")
-                                    }
-                                };
-
-                                udp.send_to(pkt.payload, target).await?;
-                                record_udp_packet("outbound");
-                                packets_out += 1;
-                                tcp_buf.advance(pkt.packet_len);
-                            }
-                            ParseResult::Incomplete(_) => break,
-                            ParseResult::Invalid(err) => return Err(ServerError::Proto(err)),
-                        }
-                    }
                 }
 
                 res = async {

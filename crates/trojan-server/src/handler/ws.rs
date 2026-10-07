@@ -26,7 +26,7 @@ where
     let peer = conn.peer;
     let mut buf = BytesMut::with_capacity(INITIAL_BUFFER_SIZE);
     loop {
-        let n = stream.read_buf(&mut buf).await?;
+        let n = conn.before_auth(stream.read_buf(&mut buf)).await??;
         if n == 0 {
             return Ok(());
         }
@@ -35,21 +35,27 @@ where
             WsInspect::NeedMore => {
                 if buf.len() > state.max_header_bytes {
                     warn!(peer = %peer, bytes = buf.len(), max = state.max_header_bytes, "header too large on split listener");
-                    return send_reject(stream, "request too large").await;
+                    return conn
+                        .before_auth(send_reject(stream, "request too large"))
+                        .await?;
                 }
                 continue;
             }
             WsInspect::Upgrade => {
-                let ws = accept_ws(stream, buf.freeze(), &state.websocket).await?;
+                let ws = conn
+                    .before_auth(accept_ws(stream, buf.freeze(), &state.websocket))
+                    .await??;
                 let ws = WsIo::new(ws);
                 return handle_trojan_stream(ws, BytesMut::new(), state, auth, conn).await;
             }
             WsInspect::Reject(reason) => {
-                return send_reject(stream, reason).await;
+                return conn.before_auth(send_reject(stream, reason)).await?;
             }
             WsInspect::HttpFallback | WsInspect::NotHttp => {
                 debug!(peer = %peer, "non-websocket request on split listener");
-                return send_reject(stream, "websocket required").await;
+                return conn
+                    .before_auth(send_reject(stream, "websocket required"))
+                    .await?;
             }
         }
     }

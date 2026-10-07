@@ -2,7 +2,11 @@
 
 mod fallback;
 mod tcp;
+#[cfg(test)]
+mod tests;
 mod udp;
+#[cfg(test)]
+mod udp_tests;
 #[cfg(feature = "ws")]
 mod ws;
 
@@ -42,6 +46,20 @@ pub struct Connection {
     pub id: u64,
     /// Relay hops that carried the connection, empty for a direct one.
     pub chain: ChainInfo,
+    pub auth_deadline: tokio::time::Instant,
+}
+
+impl Connection {
+    async fn before_auth<F: std::future::Future>(
+        &self,
+        future: F,
+    ) -> Result<F::Output, ServerError> {
+        tokio::time::timeout_at(self.auth_deadline, future)
+            .await
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "authentication timed out").into()
+            })
+    }
 }
 
 /// Who a connection's traffic is charged to.
@@ -200,7 +218,7 @@ where
     let peer = conn.peer;
     let mut buf = BytesMut::with_capacity(INITIAL_BUFFER_SIZE);
     loop {
-        let n = stream.read_buf(&mut buf).await?;
+        let n = conn.before_auth(stream.read_buf(&mut buf)).await??;
         if n == 0 {
             return Ok(());
         }
@@ -222,11 +240,13 @@ where
                 return handle_fallback(stream, buf.freeze(), state, peer).await;
             }
             WsInspect::Reject(reason) => {
-                send_reject(stream, reason).await?;
+                conn.before_auth(send_reject(stream, reason)).await??;
                 return Ok(());
             }
             WsInspect::Upgrade => {
-                let ws = accept_ws(stream, buf.freeze(), &state.websocket).await?;
+                let ws = conn
+                    .before_auth(accept_ws(stream, buf.freeze(), &state.websocket))
+                    .await??;
                 let ws = WsIo::new(ws);
                 return handle_trojan_stream(ws, BytesMut::new(), state, auth, conn).await;
             }
@@ -289,7 +309,7 @@ where
                     let hash = std::str::from_utf8(&folded)
                         .expect("parse_request admits only ASCII hex digits");
 
-                    let auth_result = match auth.verify(hash).await {
+                    let auth_result = match conn.before_auth(auth.verify(hash)).await? {
                         Ok(result) => result,
                         Err(err) => {
                             debug!(peer = %peer, reason = %err, "auth failed, fallback");
@@ -396,72 +416,9 @@ where
                         analytics: analytics_event,
                     };
 
-                    // Rule-based routing: match target against rules
                     #[cfg(feature = "rules")]
-                    if let Some(ref engine) = state.rule_engine {
-                        let action = {
-                            let domain = match &req.address.host {
-                                trojan_proto::HostRef::Domain(d) => std::str::from_utf8(d).ok(),
-                                _ => None,
-                            };
-                            let dest_ip = match &req.address.host {
-                                trojan_proto::HostRef::Ipv4(v4) => {
-                                    Some(std::net::IpAddr::from(*v4))
-                                }
-                                trojan_proto::HostRef::Ipv6(v6) => {
-                                    Some(std::net::IpAddr::from(*v6))
-                                }
-                                _ => None,
-                            };
-
-                            let ctx = trojan_rules::rule::MatchContext {
-                                domain,
-                                dest_ip,
-                                dest_port: req.address.port,
-                                src_ip: peer.ip(),
-                            };
-
-                            // Per Sukka's analysis: only resolve DNS for IP-based rules
-                            // when necessary to preserve rule order. Domain-only matches
-                            // before any IP rule should avoid DNS entirely.
-                            if ctx.dest_ip.is_none()
-                                && ctx.domain.is_some()
-                                && engine.has_ip_rules()
-                            {
-                                // Try lazy match first — returns Some(action) if a
-                                // domain rule matched before any IP rule, None if DNS
-                                // resolution is needed.
-                                if let Some(action) = engine.match_request_lazy_ip(&ctx) {
-                                    action
-                                } else {
-                                    // An IP-based rule appeared first; resolve and retry.
-                                    match crate::resolve::resolve_address(
-                                        &req.address,
-                                        &state.dns_resolver,
-                                    )
-                                    .await
-                                    {
-                                        Ok(resolved) => {
-                                            debug!(peer = %peer, domain = ?domain, resolved = %resolved, "DNS resolved for IP rule matching");
-                                            let ctx = trojan_rules::rule::MatchContext {
-                                                domain,
-                                                dest_ip: Some(resolved.ip()),
-                                                dest_port: req.address.port,
-                                                src_ip: peer.ip(),
-                                            };
-                                            engine.match_request(&ctx)
-                                        }
-                                        Err(e) => {
-                                            // DNS failure should not block the request — skip IP rules
-                                            debug!(peer = %peer, domain = ?domain, error = %e, "DNS resolve failed for IP rule matching, skipping IP rules");
-                                            engine.match_request(&ctx)
-                                        }
-                                    }
-                                }
-                            } else {
-                                engine.match_request(&ctx)
-                            }
-                        };
+                    if req.command == CMD_CONNECT {
+                        let (action, _) = state.route(&req.address, peer).await?;
                         match &action {
                             trojan_rules::Action::Reject => {
                                 debug!(peer = %peer, target = ?req.address, "rule: REJECT");
@@ -470,20 +427,16 @@ where
                             trojan_rules::Action::Outbound(name) => {
                                 if let Some(outbound) = state.outbounds.get(name.as_str()) {
                                     debug!(peer = %peer, target = ?req.address, outbound = %name, "rule: outbound");
-                                    if req.command == CMD_CONNECT {
-                                        record_connect_request();
-                                        let payload = &buf[req.header_len..];
-                                        return handle_connect_via_outbound(
-                                            stream,
-                                            req.address,
-                                            payload,
-                                            outbound.clone(),
-                                            session,
-                                        )
-                                        .await;
-                                    }
-                                    // UDP over outbound not supported yet; fall through to direct
-                                    debug!(peer = %peer, "outbound does not support UDP, using direct");
+                                    record_connect_request();
+                                    let payload = &buf[req.header_len..];
+                                    return handle_connect_via_outbound(
+                                        stream,
+                                        req.address,
+                                        payload,
+                                        outbound.clone(),
+                                        session,
+                                    )
+                                    .await;
                                 } else {
                                     warn!(peer = %peer, outbound = %name, "unknown outbound, using direct");
                                 }
@@ -524,7 +477,7 @@ where
             }
         }
 
-        let n = stream.read_buf(&mut buf).await?;
+        let n = conn.before_auth(stream.read_buf(&mut buf)).await??;
         if n == 0 {
             return Ok(());
         }

@@ -10,6 +10,8 @@
 pub const DEFAULT_TCP_TIMEOUT_SECS: u64 = 600;
 /// Default UDP timeout in seconds.
 pub const DEFAULT_UDP_TIMEOUT_SECS: u64 = 60;
+/// Maximum time from TLS completion to authentication, including WebSocket upgrade.
+pub const DEFAULT_AUTH_TIMEOUT_SECS: u64 = 10;
 /// Default graceful shutdown timeout in seconds.
 pub const DEFAULT_SHUTDOWN_TIMEOUT_SECS: u64 = 30;
 
