@@ -37,6 +37,9 @@ Node calls answer with an encoded `Result` under HTTP 200 — a rejected user is
 an answer, not a transport failure. `/admin/*` answers `{"error": "..."}` with
 a status: 409 when a name is taken, 401 when the token is wrong.
 
+User updates invalidate cached verification data. The next verification reloads
+the user and all node quotas.
+
 ## Subscriptions
 
 `GET /sub/{name}?pwd=` renders the template `name` for whoever the password

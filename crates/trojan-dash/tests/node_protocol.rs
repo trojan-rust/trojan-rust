@@ -317,3 +317,34 @@ async fn changing_a_cap_invalidates_the_cached_answer() {
         .await;
     assert_eq!(listed[0]["monthly_bytes"].as_u64(), Some(8192));
 }
+
+#[tokio::test]
+async fn updating_a_user_preserves_node_allowances() {
+    let dash = Dash::start().await;
+    let token = dash.add_node("exit").await;
+    let entry_id = dash.add_node_id("entry").await;
+    let (user_id, password) = dash.add_user("quota-user").await;
+    dash.admin_put(
+        &format!("/admin/users/{user_id}/limits/{entry_id}"),
+        serde_json::json!({ "monthly_bytes": 4096 }),
+    )
+    .await;
+
+    let auth = dash.node_auth(&token);
+    let hash = sha224_hex(&password);
+    let before = auth.verify(&hash).await.unwrap().metadata.unwrap();
+    assert_eq!(before.node_quotas.len(), 1);
+
+    dash.client
+        .patch(format!("{}/admin/users/{user_id}", dash.base))
+        .bearer_auth(ADMIN_TOKEN)
+        .json(&serde_json::json!({ "username": "renamed" }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+
+    let after = auth.verify(&hash).await.unwrap().metadata.unwrap();
+    assert_eq!(after.node_quotas, before.node_quotas);
+}

@@ -111,11 +111,7 @@ pub async fn update(
 
     let updated = active.update(&state.db).await.map_err(DashError::from_db)?;
 
-    state
-        .cache
-        .verify
-        .insert(updated.hash.clone(), CacheData::from(&updated))
-        .await;
+    state.cache.verify.invalidate(&updated.hash).await;
 
     Ok(Json(UserResponse::from(&updated)))
 }
