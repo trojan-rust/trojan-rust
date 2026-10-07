@@ -9,7 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::AgentConfig;
 use crate::error::AgentError;
@@ -126,96 +126,47 @@ pub async fn connect_and_register(
     let (agent_tx, mut agent_rx) = mpsc::channel::<AgentMessage>(64);
     let (panel_tx, panel_rx) = mpsc::channel::<PanelMessage>(64);
 
-    // Spawn send task: agent_rx → ws_sink (bincode → Binary)
-    let send_shutdown = shutdown.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                biased;
-
-                _ = send_shutdown.cancelled() => {
-                    debug!("ws send task shutting down");
-                    let _ = ws_sink.close().await;
-                    return;
-                }
-
-                msg = agent_rx.recv() => {
-                    match msg {
-                        Some(agent_msg) => {
-                            match bincode::serialize(&agent_msg) {
-                                Ok(data) => {
-                                    if let Err(e) = ws_sink.send(Message::Binary(data.into())).await {
-                                        error!(error = %e, "failed to send ws message");
-                                        return;
-                                    }
-                                }
-                                Err(e) => {
-                                    error!(error = %e, "failed to serialize agent message");
-                                }
-                            }
-                        }
-                        None => {
-                            debug!("agent send channel closed");
-                            let _ = ws_sink.close().await;
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-    });
-
-    // Spawn recv task: ws_source → panel_tx (Binary → bincode, handles Ping → Pong)
-    let recv_shutdown = shutdown.clone();
     let pong_tx = agent_tx.clone();
     tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                biased;
-
-                _ = recv_shutdown.cancelled() => {
-                    debug!("ws recv task shutting down");
-                    return;
-                }
-
-                msg = ws_source.next() => {
-                    match msg {
-                        Some(Ok(Message::Binary(data))) => {
-                            match bincode::deserialize::<PanelMessage>(&data) {
-                                Ok(PanelMessage::Ping) => {
-                                    debug!("received ping, sending pong");
-                                    if let Err(e) = pong_tx.send(AgentMessage::Pong).await {
-                                        warn!(error = %e, "failed to send pong");
-                                        return;
-                                    }
-                                }
-                                Ok(panel_msg) => {
-                                    if panel_tx.send(panel_msg).await.is_err() {
-                                        debug!("panel receive channel closed");
-                                        return;
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!(error = %e, "failed to deserialize panel message");
-                                }
-                            }
+        let send = async {
+            while let Some(message) = agent_rx.recv().await {
+                let data = bincode::serialize(&message)?;
+                ws_sink.send(Message::Binary(data.into())).await?;
+            }
+            Ok::<(), AgentError>(())
+        };
+        let recv = async {
+            while let Some(message) = ws_source.next().await {
+                match message? {
+                    Message::Binary(data) => match bincode::deserialize::<PanelMessage>(&data)? {
+                        PanelMessage::Ping => {
+                            pong_tx
+                                .send(AgentMessage::Pong)
+                                .await
+                                .map_err(|_| AgentError::ConnectionClosed)?;
                         }
-                        Some(Ok(Message::Close(_))) => {
-                            info!("panel closed websocket connection");
-                            return;
+                        message => {
+                            panel_tx
+                                .send(message)
+                                .await
+                                .map_err(|_| AgentError::ConnectionClosed)?;
                         }
-                        Some(Ok(_)) => {} // ignore text/ping/pong frames
-                        Some(Err(e)) => {
-                            error!(error = %e, "websocket error");
-                            return;
-                        }
-                        None => {
-                            info!("websocket stream ended");
-                            return;
-                        }
-                    }
+                    },
+                    Message::Close(_) => return Ok(()),
+                    _ => {}
                 }
             }
+            Ok::<(), AgentError>(())
+        };
+        // Either half ending drops both halves, including any blocked send or channel write.
+        let result = tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => Ok(()),
+            result = send => result,
+            result = recv => result,
+        };
+        if let Err(e) = result {
+            warn!(error = %e, "panel connection ended");
         }
     });
 

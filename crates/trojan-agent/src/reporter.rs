@@ -19,16 +19,17 @@ use crate::protocol::AgentMessage;
 ///
 /// Sends heartbeat and traffic messages at the configured interval
 /// until the shutdown token is cancelled.
+/// Keep `start` unchanged across panel sessions to preserve uptime.
 pub async fn run_reporter(
     tx: mpsc::Sender<AgentMessage>,
     collector: TrafficCollector,
     stats: Arc<NodeStats>,
     interval: Duration,
     shutdown: CancellationToken,
+    start: Instant,
 ) {
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let start = Instant::now();
 
     let mut sys = System::new();
 
@@ -80,16 +81,53 @@ pub async fn run_reporter(
                 }
 
                 // Drain and send traffic records
+                let permit = match tx.reserve().await {
+                    Ok(permit) => permit,
+                    Err(e) => {
+                        warn!(error = %e, "traffic channel closed; retaining pending records");
+                        return;
+                    }
+                };
                 let records = collector.drain();
                 if !records.is_empty() {
                     debug!(count = records.len(), "sending traffic report");
                     let traffic = AgentMessage::Traffic { records };
-                    if let Err(e) = tx.send(traffic).await {
-                        warn!(error = %e, "failed to send traffic report, channel closed");
-                        return;
-                    }
+                    permit.send(traffic);
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancelling_a_blocked_reporter_preserves_unsent_traffic() {
+        let (tx, rx) = mpsc::channel(1);
+        let collector = TrafficCollector::new();
+        collector.record("alice", 42);
+        let task = tokio::spawn(run_reporter(
+            tx,
+            collector.clone(),
+            NodeStats::new(),
+            Duration::from_secs(60),
+            CancellationToken::new(),
+            Instant::now(),
+        ));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while rx.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        let pending = collector.drain();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].user_id, "alice");
+        assert_eq!(pending[0].bytes, 42);
     }
 }

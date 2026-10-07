@@ -20,6 +20,7 @@ pub mod error;
 pub mod protocol;
 pub mod reporter;
 pub mod runner;
+mod runtime;
 
 pub use cli::AgentArgs;
 pub use error::AgentError;

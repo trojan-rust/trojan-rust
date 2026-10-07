@@ -3,6 +3,7 @@
 //! This module exposes the server implementation for use by integration tests
 //! and potential embedding scenarios.
 
+mod auth;
 pub mod cli;
 #[cfg(feature = "rules")]
 mod debug_api;
@@ -27,6 +28,7 @@ mod util;
 #[cfg(feature = "ws")]
 pub mod ws;
 
+pub use auth::build_auth;
 pub use cli::ServerArgs;
 pub use error::ServerError;
 pub use pool::ConnectionPool;

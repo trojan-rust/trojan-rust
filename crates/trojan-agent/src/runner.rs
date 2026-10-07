@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
-use trojan_auth::{AuthBackend, AuthError, AuthResult, MemoryAuth, ReloadableAuth};
+use trojan_auth::{AuthBackend, AuthError, AuthResult};
 use trojan_config::{AuthConfig, Config};
 use trojan_metrics::NodeStats;
 use trojan_relay::config::{EntryConfig, RelayNodeConfig};
@@ -25,9 +25,9 @@ pub struct ServiceSinks {
     pub stats: Arc<NodeStats>,
     /// Per-user traffic, drained into each traffic report.
     ///
-    /// Only an exit node ever fills this: entry and relay nodes cannot see
-    /// whose traffic they carry, and the exit reports on their behalf over the
-    /// panel's chain traffic endpoint.
+    /// Only servers using local authentication fill this collector. HTTP
+    /// authentication reports user and chain traffic directly to the panel.
+    /// Entry and relay nodes cannot identify users.
     pub traffic: TrafficCollector,
 }
 
@@ -64,17 +64,13 @@ async fn run_server(
 
     info!(listen = %config.server.listen, "starting server service");
 
-    let auth = Arc::new(ReportingAuth {
-        inner: ReloadableAuth::new(build_memory_auth(&config.auth)),
-        collector: sinks.traffic,
-    });
-
-    trojan_server::run_with_stats(config, auth, sinks.stats, shutdown)
-        .await
-        .map_err(|e| {
-            error!(error = %e, "server service exited with error");
-            AgentError::Service(e.to_string())
-        })
+    let auth: Arc<dyn AuthBackend> = build_auth(&config.auth, sinks.traffic).into();
+    let result = trojan_server::run_with_stats(config, auth.clone(), sinks.stats, shutdown).await;
+    auth.shutdown().await;
+    result.map_err(|e| {
+        error!(error = %e, "server service exited with error");
+        AgentError::Service(e.to_string())
+    })
 }
 
 async fn run_entry(
@@ -149,22 +145,20 @@ impl<A: AuthBackend> AuthBackend for ReportingAuth<A> {
     }
 }
 
-/// Build a `MemoryAuth` from both `passwords` and `users` in the config.
-/// Pattern from `trojan-server/src/cli.rs:160-169`.
-fn build_memory_auth(auth: &AuthConfig) -> MemoryAuth {
-    let mut mem = MemoryAuth::new();
-    for pw in &auth.passwords {
-        mem.add_password(pw, None);
+fn build_auth(config: &AuthConfig, collector: TrafficCollector) -> Box<dyn AuthBackend> {
+    let inner = trojan_server::build_auth(config);
+    if config.http_url.is_some() {
+        // HTTP auth owns user and chain accounting; socket reports would bill the same bytes twice.
+        inner
+    } else {
+        Box::new(ReportingAuth { inner, collector })
     }
-    for u in &auth.users {
-        mem.add_password(&u.password, Some(u.id.clone()));
-    }
-    mem
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use trojan_auth::MemoryAuth;
 
     #[tokio::test]
     async fn settled_traffic_reaches_the_collector() {
@@ -181,5 +175,31 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].user_id, "alice");
         assert_eq!(records[0].bytes, 2000);
+    }
+
+    #[tokio::test]
+    async fn local_auth_configuration_reports_user_traffic_to_the_agent() {
+        let config: AuthConfig = serde_json::from_value(serde_json::json!({
+            "users": [{"id": "alice", "password": "local-secret"}]
+        }))
+        .unwrap();
+        let collector = TrafficCollector::new();
+        let auth = build_auth(&config, collector.clone());
+        let user = auth
+            .verify(&trojan_auth::sha224_hex("local-secret"))
+            .await
+            .unwrap();
+        assert_eq!(user.user_id.as_deref(), Some("alice"));
+        assert!(matches!(
+            auth.verify(&trojan_auth::sha224_hex("wrong")).await,
+            Err(AuthError::Invalid)
+        ));
+        auth.record_traffic(user.user_id.as_deref().unwrap(), 42)
+            .await
+            .unwrap();
+        let records = collector.drain();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].user_id, "alice");
+        assert_eq!(records[0].bytes, 42);
     }
 }
