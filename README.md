@@ -10,6 +10,8 @@ A high-performance Rust implementation of the [Trojan](https://trojan-gfw.github
 
 See the full documentation at [trojan.rs](https://trojan.rs).
 
+For multi-hop routing, destination failover, and relay upgrade ordering, see [trojan-relay](crates/trojan-relay/README.md).
+
 ## License
 
 GPL-3.0-only

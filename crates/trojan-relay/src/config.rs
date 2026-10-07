@@ -241,7 +241,7 @@ pub struct MetricsConfig {
 /// Timeout and buffer configuration shared by entry and relay nodes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimeoutConfig {
-    /// Timeout for establishing tunnel connections (seconds).
+    /// Timeout for each transport connection (seconds).
     #[serde(default = "default_connect_timeout")]
     pub connect_timeout_secs: u64,
 
@@ -249,7 +249,8 @@ pub struct TimeoutConfig {
     #[serde(default = "default_idle_timeout")]
     pub idle_timeout_secs: u64,
 
-    /// Relay handshake timeout (seconds). Only used by relay nodes.
+    /// Relay inbound handshake timeout (seconds).
+    /// Entries also add this duration to the connect timeout when awaiting a relay response.
     #[serde(default = "default_handshake_timeout")]
     pub handshake_timeout_secs: u64,
 

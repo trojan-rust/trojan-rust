@@ -21,14 +21,14 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{Instrument, debug, error, info, info_span};
 
-use trojan_lb::LoadBalancer;
+use trojan_lb::{ConnectionGuard, LoadBalancer};
 use trojan_metrics::{
     NodeStats, RelayCounters, record_connection_accepted, record_connection_closed,
 };
 
 use crate::config::{ChainConfig, EntryConfig, TimeoutConfig, TransportType};
 use crate::error::RelayError;
-use crate::handshake::{self, HandshakeMetadata};
+use crate::handshake::{self, ConnectResponse, HandshakeMetadata};
 use crate::router::{CompiledChain, Router};
 use trojan_transport::plain::PlainTransportConnector;
 use trojan_transport::tls::TlsTransportConnector;
@@ -36,6 +36,9 @@ use trojan_transport::ws::WsTransportConnector;
 use trojan_transport::{TransportConnector, TransportStream};
 
 use trojan_core::io::relay_bidirectional;
+
+#[cfg(test)]
+mod tests;
 
 /// Run the entry node server.
 pub async fn run(
@@ -222,14 +225,6 @@ impl EntrySession {
             None
         };
 
-        // Select destination via load balancer
-        let selection = self.lb.select(self.peer.ip())?;
-        let selected_dest = selection.addr;
-        // Hold the guard alive for the connection lifetime (tracks active connections)
-        let _conn_guard = selection.guard;
-
-        debug!(dest = %selected_dest, "selected destination");
-
         // Determine the first hop's transport and SNI.
         // - Empty chain (direct): plain TCP to dest (client does its own TLS to trojan-server)
         // - Non-empty chain: use nodes[0].transport/sni to connect to first relay
@@ -244,61 +239,76 @@ impl EntrySession {
             nodes[0].sni.as_str()
         };
 
-        // Build tunnel and relay — dispatch on first hop transport type
-        let params = TunnelParams {
-            connect_timeout: Duration::from_secs(self.timeouts.connect_timeout_secs),
-            idle_timeout: Duration::from_secs(self.timeouts.idle_timeout_secs),
-            relay_buffer_size: self.timeouts.relay_buffer_size,
-            counters: &self.counters,
-            preamble: preamble.as_deref(),
-        };
-        let outcome = match first_transport {
+        match first_transport {
             TransportType::Tls => {
                 let tls_connector = self.connectors.tls.with_sni(first_sni.to_string());
-                connect_and_relay(
-                    client_stream,
-                    &self.chain,
-                    &selected_dest,
-                    &tls_connector,
-                    params,
-                )
-                .await
+                self.connect_and_relay(client_stream, &tls_connector, preamble.as_deref())
+                    .await
             }
             TransportType::Plain => {
-                connect_and_relay(
-                    client_stream,
-                    &self.chain,
-                    &selected_dest,
-                    &self.connectors.plain,
-                    params,
-                )
-                .await
+                self.connect_and_relay(client_stream, &self.connectors.plain, preamble.as_deref())
+                    .await
             }
             TransportType::Ws => {
-                connect_and_relay(
-                    client_stream,
-                    &self.chain,
-                    &selected_dest,
-                    &self.connectors.ws,
-                    params,
-                )
-                .await
+                self.connect_and_relay(client_stream, &self.connectors.ws, preamble.as_deref())
+                    .await
             }
-        };
-
-        match outcome {
-            // The destination was never reached, so take it out of rotation.
-            // Errors from the relay itself do not count: the tunnel was up, and a
-            // backend that merely saw a stream end is still healthy.
-            TunnelOutcome::ConnectFailed(err) => {
-                if self.lb.is_failover() {
-                    debug!(dest = %selected_dest, error = %err, "marking backend unhealthy");
-                    self.lb.mark_unhealthy(&selected_dest);
-                }
-                Err(err)
-            }
-            TunnelOutcome::Relayed(result) => result,
         }
+    }
+
+    /// Retry only confirmed destination failures, before consuming client bytes.
+    async fn connect_tunnel<C>(
+        &self,
+        connector: &C,
+    ) -> Result<(C::Stream, Option<ConnectionGuard>), RelayError>
+    where
+        C: TransportConnector,
+    {
+        let mut attempted = Vec::new();
+        loop {
+            let selection = self.lb.select_excluding(self.peer.ip(), &attempted)?;
+            let dest = selection.addr;
+            debug!(%dest, "selected destination");
+
+            match build_tunnel(&self.chain, &dest, connector, &self.timeouts).await {
+                Ok(tunnel) => return Ok((tunnel, selection.guard)),
+                Err(TunnelError::Destination(err)) if self.lb.is_failover() => {
+                    debug!(%dest, error = %err, "marking backend unhealthy");
+                    self.lb.mark_unhealthy(&dest);
+                    attempted.push(dest);
+                    if attempted.len() == self.lb.backend_count() {
+                        return Err(err);
+                    }
+                }
+                Err(TunnelError::Destination(err) | TunnelError::Relay(err)) => return Err(err),
+            }
+        }
+    }
+
+    /// Forward payload only after every relay has confirmed its target connection.
+    async fn connect_and_relay<C>(
+        &self,
+        client_stream: TcpStream,
+        connector: &C,
+        preamble: Option<&[u8]>,
+    ) -> Result<(), RelayError>
+    where
+        C: TransportConnector,
+    {
+        let (mut tunnel, _conn_guard) = self.connect_tunnel(connector).await?;
+        // Once payload forwarding starts, retries could duplicate client data.
+        if let Some(preamble) = preamble {
+            tunnel.write_all(preamble).await?;
+        }
+        relay_bidirectional(
+            client_stream,
+            tunnel,
+            Duration::from_secs(self.timeouts.idle_timeout_secs),
+            self.timeouts.relay_buffer_size,
+            &self.counters,
+        )
+        .await?;
+        Ok(())
     }
 }
 
@@ -314,75 +324,11 @@ struct Connectors {
     ws: WsTransportConnector,
 }
 
-/// Timeouts, buffer sizing and counters for one tunnel attempt.
-#[derive(Clone, Copy)]
-struct TunnelParams<'a> {
-    connect_timeout: Duration,
-    idle_timeout: Duration,
-    relay_buffer_size: usize,
-    counters: &'a RelayCounters,
-    /// Bytes to send through the finished tunnel before the client's own, if
-    /// the rule asked the destination to be told about the client.
-    preamble: Option<&'a [u8]>,
-}
-
-/// Which phase an attempt ended in.
-///
-/// Failover needs to tell "this destination is unreachable" apart from "the
-/// stream through it ended badly"; collapsing both into one `Result` is what
-/// previously left dead backends in rotation.
-enum TunnelOutcome {
-    /// The tunnel was never established.
-    ConnectFailed(RelayError),
-    /// The tunnel was established; this is what the relay returned.
-    Relayed(Result<(), RelayError>),
-}
-
-/// Build a tunnel to `dest` and relay `client_stream` through it.
-async fn connect_and_relay<C>(
-    client_stream: TcpStream,
-    chain: &CompiledChain,
-    dest: &str,
-    connector: &C,
-    params: TunnelParams<'_>,
-) -> TunnelOutcome
-where
-    C: TransportConnector,
-    C::Stream: TransportStream,
-{
-    let mut tunnel =
-        match tokio::time::timeout(params.connect_timeout, build_tunnel(chain, dest, connector))
-            .await
-        {
-            Err(_) => {
-                return TunnelOutcome::ConnectFailed(RelayError::ConnectTimeout(dest.to_string()));
-            }
-            Ok(Err(err)) => return TunnelOutcome::ConnectFailed(err),
-            Ok(Ok(tunnel)) => tunnel,
-        };
-
-    // Goes in ahead of anything the client sends, since the destination reads
-    // it before the TLS handshake it precedes. A failure here means the tunnel
-    // broke on its first write, which is a dead destination, not a dead relay.
-    if let Some(preamble) = params.preamble
-        && let Err(e) = tunnel.write_all(preamble).await
-    {
-        return TunnelOutcome::ConnectFailed(RelayError::Io(e));
-    }
-
-    debug!("tunnel established, starting relay");
-    TunnelOutcome::Relayed(
-        relay_bidirectional(
-            client_stream,
-            tunnel,
-            params.idle_timeout,
-            params.relay_buffer_size,
-            params.counters,
-        )
-        .await
-        .map(|_stats| ())
-        .map_err(RelayError::from),
-    )
+/// Only a direct dial failure or an explicit final-hop rejection proves an exit failed.
+#[derive(Debug)]
+enum TunnelError {
+    Destination(RelayError),
+    Relay(RelayError),
 }
 
 /// Build a tunnel through the chain to the destination.
@@ -397,7 +343,8 @@ async fn build_tunnel<C>(
     chain: &CompiledChain,
     dest: &str,
     connector: &C,
-) -> Result<C::Stream, RelayError>
+    timeouts: &TimeoutConfig,
+) -> Result<C::Stream, TunnelError>
 where
     C: TransportConnector,
     C::Stream: TransportStream,
@@ -406,43 +353,49 @@ where
     // One hash per node, guaranteed by `CompiledChain`'s construction.
     let prehashed = chain.password_hashes();
 
-    if config.nodes.is_empty() {
-        // Direct connection — no relay handshake needed
-        return Ok(connector.connect(dest).await?);
-    }
+    let connect_timeout = Duration::from_secs(timeouts.connect_timeout_secs);
+    let first_addr = config.nodes.first().map_or(dest, |node| node.addr.as_str());
+    let mut stream = tokio::time::timeout(connect_timeout, connector.connect(first_addr))
+        .await
+        .map_err(|_| RelayError::ConnectTimeout(first_addr.to_owned()))
+        .and_then(|result| result.map_err(RelayError::from))
+        .map_err(|err| {
+            if config.nodes.is_empty() {
+                TunnelError::Destination(err)
+            } else {
+                TunnelError::Relay(err)
+            }
+        })?;
 
-    let first_node = &config.nodes[0];
-
-    // Determine the target and metadata for the handshake to the first relay node.
-    //
-    // The metadata tells B1 what transport/sni to use for its outbound connection:
-    //   - If there's a B2, metadata = B2's transport/sni (how to reach B2)
-    //   - If B1 is the last relay, metadata = rule's transport/sni (how to reach dest)
-    let (handshake_target, handshake_meta) = next_hop_info(config, dest, 0);
-
-    let mut stream = connector.connect(&first_node.addr).await?;
-
-    // Send relay handshake to first node (using pre-computed hash)
-    handshake::write_handshake_prehashed(
-        &mut stream,
-        &prehashed[0],
-        &handshake_target,
-        &handshake_meta,
-    )
-    .await?;
-
-    // For chains with more than one node, send remaining handshakes through the tunnel.
-    // Each relay node forwards bytes after its own handshake completes, so subsequent
-    // handshakes flow through the established tunnel.
-    //
-    // Example: chain [B1, B2, B3] → dest C:
-    //   A → B1: handshake(pw=B1, target=B2, meta={how to reach B2})
-    //   A → (B1→B2): handshake(pw=B2, target=B3, meta={how to reach B3})
-    //   A → (B1→B2→B3): handshake(pw=B3, target=C, meta={how to reach C})
-    for (i, hash) in (1..config.nodes.len()).zip(&prehashed[1..]) {
+    // Allow the relay's dial timeout to produce a response before our read expires.
+    let response_timeout = connect_timeout + Duration::from_secs(timeouts.handshake_timeout_secs);
+    for (i, hash) in prehashed.iter().enumerate() {
         let (target, meta) = next_hop_info(config, dest, i);
+        let response = tokio::time::timeout(response_timeout, async {
+            handshake::write_handshake_prehashed(&mut stream, hash, &target, &meta).await?;
+            handshake::read_response(&mut stream).await
+        })
+        .await
+        .map_err(|_| {
+            TunnelError::Relay(RelayError::Handshake(format!(
+                "connection response timeout from {}",
+                config.nodes[i].addr
+            )))
+        })?
+        .map_err(TunnelError::Relay)?;
 
-        handshake::write_handshake_prehashed(&mut stream, hash, &target, &meta).await?;
+        match response {
+            ConnectResponse::Connected => {}
+            ConnectResponse::ConnectFailed => {
+                let err = RelayError::RemoteConnectFailed(target);
+                return Err(if i + 1 == config.nodes.len() {
+                    TunnelError::Destination(err)
+                } else {
+                    TunnelError::Relay(err)
+                });
+            }
+            ConnectResponse::AuthFailed => return Err(TunnelError::Relay(RelayError::AuthFailed)),
+        }
     }
 
     Ok(stream)
@@ -459,6 +412,7 @@ fn next_hop_info(chain: &ChainConfig, dest: &str, i: usize) -> (String, Handshak
         let meta = HandshakeMetadata {
             transport: Some(next.transport.clone()),
             sni: Some(next.sni.clone()),
+            ack: true,
         };
         (next.addr.clone(), meta)
     } else {
@@ -468,6 +422,7 @@ fn next_hop_info(chain: &ChainConfig, dest: &str, i: usize) -> (String, Handshak
         let meta = HandshakeMetadata {
             transport: Some(TransportType::Plain),
             sni: None,
+            ack: true,
         };
         (dest.to_string(), meta)
     }

@@ -33,6 +33,8 @@ println!("Routing to {}", selection.addr);
 let _guard = selection.guard;
 ```
 
+Call `select_excluding(peer_ip, &attempted_addresses)` when retrying a connection. The excluded addresses cannot be selected again, even if their cooldown has expired or every remaining backend is unhealthy.
+
 ### Health Management
 
 ```rust

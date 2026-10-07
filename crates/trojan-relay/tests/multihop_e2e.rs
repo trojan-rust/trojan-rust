@@ -1,14 +1,7 @@
 //! End-to-end multi-hop relay tests across all three transports.
 //!
-//! Regression for the v0.9.0 over-read bug in `read_handshake`. The entry
-//! sends N relay handshakes back-to-back; if the relay drops bytes past the
-//! second CRLF, downstream relays hang waiting for handshakes that already
-//! arrived and were thrown away.
-//!
-//! Plain TCP and TLS are most likely to trigger the bug because their
-//! `AsyncRead::read` can return data spanning multiple writes. WebSocket is
-//! frame-aligned and unlikely to trigger it, but is included here so we have
-//! e2e coverage for all three transports.
+//! Verify hop confirmations, payload forwarding, and destination selection.
+//! Legacy pipelined handshakes retain separate over-read coverage in `handshake` unit tests.
 
 #![expect(
     clippy::tests_outside_test_module,
@@ -366,9 +359,7 @@ async fn entry_ip_hash_is_sticky_per_client() {
 
 /// Failover skips a destination that refuses connections.
 ///
-/// The first attempt lands on the dead address and fails — the entry marks it
-/// unhealthy but does not retry within that connection — so the assertion is
-/// that a *subsequent* connection is served by the live destination.
+/// The entry marks the failed destination unhealthy and retries before forwarding payload.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn entry_failover_skips_dead_destination() {
     init_crypto();
@@ -387,10 +378,8 @@ async fn entry_failover_skips_dead_destination() {
     )
     .await;
 
-    // Failover converges rather than switching instantly: the connection that
-    // lands on the dead destination is lost, and marking it unhealthy happens
-    // in that connection's task. Retry until a connection is served, with a
-    // bound so a policy that never fails over still fails the test.
+    // The entry unit tests verify the first connection without a readiness probe.
+    // This integration check also covers the listener's shared load balancer.
     let payload = b"after-failover";
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let mut attempts = 0;
@@ -445,8 +434,7 @@ async fn multihop_chain_2_relays_plain() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn multihop_chain_3_relays_plain() {
-    // Three hops: entry sends 3 handshakes back-to-back to B1; B1 must
-    // forward 2 of them; B2 must forward 1.
+    // The upstream relays must forward each later handshake and its response.
     run_chain(TransportType::Plain, 3, &[b"three-hop-payload"]).await;
 }
 

@@ -29,6 +29,10 @@ pub enum RelayError {
     #[error("connect timeout to {0}")]
     ConnectTimeout(String),
 
+    /// The authenticated relay reported that its target connection failed.
+    #[error("relay could not connect to {0}")]
+    RemoteConnectFailed(String),
+
     #[error("certificate generation failed: {0}")]
     CertGeneration(String),
 

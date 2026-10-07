@@ -32,6 +32,10 @@ metadata (key=value)  CRLF
 
 Metadata carries `transport=tls|plain` and `sni=...` hints for per-hop control.
 
+New entries also send `ack=1`. Each relay connects to its target, then returns four bytes: `TR`, version `1`, and status `0` (connected), `1` (target connection failed), or `2` (authentication failed). The entry must receive success before sending the next hop's handshake or client data. Response frames never reach the client or exit.
+
+Upgrade every relay in a chain before upgrading its entry. New relays accept legacy handshakes without adding response bytes. New entries require connection responses from every relay; old relays cannot serve new entries. A missing or invalid response fails the connection without changing destination health.
+
 ## Usage
 
 ### As a library
@@ -76,6 +80,20 @@ proxy_protocol = true
 [metrics]
 listen = "127.0.0.1:9101"
 ```
+
+For destination failover, replace the rule's destination with a list:
+
+```toml
+dest = ["trojan-jp-1:443", "trojan-jp-2:443"]
+strategy = "failover"
+failover_cooldown_secs = 30
+```
+
+The entry retries a failed destination connection within the same client connection. Each destination address is attempted at most once per client connection, including when the cooldown is zero. Only a failed direct dial or an explicit failure from the final relay marks a destination unhealthy. Intermediate relay failures, authentication failures, and missing responses terminate the connection without marking a destination unhealthy. The other load-balancing strategies keep their existing selection behavior.
+
+After payload forwarding starts, the entry must not retry: replaying client data could duplicate an operation. Cooldown recovery remains passive; a later selection retries the destination after the cooldown. If every destination is unhealthy, failover still attempts the configured destinations, with the same per-connection attempt limit.
+
+Each transport connection uses `connect_timeout_secs`. Each relay response has a timeout of `connect_timeout_secs + handshake_timeout_secs` on the entry. Set relay connect timeouts no higher than the entry's connect timeout so relays can report dial timeouts before the entry stops waiting. Confirmations add one round trip per relay during tunnel setup.
 
 ### Relay Node
 

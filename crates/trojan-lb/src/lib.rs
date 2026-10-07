@@ -164,16 +164,44 @@ impl LoadBalancer {
 
     /// Select a backend based on the policy and peer IP.
     pub fn select(&self, peer_ip: IpAddr) -> Result<Selection, LbError> {
-        if self.backends.is_empty() {
+        self.select_from(&self.backends, peer_ip)
+    }
+
+    /// Select a backend that this connection has not already attempted.
+    ///
+    /// Exclusions apply even after cooldown expiry or when all backends are unhealthy.
+    pub fn select_excluding(
+        &self,
+        peer_ip: IpAddr,
+        excluded: &[String],
+    ) -> Result<Selection, LbError> {
+        if excluded.is_empty() {
+            return self.select(peer_ip);
+        }
+        let candidates: Vec<_> = self
+            .backends
+            .iter()
+            .filter(|backend| !excluded.contains(&backend.addr))
+            .cloned()
+            .collect();
+        self.select_from(&candidates, peer_ip)
+    }
+
+    fn select_from(
+        &self,
+        backends: &[Arc<Backend>],
+        peer_ip: IpAddr,
+    ) -> Result<Selection, LbError> {
+        if backends.is_empty() {
             return Err(LbError::NoBackends);
         }
 
         let idx = self
             .policy
-            .select(&self.backends, peer_ip)
+            .select(backends, peer_ip)
             .ok_or(LbError::NoHealthyBackend)?;
 
-        let backend = &self.backends[idx];
+        let backend = &backends[idx];
 
         // For LeastConnections, acquire a guard to track active connections.
         // For other strategies, no guard is needed — we detect this by checking

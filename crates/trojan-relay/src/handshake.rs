@@ -15,6 +15,9 @@
 //! The metadata line is always present on the wire. It carries comma-separated
 //! key=value pairs (e.g. `transport=tls,sni=crates.io`). An empty metadata
 //! line (bare CRLF) means "use relay node defaults".
+//! With `ack=1`, the relay replies with `TR`, version byte `1`, and a status byte:
+//! `0` means connected, `1` means target connection failed, and `2` means authentication failed.
+//! The upstream must read the response before sending payload or the next relay handshake.
 
 use sha2::{Digest, Sha224};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -48,6 +51,8 @@ pub struct HandshakeMetadata {
     pub transport: Option<TransportType>,
     /// Outbound TLS SNI. `None` = use relay node default.
     pub sni: Option<String>,
+    /// Request a connection response before forwarding payload bytes.
+    pub ack: bool,
 }
 
 impl HandshakeMetadata {
@@ -64,6 +69,9 @@ impl HandshakeMetadata {
         }
         if let Some(ref sni) = self.sni {
             parts.push(format!("sni={}", sni));
+        }
+        if self.ack {
+            parts.push("ack=1".to_string());
         }
         parts.join(",")
     }
@@ -88,11 +96,51 @@ impl HandshakeMetadata {
                     "sni" => {
                         meta.sni = Some(value.trim().to_string());
                     }
+                    "ack" => meta.ack = value.trim() == "1",
                     _ => {} // ignore unknown keys for forward compat
                 }
             }
         }
         meta
+    }
+}
+
+/// Result of an authenticated relay's connection attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConnectResponse {
+    Connected,
+    ConnectFailed,
+    AuthFailed,
+}
+
+/// Write a versioned response. Callers must first check that the upstream requested `ack=1`.
+pub(crate) async fn write_response<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    response: ConnectResponse,
+) -> Result<(), RelayError> {
+    let status = match response {
+        ConnectResponse::Connected => 0,
+        ConnectResponse::ConnectFailed => 1,
+        ConnectResponse::AuthFailed => 2,
+    };
+    writer.write_all(&[b'T', b'R', 1, status]).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+/// Read exactly one response, leaving subsequent tunnel bytes unread.
+pub(crate) async fn read_response<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<ConnectResponse, RelayError> {
+    let mut frame = [0; 4];
+    reader.read_exact(&mut frame).await?;
+    match frame {
+        [b'T', b'R', 1, 0] => Ok(ConnectResponse::Connected),
+        [b'T', b'R', 1, 1] => Ok(ConnectResponse::ConnectFailed),
+        [b'T', b'R', 1, 2] => Ok(ConnectResponse::AuthFailed),
+        _ => Err(RelayError::Handshake(
+            "invalid relay connection response".into(),
+        )),
     }
 }
 
@@ -285,6 +333,19 @@ mod tests {
     use super::*;
     use tokio::io::duplex;
 
+    #[tokio::test]
+    async fn connection_response_preserves_payload_and_rejects_invalid_frames() {
+        let mut wire: &[u8] = b"TR\x01\x00payload";
+        assert_eq!(
+            read_response(&mut wire).await.unwrap(),
+            ConnectResponse::Connected
+        );
+        assert_eq!(wire, b"payload");
+        for mut invalid in [b"TR\x02\x00".as_slice(), b"TR\x01\xff", b"nope", b"TR\x01"] {
+            read_response(&mut invalid).await.unwrap_err();
+        }
+    }
+
     #[test]
     fn test_hash_password() {
         let hash = hash_password("test-password");
@@ -337,6 +398,7 @@ mod tests {
         let meta = HandshakeMetadata {
             transport: Some(TransportType::Plain),
             sni: Some("cdn.example.com".to_string()),
+            ack: true,
         };
 
         let write_handle = tokio::spawn(async move {
@@ -351,6 +413,7 @@ mod tests {
         assert!(verify_hash(&hs, password));
         assert_eq!(hs.metadata.transport, Some(TransportType::Plain));
         assert_eq!(hs.metadata.sni.as_deref(), Some("cdn.example.com"));
+        assert!(hs.metadata.ack);
         assert!(residue.is_empty());
 
         write_handle.await.unwrap();
@@ -394,6 +457,7 @@ mod tests {
         let meta = HandshakeMetadata {
             transport: Some(TransportType::Tls),
             sni: Some("crates.io".to_string()),
+            ack: false,
         };
         let encoded = meta.encode();
         assert_eq!(encoded, "transport=tls,sni=crates.io");

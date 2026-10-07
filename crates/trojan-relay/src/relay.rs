@@ -22,7 +22,7 @@ use trojan_metrics::{
 
 use crate::config::{RelayNodeConfig, TimeoutConfig, TransportType};
 use crate::error::RelayError;
-use crate::handshake;
+use crate::handshake::{self, ConnectResponse};
 use trojan_transport::plain::{PlainTransportAcceptor, PlainTransportConnector};
 use trojan_transport::tls::{TlsTransportAcceptor, TlsTransportConnector};
 use trojan_transport::ws::{WsTransportAcceptor, WsTransportConnector};
@@ -191,6 +191,9 @@ where
         if !handshake::verify_hash_precomputed(&hs, &self.password_hash) {
             warn!("relay auth failed");
             record_auth_failure();
+            if hs.metadata.ack {
+                handshake::write_response(&mut inbound, ConnectResponse::AuthFailed).await?;
+            }
             return Err(RelayError::AuthFailed);
         }
 
@@ -218,6 +221,7 @@ where
         // transport; everything after the dial is the same stream of bytes.
         let hop = Hop {
             target: &hs.target,
+            acknowledge: hs.metadata.ack,
             residue: &residue,
             timeouts: &self.timeouts,
             counters: &self.counters,
@@ -238,6 +242,8 @@ where
 struct Hop<'a> {
     /// `host:port` to dial.
     target: &'a str,
+    /// Legacy upstreams must receive payload bytes without a response prefix.
+    acknowledge: bool,
     /// Bytes already read past the handshake, owed to the target verbatim.
     residue: &'a [u8],
     timeouts: &'a TimeoutConfig,
@@ -245,17 +251,28 @@ struct Hop<'a> {
 }
 
 /// Dial the hop, hand it the residue, then relay `inbound` through it.
-async fn dial_and_relay<I, C>(inbound: I, connector: &C, hop: Hop<'_>) -> Result<(), RelayError>
+async fn dial_and_relay<I, C>(mut inbound: I, connector: &C, hop: Hop<'_>) -> Result<(), RelayError>
 where
     I: AsyncRead + AsyncWrite + Unpin,
     C: TransportConnector,
 {
-    let mut outbound = tokio::time::timeout(
+    let result = tokio::time::timeout(
         Duration::from_secs(hop.timeouts.connect_timeout_secs),
         connector.connect(hop.target),
     )
     .await
-    .map_err(|_| RelayError::ConnectTimeout(hop.target.to_owned()))??;
+    .map_err(|_| RelayError::ConnectTimeout(hop.target.to_owned()))
+    .and_then(|result| result.map_err(RelayError::from));
+
+    if hop.acknowledge {
+        let response = if result.is_ok() {
+            ConnectResponse::Connected
+        } else {
+            ConnectResponse::ConnectFailed
+        };
+        handshake::write_response(&mut inbound, response).await?;
+    }
+    let mut outbound = result?;
 
     if !hop.residue.is_empty() {
         outbound.write_all(hop.residue).await?;
