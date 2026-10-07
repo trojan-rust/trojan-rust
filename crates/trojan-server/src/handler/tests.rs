@@ -167,7 +167,7 @@ async fn authenticated_relay_outlives_authentication_deadline() {
 }
 
 #[cfg(feature = "ws")]
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn websocket_upgrade_does_not_reset_authentication_deadline() {
     for split in [false, true] {
         let mut state = state();
