@@ -367,7 +367,7 @@ pub struct MetricsConfig {
     /// GeoIP database for per-country metrics labels (country-level).
     #[serde(default)]
     pub geoip: Option<GeoipConfig>,
-    /// Emit per-destination byte counters (`trojan_target_bytes_total`).
+    /// Emit per-destination byte and connection counters. Disabled by default.
     ///
     /// The destination host becomes a label value, so this metric holds one
     /// time series per destination ever reached, for the life of the process.
@@ -375,8 +375,7 @@ pub struct MetricsConfig {
     /// it off on general-purpose exit nodes, where it grows without bound and
     /// inflates both resident memory and `/metrics` scrape size.
     ///
-    /// Disabling it does not affect the global `trojan_bytes_*_total`
-    /// counters or `trojan_target_connections_total`.
+    /// Disabling it preserves global byte and connection counters.
     #[serde(default = "default_metrics_per_target")]
     pub per_target: bool,
 }

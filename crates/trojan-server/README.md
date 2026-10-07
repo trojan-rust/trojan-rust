@@ -1,5 +1,11 @@
 # trojan-server
 
+Target connections alternate resolved IPv4 and IPv6 addresses, starting another attempt after 250 ms. All attempts share a 10-second deadline. Named direct outbounds preserve their configured bind address and socket buffers. Trojan outbounds apply a 10-second deadline to resolution, TCP, TLS, and the request header together.
+
+Destination metric labels are disabled by default. Set `metrics.per_target = true` only for a bounded destination set; global counters remain available with the option off.
+
+UDP associations process up to 16 datagrams concurrently. DNS work and response backpressure do not block the opposite direction or idle expiry. Datagram completion order may differ from arrival order. The pending datagrams use at most 16 payload buffers in addition to `max_udp_buffer_bytes` and the response buffers.
+
 High-performance Trojan protocol server implementation.
 
 ## Overview
@@ -75,6 +81,9 @@ reports the connection's traffic — they cannot report it themselves, having
 never seen whose traffic they carried.
 
 ## Features
+
+Run the [network benchmark](benches/network/README.md) to measure TCP/TLS throughput,
+P99 latency, server CPU usage, and resident memory at different connection counts.
 
 | Feature | Description |
 |---------|-------------|

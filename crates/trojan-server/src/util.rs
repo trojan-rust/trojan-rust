@@ -1,16 +1,21 @@
 //! Utility functions for server operations.
 
-use std::net::SocketAddr;
+use std::collections::VecDeque;
+use std::io;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use socket2::{Domain, Protocol, Socket, TcpKeepalive, Type};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
 use trojan_config::TcpConfig;
 
 use crate::error::ServerError;
+
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Tracks active connections for graceful shutdown.
 #[derive(Clone, Debug, Default)]
@@ -156,6 +161,97 @@ pub async fn connect_with_buffers(
     recv_buf: usize,
     tcp_cfg: &TcpConfig,
 ) -> std::io::Result<TcpStream> {
+    tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        connect_socket(target, None, send_buf, recv_buf, tcp_cfg),
+    )
+    .await
+    .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))?
+}
+
+/// Race resolved addresses with alternating address families and a shared deadline.
+pub(crate) async fn connect_candidates(
+    targets: Vec<SocketAddr>,
+    bind: Option<IpAddr>,
+    send_buf: usize,
+    recv_buf: usize,
+    tcp_cfg: &TcpConfig,
+) -> io::Result<(TcpStream, SocketAddr)> {
+    let targets = targets
+        .into_iter()
+        .filter(|target| bind.is_none_or(|ip| ip.is_ipv4() == target.is_ipv4()))
+        .collect();
+    race_addresses(
+        targets,
+        Duration::from_millis(250),
+        CONNECT_TIMEOUT,
+        |target| connect_socket(target, bind, send_buf, recv_buf, tcp_cfg),
+    )
+    .await
+}
+
+async fn race_addresses<T, F, Fut>(
+    targets: Vec<SocketAddr>,
+    delay: Duration,
+    timeout: Duration,
+    connect: F,
+) -> io::Result<(T, SocketAddr)>
+where
+    F: Fn(SocketAddr) -> Fut,
+    Fut: std::future::Future<Output = io::Result<T>>,
+{
+    let first_v4 = targets.first().is_some_and(SocketAddr::is_ipv4);
+    let (mut preferred, mut other): (VecDeque<_>, VecDeque<_>) = targets
+        .into_iter()
+        .partition(|target| target.is_ipv4() == first_v4);
+    let mut ordered = VecDeque::new();
+    while !preferred.is_empty() || !other.is_empty() {
+        ordered.extend(preferred.pop_front());
+        ordered.extend(other.pop_front());
+    }
+    let mut attempts = FuturesUnordered::new();
+    let mut next = tokio::time::Instant::now();
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    let mut last_error = io::Error::new(
+        io::ErrorKind::AddrNotAvailable,
+        "no compatible target address",
+    );
+    loop {
+        if (attempts.is_empty() || tokio::time::Instant::now() >= next)
+            && let Some(target) = ordered.pop_front()
+        {
+            let attempt = connect(target);
+            attempts.push(async move { (target, attempt.await) });
+            next = tokio::time::Instant::now() + delay;
+        }
+        if attempts.is_empty() {
+            return Err(last_error);
+        }
+        tokio::select! {
+            biased;
+            _ = &mut deadline => return Err(io::ErrorKind::TimedOut.into()),
+            Some((target, result)) = attempts.next() => {
+                match result {
+                    Ok(stream) => return Ok((stream, target)),
+                    Err(error) => {
+                        tracing::debug!(%target, %error, "connect attempt failed");
+                        last_error = error;
+                    }
+                }
+            }
+            _ = tokio::time::sleep_until(next), if !ordered.is_empty() => {}
+        }
+    }
+}
+
+async fn connect_socket(
+    target: SocketAddr,
+    bind: Option<IpAddr>,
+    send_buf: usize,
+    recv_buf: usize,
+    tcp_cfg: &TcpConfig,
+) -> io::Result<TcpStream> {
     let socket = if target.is_ipv4() {
         tokio::net::TcpSocket::new_v4()?
     } else {
@@ -168,10 +264,94 @@ pub async fn connect_with_buffers(
         socket.set_recv_buffer_size(u32::try_from(recv_buf).unwrap_or(u32::MAX))?;
     }
 
+    if let Some(ip) = bind {
+        socket.bind(SocketAddr::new(ip, 0))?;
+    }
     let stream = socket.connect(target).await?;
 
     // Apply TCP options to outbound connection
     stream.set_nodelay(tcp_cfg.no_delay)?;
 
     Ok(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    #[tokio::test]
+    async fn stalled_preferred_family_does_not_block_ipv4_and_loser_is_cancelled() {
+        struct Cancelled<'a>(&'a AtomicBool);
+        impl Drop for Cancelled<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let cancelled = AtomicBool::new(false);
+        let starts = std::sync::Mutex::new(Vec::new());
+        let first: SocketAddr = "[::1]:1".parse().unwrap();
+        let second: SocketAddr = "[::1]:2".parse().unwrap();
+        let ipv4: SocketAddr = "127.0.0.1:3".parse().unwrap();
+        let (value, target) = race_addresses(
+            vec![first, second, ipv4],
+            Duration::from_millis(10),
+            Duration::from_secs(5),
+            |address| {
+                let cancelled = &cancelled;
+                starts.lock().unwrap().push(address);
+                async move {
+                    if address.is_ipv6() {
+                        let _guard = Cancelled(cancelled);
+                        std::future::pending::<()>().await;
+                    }
+                    Ok(7)
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!((value, target), (7, ipv4));
+        assert_eq!(*starts.lock().unwrap(), [first, ipv4]);
+        assert!(cancelled.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn all_stalled_connections_share_one_deadline() {
+        let result = race_addresses(
+            vec![
+                "127.0.0.1:1".parse().unwrap(),
+                "127.0.0.1:2".parse().unwrap(),
+            ],
+            Duration::from_millis(5),
+            Duration::from_millis(20),
+            |_| std::future::pending::<io::Result<()>>(),
+        )
+        .await;
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[tokio::test]
+    async fn direct_connection_preserves_bind_family_and_socket_options() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = listener.local_addr().unwrap();
+        let config = TcpConfig {
+            no_delay: true,
+            ..Default::default()
+        };
+        let (stream, address) = connect_candidates(
+            vec!["[::1]:1".parse().unwrap(), target],
+            Some("127.0.0.1".parse().unwrap()),
+            8192,
+            8192,
+            &config,
+        )
+        .await
+        .unwrap();
+        assert_eq!(address, target);
+        assert_eq!(stream.local_addr().unwrap().ip(), target.ip());
+        assert!(stream.nodelay().unwrap());
+        let (accepted, _) = listener.accept().await.unwrap();
+        assert_eq!(accepted.peer_addr().unwrap(), stream.local_addr().unwrap());
+    }
 }

@@ -32,7 +32,7 @@ pub struct ServerState {
     pub node_stats: Arc<NodeStats>,
     /// Senders whose PROXY protocol header names the client and the chain.
     pub proxy_protocol: ProxyProtocolConfig,
-    /// Whether to label relay byte counters with the destination host.
+    /// Whether to emit destination-labelled byte and connection counters.
     /// See `metrics.per_target` — this is unbounded-cardinality when on.
     pub per_target_metrics: bool,
     /// Analytics event collector (only available when analytics feature is enabled).
@@ -91,7 +91,7 @@ impl ServerState {
         Ok((engine.match_request(&ctx), None))
     }
 
-    /// Resolve the counter handles for one session's worth of traffic.
+    /// Record a target connection and resolve the session's counter handles.
     ///
     /// Done once per connection rather than per flush; see [`RelayCounters`].
     /// `target` is the destination to break the bytes down by, and `None` for a
@@ -100,7 +100,10 @@ impl ServerState {
     /// `metrics.per_target` asked for one.
     pub fn relay_counters(&self, target: Option<&str>) -> RelayCounters {
         let counters = match target {
-            Some(label) if self.per_target_metrics => RelayCounters::with_target(label),
+            Some(label) if self.per_target_metrics => {
+                trojan_metrics::record_target_connection(label);
+                RelayCounters::with_target(label)
+            }
             _ => RelayCounters::global(),
         };
         counters.with_node_stats(self.node_stats.clone())

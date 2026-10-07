@@ -271,7 +271,7 @@ async fn free_addr() -> SocketAddr {
 }
 
 /// The exporter serves its three endpoints, and `metrics.per_target` decides
-/// whether the destination-labelled byte counter exists.
+/// whether destination-labelled byte and connection counters exist.
 ///
 /// Both phases run in one test, in order, because the recorder is global: the
 /// absence assertion is only meaningful before any server that emits the
@@ -301,8 +301,6 @@ async fn metrics_endpoint_reports_traffic_and_honours_per_target() {
         "trojan_bytes_received_total",
         "trojan_bytes_sent_total",
         "trojan_auth_success_total",
-        // Recorded per connection, and unaffected by `per_target`.
-        "trojan_target_connections_total",
     ] {
         assert!(body.contains(metric), "/metrics is missing {metric}");
     }
@@ -310,6 +308,10 @@ async fn metrics_endpoint_reports_traffic_and_honours_per_target() {
     assert!(
         !body.contains("trojan_target_bytes_total"),
         "per_target = false must not emit the destination-labelled byte counter"
+    );
+    assert!(
+        !body.contains("trojan_target_connections_total{"),
+        "per_target = false must not emit destination-labelled connection series"
     );
 
     // ── Phase 2: per_target on ──
@@ -323,6 +325,7 @@ async fn metrics_endpoint_reports_traffic_and_honours_per_target() {
         body.contains("trojan_target_bytes_total"),
         "per_target = true must emit the destination-labelled byte counter"
     );
+    assert!(body.contains("trojan_target_connections_total{target=\"127.0.0.1\"} 1"));
     assert!(
         body.contains("direction=\"sent\""),
         "expected a direction label on the per-target counter, got:\n{body}"

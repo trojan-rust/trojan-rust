@@ -3,7 +3,7 @@
 //! Each named outbound in the config becomes an `Outbound` instance that
 //! knows how to establish a connection to the target address.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -16,8 +16,8 @@ use trojan_config::{OutboundConfig, TcpConfig};
 use trojan_proto::AddressRef;
 
 use crate::error::ServerError;
-use crate::resolve::{resolve_all_addresses, resolve_sockaddr};
-use crate::util::connect_with_buffers;
+use crate::resolve::resolve_all_addresses;
+use crate::util::{CONNECT_TIMEOUT, connect_candidates};
 use trojan_dns::DnsResolver;
 
 /// A configured outbound connector.
@@ -186,37 +186,10 @@ impl Outbound {
     ) -> Result<Option<OutboundStream>, ServerError> {
         match self {
             Outbound::Direct { bind } => {
-                // Try every resolved candidate so a domain that returns both
-                // IPv6 and IPv4 doesn't fail outright when one family is
-                // unreachable. With `bind` set, skip candidates whose family
-                // doesn't match the bind address.
                 let candidates = resolve_all_addresses(address, resolver).await?;
-                let mut last_err: Option<std::io::Error> = None;
-                for target in candidates {
-                    if let Some(bind_ip) = bind
-                        && bind_ip.is_ipv4() != target.is_ipv4()
-                    {
-                        continue;
-                    }
-                    let result = if let Some(bind_ip) = bind {
-                        connect_with_bind(target, *bind_ip, send_buf, recv_buf, tcp_config).await
-                    } else {
-                        connect_with_buffers(target, send_buf, recv_buf, tcp_config)
-                            .await
-                            .map_err(ServerError::Io)
-                    };
-                    match result {
-                        Ok(stream) => return Ok(Some(OutboundStream::Tcp(stream))),
-                        Err(ServerError::Io(e)) => last_err = Some(e),
-                        Err(other) => return Err(other),
-                    }
-                }
-                Err(ServerError::Io(last_err.unwrap_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::AddrNotAvailable,
-                        "no compatible address for outbound",
-                    )
-                })))
+                let (stream, _) =
+                    connect_candidates(candidates, *bind, send_buf, recv_buf, tcp_config).await?;
+                Ok(Some(OutboundStream::Tcp(stream)))
             }
             Outbound::Trojan {
                 addr,
@@ -224,47 +197,25 @@ impl Outbound {
                 sni,
                 tls_connector,
             } => {
-                let stream = connect_trojan_outbound(
-                    addr,
-                    password_hash,
-                    sni,
-                    tls_connector,
-                    address,
-                    tcp_config,
-                    resolver,
+                let stream = tokio::time::timeout(
+                    CONNECT_TIMEOUT,
+                    connect_trojan_outbound(
+                        addr,
+                        password_hash,
+                        sni,
+                        tls_connector,
+                        address,
+                        tcp_config,
+                        resolver,
+                    ),
                 )
-                .await?;
+                .await
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))??;
                 Ok(Some(OutboundStream::Tls(stream)))
             }
             Outbound::Reject => Ok(None),
         }
     }
-}
-
-/// Connect to target with a specific local bind address.
-async fn connect_with_bind(
-    target: SocketAddr,
-    bind_ip: IpAddr,
-    send_buf: usize,
-    recv_buf: usize,
-    tcp_cfg: &TcpConfig,
-) -> Result<TcpStream, ServerError> {
-    let socket = if target.is_ipv4() {
-        tokio::net::TcpSocket::new_v4()?
-    } else {
-        tokio::net::TcpSocket::new_v6()?
-    };
-    if send_buf > 0 {
-        socket.set_send_buffer_size(u32::try_from(send_buf).unwrap_or(u32::MAX))?;
-    }
-    if recv_buf > 0 {
-        socket.set_recv_buffer_size(u32::try_from(recv_buf).unwrap_or(u32::MAX))?;
-    }
-    let bind_addr = SocketAddr::new(bind_ip, 0);
-    socket.bind(bind_addr)?;
-    let stream = socket.connect(target).await?;
-    stream.set_nodelay(tcp_cfg.no_delay)?;
-    Ok(stream)
 }
 
 /// Build a `TlsConnector` for trojan outbound connections.
@@ -300,11 +251,12 @@ async fn connect_trojan_outbound(
     use rustls::pki_types::ServerName;
 
     // Resolve the trojan server address
-    let server_addr = resolve_sockaddr(addr, resolver).await?;
-    debug!(server = %addr, resolved = %server_addr, "connecting to trojan outbound");
-
-    let tcp = TcpStream::connect(server_addr).await?;
-    tcp.set_nodelay(tcp_config.no_delay)?;
+    let candidates = resolver
+        .resolve_all(addr)
+        .await
+        .map_err(|_| ServerError::Resolve)?;
+    let (tcp, server_addr) = connect_candidates(candidates, None, 0, 0, tcp_config).await?;
+    debug!(server = %addr, resolved = %server_addr, "connected to trojan outbound");
 
     let server_name = ServerName::try_from(sni.to_string())
         .map_err(|e| ServerError::Config(format!("invalid SNI '{sni}': {e}")))?;
@@ -321,6 +273,7 @@ async fn connect_trojan_outbound(
     .map_err(ServerError::ProtoWrite)?;
 
     tls.write_all(&header).await?;
+    tls.flush().await?;
 
     Ok(tls)
 }

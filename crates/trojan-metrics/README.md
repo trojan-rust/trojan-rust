@@ -32,10 +32,7 @@ This crate instruments the trojan server with counters, gauges, and histograms e
 | `trojan_target_connections_total` | Counter | Connections, labelled by destination |
 | `trojan_target_bytes_total` | Counter | Bytes, labelled by destination and direction |
 
-The `target`-labelled metrics carry one time series per destination the server
-has ever reached, and those series live for the life of the process. Set
-`metrics.per_target = false` to drop `trojan_target_bytes_total` on servers
-with an unbounded destination set.
+Destination metrics are disabled by default. Set `metrics.per_target = true` to emit `trojan_target_bytes_total` and `trojan_target_connections_total` for a bounded destination set. Each destination adds persistent time series. Leave the option off on general-purpose exit nodes. Global byte and connection counters remain available.
 
 ## Usage
 

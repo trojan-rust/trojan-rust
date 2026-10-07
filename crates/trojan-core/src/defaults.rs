@@ -60,13 +60,12 @@ pub const DEFAULT_CONNECTION_BACKLOG: u32 = 1024;
 // Metrics Defaults
 // ============================================================================
 
-/// Emit per-destination byte counters (`trojan_target_bytes_total`).
+/// Emit per-destination byte and connection counters.
 ///
 /// Each distinct destination is a label value, so this metric's cardinality
 /// grows with the number of destinations a deployment reaches and never
-/// shrinks. Enabled by default for backward compatibility; turn it off on
-/// servers with an unbounded destination set.
-pub const DEFAULT_METRICS_PER_TARGET: bool = true;
+/// shrinks. Disabled by default; enable only for a bounded destination set.
+pub const DEFAULT_METRICS_PER_TARGET: bool = false;
 
 // ============================================================================
 // Rate Limit Defaults

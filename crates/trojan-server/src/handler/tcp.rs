@@ -7,7 +7,7 @@ use tokio::net::TcpStream;
 use tokio::time::Instant;
 use tracing::{debug, instrument};
 use trojan_auth::AuthBackend;
-use trojan_metrics::{record_target_connect_duration, record_target_connection};
+use trojan_metrics::record_target_connect_duration;
 use trojan_proto::AddressRef;
 
 use crate::error::ServerError;
@@ -15,7 +15,7 @@ use crate::handler::Session;
 use crate::relay::relay_with_counters;
 use crate::resolve::{resolve_all_addresses, target_to_label};
 use crate::state::ServerState;
-use crate::util::connect_with_buffers;
+use crate::util::connect_candidates;
 
 /// Handle TCP CONNECT command.
 #[instrument(level = "debug", skip(stream, payload, session), fields(target = ?address))]
@@ -31,10 +31,9 @@ where
 {
     let state = &session.state;
     let peer = session.peer;
-    let target_label = target_to_label(&address);
-    record_target_connection(&target_label);
+    let target_label = state.per_target_metrics.then(|| target_to_label(&address));
     // Resolved once here rather than per flush inside the relay loop.
-    let counters = state.relay_counters(Some(&target_label));
+    let counters = state.relay_counters(target_label.as_deref());
 
     // Resolve + connect with fallthrough across address families. On any
     // pre-relay failure, send TLS close_notify before dropping the stream so
@@ -83,44 +82,23 @@ where
     Ok(())
 }
 
-/// Resolve all candidate addresses for `address` and try connecting to each
-/// in order, returning the first success. If every candidate fails, returns
-/// the last `io::Error` encountered.
+/// Resolve candidates and return the first successful connection within the shared deadline.
 async fn dial_target(
     address: &AddressRef<'_>,
     state: &ServerState,
     peer: SocketAddr,
 ) -> Result<(TcpStream, SocketAddr), ServerError> {
     let candidates = resolve_all_addresses(address, &state.dns_resolver).await?;
-    let mut last_err: Option<std::io::Error> = None;
-
-    for target in candidates {
-        debug!(peer = %peer, target = %target, "connecting to target");
-        let connect_start = Instant::now();
-        match connect_with_buffers(
-            target,
-            state.tcp_send_buffer,
-            state.tcp_recv_buffer,
-            &state.tcp_config,
-        )
-        .await
-        {
-            Ok(stream) => {
-                record_target_connect_duration(connect_start.elapsed().as_secs_f64());
-                debug!(peer = %peer, target = %target, "target connected");
-                return Ok((stream, target));
-            }
-            Err(e) => {
-                debug!(peer = %peer, target = %target, error = %e, "connect attempt failed");
-                last_err = Some(e);
-            }
-        }
-    }
-
-    Err(ServerError::Io(last_err.unwrap_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::AddrNotAvailable,
-            "no resolved address connected",
-        )
-    })))
+    let started = Instant::now();
+    let (stream, target) = connect_candidates(
+        candidates,
+        None,
+        state.tcp_send_buffer,
+        state.tcp_recv_buffer,
+        &state.tcp_config,
+    )
+    .await?;
+    record_target_connect_duration(started.elapsed().as_secs_f64());
+    debug!(%peer, %target, "target connected");
+    Ok((stream, target))
 }
