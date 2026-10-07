@@ -120,6 +120,8 @@ async fn handle_connect(
         return Err(e.into());
     }
     tls_stream.flush().await?;
+    drop(payload_buf);
+    drop(header_buf);
 
     // Send SOCKS5 success reply
     send_reply_unspecified(stream, REPLY_SUCCEEDED).await?;

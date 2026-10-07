@@ -114,6 +114,9 @@ where
             }
             CopyState::Writing(pos, len, acc) => {
                 match Pin::new(&mut *writer).poll_write(cx, &buf[*pos..*len]) {
+                    Poll::Ready(Ok(0)) => {
+                        return Poll::Ready(Err(io::ErrorKind::WriteZero.into()));
+                    }
                     Poll::Ready(Ok(n)) => {
                         *pos += n;
                         if *pos >= *len {
@@ -186,8 +189,8 @@ impl RelayStats {
 /// * `buffer_size` - Size of the read buffers
 /// * `metrics` - Metrics recorder for tracking bytes transferred
 pub async fn relay_bidirectional<A, B, M>(
-    inbound: A,
-    outbound: B,
+    mut inbound: A,
+    mut outbound: B,
     idle_timeout: Duration,
     buffer_size: usize,
     metrics: &M,
@@ -197,9 +200,6 @@ where
     B: AsyncRead + AsyncWrite + Unpin,
     M: RelayMetrics,
 {
-    let (mut in_r, mut in_w) = tokio::io::split(inbound);
-    let (mut out_r, mut out_w) = tokio::io::split(outbound);
-
     let mut buf_a = vec![0u8; buffer_size];
     let mut buf_b = vec![0u8; buffer_size];
     let mut state_a = CopyState::Reading(0);
@@ -230,7 +230,8 @@ where
             let mut error: Option<io::Error> = None;
 
             if !a_done {
-                match poll_copy_direction(cx, &mut in_r, &mut out_w, &mut buf_a, &mut state_a) {
+                match poll_copy_direction(cx, &mut inbound, &mut outbound, &mut buf_a, &mut state_a)
+                {
                     Poll::Ready(Ok(CopyPoll::Flushed(n))) => {
                         let bytes = n as u64;
                         metrics.record_inbound(bytes);
@@ -251,7 +252,8 @@ where
             }
 
             if !b_done {
-                match poll_copy_direction(cx, &mut out_r, &mut in_w, &mut buf_b, &mut state_b) {
+                match poll_copy_direction(cx, &mut outbound, &mut inbound, &mut buf_b, &mut state_b)
+                {
                     Poll::Ready(Ok(CopyPoll::Flushed(n))) => {
                         let bytes = n as u64;
                         metrics.record_outbound(bytes);
@@ -302,15 +304,13 @@ where
         }
     };
 
-    // Reunite the split halves and run a final shutdown on each. Critical
+    // Run a final shutdown on each stream. Critical
     // for TLS streams: when the bidi loop errors out (e.g. target sent RST,
     // or one direction's reader closed before the per-direction shutdown
     // could complete), the underlying TCP socket would otherwise be dropped
     // without a TLS alert and peers would see `UnexpectedEof` instead of a
     // clean `Ok(0)`. Best-effort — ignore shutdown errors so they don't mask
     // the original loop error.
-    let mut inbound = in_r.unsplit(in_w);
-    let mut outbound = out_r.unsplit(out_w);
     let _ = inbound.shutdown().await;
     let _ = outbound.shutdown().await;
 
@@ -407,6 +407,80 @@ mod tests {
         assert!(start.elapsed() >= Duration::from_millis(50));
 
         drop(client); // cleanup
+    }
+
+    #[tokio::test]
+    async fn relay_preserves_both_directions_under_backpressure_and_half_close() {
+        async fn exchange(stream: tokio::io::DuplexStream, sent: &[u8], expected: &[u8]) {
+            let (mut reader, mut writer) = tokio::io::split(stream);
+            let send = async {
+                writer.write_all(sent).await?;
+                writer.shutdown().await
+            };
+            let receive = async {
+                let mut received = Vec::new();
+                reader.read_to_end(&mut received).await?;
+                assert_eq!(received, expected);
+                Ok::<_, io::Error>(())
+            };
+            tokio::try_join!(send, receive).unwrap();
+        }
+
+        let (client, inbound) = duplex(32);
+        let (outbound, target) = duplex(32);
+        let upload = vec![0x21; 4096];
+        let download = vec![0xde; 65536];
+        let metrics = TestMetrics::new();
+        let (_, _, result) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                exchange(client, &upload, &download),
+                exchange(target, &download, &upload),
+                relay_bidirectional(inbound, outbound, Duration::from_secs(60), 16, &metrics,),
+            )
+        })
+        .await
+        .expect("both relay directions must make progress");
+
+        let stats = result.unwrap();
+        assert_eq!(stats.inbound, upload.len() as u64);
+        assert_eq!(stats.outbound, download.len() as u64);
+        assert_eq!(metrics.inbound.load(Ordering::Relaxed), stats.inbound);
+        assert_eq!(metrics.outbound.load(Ordering::Relaxed), stats.outbound);
+    }
+
+    #[test]
+    fn zero_byte_write_returns_write_zero_without_spinning() {
+        struct ZeroWriter(bool);
+
+        impl AsyncWrite for ZeroWriter {
+            fn poll_write(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                _buf: &[u8],
+            ) -> Poll<io::Result<usize>> {
+                assert!(!self.0, "a zero-byte write must not be polled again");
+                self.0 = true;
+                Poll::Ready(Ok(0))
+            }
+
+            fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                panic!("a failed write must not reach flush");
+            }
+
+            fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        let mut reader = &b"payload"[..];
+        let mut writer = ZeroWriter(false);
+        let mut buffer = [0; 32];
+        let mut state = CopyState::Reading(0);
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        match poll_copy_direction(&mut cx, &mut reader, &mut writer, &mut buffer, &mut state) {
+            Poll::Ready(Err(error)) => assert_eq!(error.kind(), io::ErrorKind::WriteZero),
+            _ => panic!("a zero-byte write must return WriteZero"),
+        }
     }
 
     // ── Flush-batching tests ──

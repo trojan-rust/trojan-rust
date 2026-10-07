@@ -11,6 +11,8 @@ This crate provides the foundational building blocks used by the trojan-rs works
 - **I/O utilities** — Bidirectional relay, `PrefixedStream` for prepending buffered data to a stream
 - **Transport adapters** — WebSocket transport layer (feature-gated)
 
+The bidirectional relay polls both streams in one task. Each direction continues through backpressure and half-close independently. A writer that returns zero for a nonempty buffer terminates the relay with `WriteZero`.
+
 ## Usage
 
 ```rust
