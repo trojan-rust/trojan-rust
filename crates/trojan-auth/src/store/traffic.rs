@@ -1,28 +1,9 @@
-//! Async traffic recording with batching support.
+//! Bounded traffic recording with one in-flight batch per recorder.
 //!
-//! This module is only compiled when the `batched-traffic` feature is enabled.
-//!
-//! ## Bytes lifecycle
-//!
-//! Each call to [`TrafficRecorder::record`] enqueues bytes that pass through
-//! three stages before reaching the backend:
-//!
-//! 1. **mpsc** — in the unbounded channel between callers and the loop task.
-//! 2. **pending** — coalesced into the `pending` map by batch key; awaits
-//!    either the next tick or the unique-key threshold.
-//! 3. **in-flight** — taken from `pending` and currently being flushed by a
-//!    task tracked in the loop's [`tokio::task::JoinSet`]. Bytes stay in
-//!    `in_flight` until the flush future resolves (success *or* failure),
-//!    then they are subtracted.
-//!
-//! [`TrafficRecorder::pending_for`] reports `pending + in_flight` so callers
-//! that need to know "how much have we recorded but not yet seen reflected in
-//! the backend?" — notably the cache revalidation path — get an accurate
-//! number.
-//!
-//! Flushes are spawned into the loop's `JoinSet` rather than detached via
-//! [`tokio::spawn`], so [`TrafficRecorder::shutdown`] can deterministically
-//! await every in-flight flush before returning.
+//! The channel and each batch hold at most `max_unique_users` entries.
+//! [`TrafficRecorder::record`] waits when the channel is full.
+//! [`TrafficRecorder::pending_for`] includes queued, pending, and in-flight bytes.
+//! A failed flush logs the lost batch and removes its outstanding bytes.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -37,193 +18,125 @@ use tokio_util::sync::CancellationToken;
 
 use crate::AuthError;
 
-/// What a batch coalesces on: cheap to clone, hashable, and safe to move into
-/// the background loop.
-///
-/// A user id is the common case, and the default. Reports that credit a hop of
-/// a relay chain key on the user and that hop together, so bytes for one user
-/// across two chains stay apart.
+/// Key used to coalesce traffic updates into a batch.
 pub trait BatchKey: Eq + Hash + Clone + Send + Sync + 'static {}
-
 impl<K: Eq + Hash + Clone + Send + Sync + 'static> BatchKey for K {}
 
-/// Traffic update message.
 struct TrafficUpdate<K> {
     key: K,
     bytes: u64,
 }
 
-/// Flush function type for batched traffic updates.
+/// Backend operation for one batch of traffic updates.
 pub type FlushFn<K = String> = Arc<dyn Fn(HashMap<K, u64>) -> FlushFuture + Send + Sync + 'static>;
 
-/// Future type for flush operations.
+/// Future returned by a backend flush operation.
 pub type FlushFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), AuthError>> + Send + 'static>>;
 
-/// Traffic recorder that batches updates.
-pub struct TrafficRecorder<K = String>
-where
-    K: BatchKey,
-{
-    sender: mpsc::UnboundedSender<TrafficUpdate<K>>,
-    /// Bytes coalesced but not yet handed to a flush task.
-    pending: Arc<Mutex<HashMap<K, u64>>>,
-    /// Bytes handed to an in-progress flush task.
-    in_flight: Arc<Mutex<HashMap<K, u64>>>,
+/// Traffic recorder with bounded buffering and backend concurrency.
+pub struct TrafficRecorder<K: BatchKey = String> {
+    sender: mpsc::Sender<TrafficUpdate<K>>,
+    outstanding: Arc<Mutex<HashMap<K, u64>>>,
     shutdown: CancellationToken,
-    /// Background loop join handle, taken on shutdown.
     task: StdMutex<Option<JoinHandle<()>>>,
 }
 
 impl<K: BatchKey> TrafficRecorder<K> {
-    /// Create a new traffic recorder with batching.
+    /// Create a recorder with a positive channel capacity and batch key limit.
     ///
-    /// `max_unique_users` triggers a flush as soon as the pending map contains
-    /// that many distinct user_ids (it does *not* count total updates).
+    /// `max_unique_users` bounds each batch and the number of queued updates.
+    /// One batch may accumulate while the previous batch is being flushed.
     pub fn new(flush_interval: Duration, max_unique_users: usize, flush_fn: FlushFn<K>) -> Self {
-        let (tx, mut rx) = mpsc::unbounded_channel::<TrafficUpdate<K>>();
-        let pending: Arc<Mutex<HashMap<K, u64>>> = Arc::new(Mutex::new(HashMap::new()));
-        let in_flight: Arc<Mutex<HashMap<K, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+        let (sender, mut receiver) = mpsc::channel::<TrafficUpdate<K>>(max_unique_users);
+        let outstanding = Arc::new(Mutex::new(HashMap::new()));
         let shutdown = CancellationToken::new();
-
-        let pending_loop = pending.clone();
-        let in_flight_loop = in_flight.clone();
-        let shutdown_loop = shutdown.clone();
-        let flush_fn_loop = flush_fn;
+        let totals = outstanding.clone();
+        let stop = shutdown.clone();
 
         let task = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(flush_interval);
-            // First tick fires immediately; skip it so we don't flush an empty
-            // map before any record() has happened.
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             ticker.tick().await;
-
-            // All in-flight flushes are tracked here so shutdown can wait for
-            // them, and so a slow flush doesn't pin memory by leaking the
-            // JoinHandle.
-            let mut flush_set: JoinSet<()> = JoinSet::new();
+            let mut pending = HashMap::new();
+            let mut flushes = JoinSet::new();
+            let mut flush_due = false;
+            let mut closing = false;
+            let mut drained = false;
 
             loop {
+                if !pending.is_empty()
+                    && flushes.is_empty()
+                    && (flush_due || drained || pending.len() >= max_unique_users)
+                {
+                    flushes.spawn(flush_batch(
+                        totals.clone(),
+                        flush_fn.clone(),
+                        std::mem::take(&mut pending),
+                    ));
+                    flush_due = false;
+                }
+                if drained && pending.is_empty() && flushes.is_empty() {
+                    break;
+                }
                 tokio::select! {
-                    biased;
-                    () = shutdown_loop.cancelled() => {
-                        // Drain any updates still sitting in the channel.
-                        while let Ok(update) = rx.try_recv() {
-                            let mut map = pending_loop.lock();
-                            *map.entry(update.key).or_insert(0) += update.bytes;
-                        }
-                        // Final flush — schedule it and then wait for *all*
-                        // in-flight flushes (including ones spawned earlier
-                        // that may still be running).
-                        let final_batch = {
-                            let mut map = pending_loop.lock();
-                            std::mem::take(&mut *map)
-                        };
-                        if !final_batch.is_empty() {
-                            let fut = build_flush_task(
-                                in_flight_loop.clone(),
-                                flush_fn_loop.clone(),
-                                final_batch,
-                            );
-                            flush_set.spawn(fut);
-                        }
-                        while flush_set.join_next().await.is_some() {}
-                        break;
+                    () = stop.cancelled(), if !closing => {
+                        receiver.close();
+                        closing = true;
                     }
-                    Some(update) = rx.recv() => {
-                        let batch = {
-                            let mut map = pending_loop.lock();
-                            *map.entry(update.key).or_insert(0) += update.bytes;
-                            if map.len() >= max_unique_users {
-                                Some(std::mem::take(&mut *map))
-                            } else {
-                                None
+                    update = receiver.recv(), if !drained && pending.len() < max_unique_users => {
+                        match update {
+                            Some(update) => *pending.entry(update.key).or_insert(0) += update.bytes,
+                            None => {
+                                drained = true;
+                                closing = true;
                             }
-                        };
-                        if let Some(batch) = batch {
-                            let fut = build_flush_task(
-                                in_flight_loop.clone(),
-                                flush_fn_loop.clone(),
-                                batch,
-                            );
-                            flush_set.spawn(fut);
                         }
                     }
-                    _ = ticker.tick() => {
-                        let batch = {
-                            let mut map = pending_loop.lock();
-                            if map.is_empty() {
-                                None
-                            } else {
-                                Some(std::mem::take(&mut *map))
-                            }
-                        };
-                        if let Some(batch) = batch {
-                            let fut = build_flush_task(
-                                in_flight_loop.clone(),
-                                flush_fn_loop.clone(),
-                                batch,
-                            );
-                            flush_set.spawn(fut);
-                        }
+                    _ = ticker.tick(), if !closing => flush_due = true,
+                    Some(result) = flushes.join_next(), if !flushes.is_empty() => {
+                        result.expect("traffic flush task panicked");
                     }
-                    // Reap completed flushes so JoinSet doesn't grow without
-                    // bound when many flushes complete quickly.
-                    Some(_) = flush_set.join_next(), if !flush_set.is_empty() => {}
                 }
             }
         });
 
         Self {
-            sender: tx,
-            pending,
-            in_flight,
+            sender,
+            outstanding,
             shutdown,
             task: StdMutex::new(Some(task)),
         }
     }
 
-    /// Record traffic (non-blocking, queues for batch).
-    #[inline]
-    pub fn record(&self, key: K, bytes: u64) {
-        let _ = self.sender.send(TrafficUpdate { key, bytes });
+    /// Queue an update, waiting for capacity. Return an error after shutdown.
+    pub async fn record(&self, key: K, bytes: u64) -> Result<(), AuthError> {
+        let permit = self.sender.reserve().await.map_err(AuthError::backend)?;
+        // No await may separate accounting from send: cancellation must not strand bytes.
+        *self.outstanding.lock().entry(key.clone()).or_insert(0) += bytes;
+        permit.send(TrafficUpdate { key, bytes });
+        Ok(())
     }
 
-    /// Bytes recorded for `user_id` that have not yet reached the backend.
-    ///
-    /// Sums the pending map (waiting for next flush) and the in-flight map
-    /// (currently being flushed). Use this on cache revalidation to seed the
-    /// in-memory traffic delta so freshly-fetched DB values do not appear
-    /// artificially low while bytes are still on the wire.
-    ///
-    /// Bytes still sitting in the mpsc channel before the loop has consumed
-    /// them are *not* included; the channel turnover is sub-millisecond, so
-    /// missing them does not change the answer in practice.
+    /// Return accepted bytes whose backend flush has not completed.
     pub fn pending_for<Q>(&self, key: &Q) -> u64
     where
         K: std::borrow::Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let pending = self.pending.lock().get(key).copied().unwrap_or(0);
-        let in_flight = self.in_flight.lock().get(key).copied().unwrap_or(0);
-        pending.saturating_add(in_flight)
+        self.outstanding.lock().get(key).copied().unwrap_or(0)
     }
 
-    /// Stop accepting new updates, drain everything pending, and wait for the
-    /// final flush to complete.
-    ///
-    /// Idempotent: calling twice is safe; the second call is a no-op.
+    /// Stop accepting updates, drain queued updates, and await backend flushes.
     pub async fn shutdown(&self) {
-        if self.shutdown.is_cancelled() {
-            return;
-        }
         self.shutdown.cancel();
         let handle = self
             .task
             .lock()
             .expect("traffic recorder task lock poisoned")
             .take();
-        if let Some(h) = handle {
-            let _ = h.await;
+        if let Some(handle) = handle {
+            handle.await.expect("traffic recorder task panicked");
         }
     }
 }
@@ -231,8 +144,7 @@ impl<K: BatchKey> TrafficRecorder<K> {
 impl<K: BatchKey> std::fmt::Debug for TrafficRecorder<K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TrafficRecorder")
-            .field("pending_users", &self.pending.lock().len())
-            .field("in_flight_users", &self.in_flight.lock().len())
+            .field("outstanding_keys", &self.outstanding.lock().len())
             .field("shutdown", &self.shutdown.is_cancelled())
             .finish()
     }
@@ -240,46 +152,28 @@ impl<K: BatchKey> std::fmt::Debug for TrafficRecorder<K> {
 
 impl<K: BatchKey> Drop for TrafficRecorder<K> {
     fn drop(&mut self) {
-        // Best-effort: cancel so the loop exits even if shutdown() was not
-        // awaited. Pending bytes that haven't been flushed yet are still lost
-        // unless the caller invoked shutdown().await before drop.
         self.shutdown.cancel();
     }
 }
 
-/// Register `batch` as in-flight, then return the future that performs the
-/// flush and decrements `in_flight` when it completes (success or failure).
-///
-/// Registering happens synchronously before the future is returned, so callers
-/// of [`TrafficRecorder::pending_for`] see the bytes the moment this function
-/// returns — not whenever the spawned task happens to be scheduled.
-fn build_flush_task<K: BatchKey>(
-    in_flight: Arc<Mutex<HashMap<K, u64>>>,
+async fn flush_batch<K: BatchKey>(
+    outstanding: Arc<Mutex<HashMap<K, u64>>>,
     flush_fn: FlushFn<K>,
     batch: HashMap<K, u64>,
-) -> impl std::future::Future<Output = ()> + Send + 'static {
-    let entries: Vec<(K, u64)> = {
-        let mut map = in_flight.lock();
-        batch
-            .iter()
-            .map(|(key, &bytes)| {
-                *map.entry(key.clone()).or_insert(0) += bytes;
-                (key.clone(), bytes)
-            })
-            .collect()
-    };
-
-    async move {
-        if let Err(e) = flush_fn(batch).await {
-            tracing::warn!(error = %e, "traffic flush failed; bytes lost");
-        }
-        let mut map = in_flight.lock();
-        for (key, bytes) in entries {
-            if let Some(entry) = map.get_mut(&key) {
-                *entry = entry.saturating_sub(bytes);
-                if *entry == 0 {
-                    map.remove(&key);
-                }
+) {
+    let entries: Vec<_> = batch
+        .iter()
+        .map(|(key, &bytes)| (key.clone(), bytes))
+        .collect();
+    if let Err(error) = flush_fn(batch).await {
+        tracing::warn!(%error, "traffic flush failed; bytes lost");
+    }
+    let mut totals = outstanding.lock();
+    for (key, bytes) in entries {
+        if let Some(total) = totals.get_mut(&key) {
+            *total -= bytes;
+            if *total == 0 {
+                totals.remove(&key);
             }
         }
     }
@@ -302,6 +196,60 @@ mod tests {
         })
     }
 
+    #[tokio::test]
+    async fn bounded_recording_preserves_queued_bytes_and_drains_on_shutdown() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let total = Arc::new(AtomicU64::new(0));
+        let active = Arc::new(AtomicU64::new(0));
+        let peak = Arc::new(AtomicU64::new(0));
+        let (started, mut starts) = mpsc::channel(3);
+        let flush: FlushFn = {
+            let (gate, total, active, peak) =
+                (gate.clone(), total.clone(), active.clone(), peak.clone());
+            Arc::new(move |batch| {
+                let (gate, total, active, peak, started) = (
+                    gate.clone(),
+                    total.clone(),
+                    active.clone(),
+                    peak.clone(),
+                    started.clone(),
+                );
+                Box::pin(async move {
+                    let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(count, Ordering::SeqCst);
+                    started.send(()).await.unwrap();
+                    gate.acquire().await.unwrap().forget();
+                    total.fetch_add(batch.values().sum(), Ordering::SeqCst);
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            })
+        };
+        let recorder = TrafficRecorder::new(Duration::from_secs(60), 1, flush);
+        recorder.record("alice".into(), 1).await.unwrap();
+        starts.recv().await.unwrap();
+        recorder.record("alice".into(), 2).await.unwrap();
+        recorder.record("alice".into(), 3).await.unwrap();
+        assert_eq!(recorder.pending_for("alice"), 6);
+        tokio::time::timeout(
+            Duration::from_millis(20),
+            recorder.record("alice".into(), 4),
+        )
+        .await
+        .expect_err("recording must wait when the backend and both buffers are full");
+        assert_eq!(recorder.pending_for("alice"), 6);
+
+        gate.add_permits(3);
+        tokio::time::timeout(Duration::from_secs(5), recorder.shutdown())
+            .await
+            .unwrap();
+        assert_eq!(total.load(Ordering::SeqCst), 6);
+        assert_eq!(peak.load(Ordering::SeqCst), 1);
+        assert_eq!(recorder.pending_for("alice"), 0);
+        recorder.record("alice".into(), 7).await.unwrap_err();
+        assert_eq!(recorder.pending_for("alice"), 0);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shutdown_flushes_remaining() {
         let total = Arc::new(AtomicU64::new(0));
@@ -311,9 +259,9 @@ mod tests {
             counting_flush(total.clone()),
         );
 
-        recorder.record("alice".into(), 100);
-        recorder.record("bob".into(), 200);
-        recorder.record("alice".into(), 50);
+        recorder.record("alice".into(), 100).await.unwrap();
+        recorder.record("bob".into(), 200).await.unwrap();
+        recorder.record("alice".into(), 50).await.unwrap();
 
         // Give the loop a moment to drain mpsc into pending.
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -343,7 +291,7 @@ mod tests {
 
         let recorder = TrafficRecorder::new(Duration::from_millis(50), 10_000, flush_fn);
 
-        recorder.record("alice".into(), 1000);
+        recorder.record("alice".into(), 1000).await.unwrap();
         // Wait for tick + spawn → the flush is now in-flight, blocked on `gate`.
         tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -377,9 +325,9 @@ mod tests {
 
         let recorder = TrafficRecorder::new(Duration::from_millis(50), 10_000, flush_fn);
 
-        recorder.record("u1".into(), 100);
+        recorder.record("u1".into(), 100).await.unwrap();
         tokio::time::sleep(Duration::from_millis(80)).await;
-        recorder.record("u2".into(), 200);
+        recorder.record("u2".into(), 200).await.unwrap();
         tokio::time::sleep(Duration::from_millis(80)).await;
         // shutdown waits for both in-flight flushes to drain.
         recorder.shutdown().await;
@@ -394,7 +342,7 @@ mod tests {
         });
 
         let recorder = TrafficRecorder::new(Duration::from_millis(50), 10_000, flush_fn);
-        recorder.record("alice".into(), 500);
+        recorder.record("alice".into(), 500).await.unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         // Even though the flush failed, in_flight must have been decremented.

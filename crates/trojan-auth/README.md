@@ -10,6 +10,12 @@ This crate provides pluggable authentication for the Trojan protocol:
 - **SQL backend** — PostgreSQL, MySQL, and SQLite via sqlx, with traffic accounting and user management CLI
 - **Reloadable auth** — Hot-reload passwords on SIGHUP without restarting the server
 
+Batched traffic recording bounds the update queue and each batch with `batch_max_pending` (default: 1000). Each recorder flushes one batch at a time. Recording waits when the queue is full and returns an error after shutdown. Pending traffic includes queued bytes. Call `shutdown().await` before dropping the backend to drain accepted updates.
+
+With caching and `tokio-runtime` enabled, cold requests for the same password hash wait for the first lookup and recheck the cache. Different hashes remain concurrent. Cancellation releases the query lock. Backend errors remain uncached.
+
+The HTTP backend runs at most 16 traffic requests per batch, with a separate batch for relay-hop credits. Each HTTP request has a 10-second deadline. Failed writes are logged and are not retried because traffic increments are not idempotent.
+
 ## Usage
 
 ```rust

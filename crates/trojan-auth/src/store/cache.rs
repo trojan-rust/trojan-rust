@@ -8,6 +8,8 @@
 use std::collections::HashMap;
 #[cfg(feature = "tokio-runtime")]
 use std::collections::HashSet;
+#[cfg(feature = "tokio-runtime")]
+use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -90,6 +92,8 @@ pub struct AuthCache {
     /// In-flight stale revalidations (hashes currently being refreshed).
     #[cfg(feature = "tokio-runtime")]
     revalidating: RwLock<HashSet<String>>,
+    #[cfg(feature = "tokio-runtime")]
+    queries: RwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl AuthCache {
@@ -110,6 +114,8 @@ impl AuthCache {
             misses: AtomicU64::new(0),
             #[cfg(feature = "tokio-runtime")]
             revalidating: RwLock::new(HashSet::new()),
+            #[cfg(feature = "tokio-runtime")]
+            queries: RwLock::new(HashMap::new()),
         }
     }
 
@@ -142,22 +148,36 @@ impl AuthCache {
     ///   use but revalidate in background
     /// - [`CacheLookup::Miss`] — no entry or fully expired
     pub fn lookup(&self, hash: &str) -> CacheLookup {
+        self.lookup_inner(hash, true)
+    }
+
+    pub(crate) fn peek(&self, hash: &str) -> CacheLookup {
+        self.lookup_inner(hash, false)
+    }
+
+    fn lookup_inner(&self, hash: &str, count: bool) -> CacheLookup {
         let cache = self.cache.read();
         if let Some(entry) = cache.get(hash) {
             let now = Instant::now();
             if now < entry.expires_at {
-                self.hits.fetch_add(1, Ordering::Relaxed);
+                if count {
+                    self.hits.fetch_add(1, Ordering::Relaxed);
+                }
                 return CacheLookup::Fresh(entry.user.clone());
             }
             // Past TTL — check stale window
             if self.stale_ttl > Duration::ZERO && now < entry.expires_at + self.stale_ttl {
-                self.hits.fetch_add(1, Ordering::Relaxed);
+                if count {
+                    self.hits.fetch_add(1, Ordering::Relaxed);
+                }
                 return CacheLookup::Stale(entry.user.clone());
             }
         }
         drop(cache);
 
-        self.misses.fetch_add(1, Ordering::Relaxed);
+        if count {
+            self.misses.fetch_add(1, Ordering::Relaxed);
+        }
         CacheLookup::Miss
     }
 
@@ -320,6 +340,21 @@ impl AuthCache {
         self.revalidating.write().remove(hash);
     }
 
+    #[cfg(feature = "tokio-runtime")]
+    pub(crate) fn query_lock<'a>(&'a self, hash: &'a str) -> QueryLock<'a> {
+        let mutex = self
+            .queries
+            .write()
+            .entry(hash.to_owned())
+            .or_default()
+            .clone();
+        QueryLock {
+            cache: self,
+            hash,
+            mutex: Some(mutex),
+        }
+    }
+
     // ── Statistics ──────────────────────────────────────────────
 
     /// Get cache statistics.
@@ -331,6 +366,43 @@ impl AuthCache {
             hits: self.hits.load(Ordering::Relaxed),
             misses: self.misses.load(Ordering::Relaxed),
             ttl: self.ttl,
+        }
+    }
+}
+
+/// Retain a per-hash lock only while callers are using or awaiting the lock.
+#[cfg(feature = "tokio-runtime")]
+#[derive(Debug)]
+pub(crate) struct QueryLock<'a> {
+    cache: &'a AuthCache,
+    hash: &'a str,
+    mutex: Option<Arc<tokio::sync::Mutex<()>>>,
+}
+
+#[cfg(feature = "tokio-runtime")]
+impl QueryLock<'_> {
+    pub(crate) async fn lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.mutex
+            .as_ref()
+            .expect("query lock is retained until drop")
+            .lock()
+            .await
+    }
+}
+
+#[cfg(feature = "tokio-runtime")]
+impl Drop for QueryLock<'_> {
+    fn drop(&mut self) {
+        let mut queries = self.cache.queries.write();
+        // Release our handle under the map lock so simultaneous drops cannot leave an unused entry.
+        drop(self.mutex.take());
+        if Arc::strong_count(
+            queries
+                .get(self.hash)
+                .expect("active query lock is registered"),
+        ) == 1
+        {
+            queries.remove(self.hash);
         }
     }
 }
@@ -365,6 +437,27 @@ impl CacheStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "tokio-runtime")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn simultaneous_query_lock_drops_release_registry_entries() {
+        let cache = Arc::new(make_cache());
+        for _ in 0..32 {
+            let barrier = Arc::new(tokio::sync::Barrier::new(32));
+            let mut tasks = tokio::task::JoinSet::new();
+            for _ in 0..32 {
+                let (cache, barrier) = (cache.clone(), barrier.clone());
+                tasks.spawn(async move {
+                    let _query = cache.query_lock("hash");
+                    barrier.wait().await;
+                });
+            }
+            while let Some(result) = tasks.join_next().await {
+                result.unwrap();
+            }
+            assert!(cache.queries.read().is_empty());
+        }
+    }
 
     fn make_cache() -> AuthCache {
         AuthCache::new(

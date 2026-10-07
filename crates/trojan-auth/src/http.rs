@@ -166,6 +166,7 @@ impl HttpStore {
                 let mut req = self
                     .client
                     .post(url)
+                    .timeout(Duration::from_secs(10))
                     .header("Content-Type", "application/octet-stream");
                 if let Some(ref token) = self.node_token {
                     req = req.header("Authorization", format!("Bearer {token}"));
@@ -173,7 +174,7 @@ impl HttpStore {
                 req.body(bytes).send().await.map_err(AuthError::backend)?
             }
             Codec::Json => {
-                let mut req = self.client.post(url);
+                let mut req = self.client.post(url).timeout(Duration::from_secs(10));
                 if let Some(ref token) = self.node_token {
                     req = req.header("Authorization", format!("Bearer {token}"));
                 }
@@ -283,12 +284,15 @@ impl HttpAuth {
             let flush_fn: FlushFn = Arc::new(move |batch| {
                 let store = store_for_flush.clone();
                 Box::pin(async move {
-                    // Fire all POSTs concurrently — the dashboard worker's /traffic
-                    // endpoint takes one user per request, so a 1000-user
-                    // batch used to mean 1000 sequential round trips. JoinSet
-                    // lets reqwest's connection pool fan them out instead.
                     let mut tasks = tokio::task::JoinSet::new();
                     for (user_id, bytes) in batch {
+                        if tasks.len() == 16 {
+                            tasks
+                                .join_next()
+                                .await
+                                .unwrap()
+                                .map_err(AuthError::backend)?;
+                        }
                         let store = store.clone();
                         tasks.spawn(async move {
                             if let Err(e) = store.add_traffic(&user_id, bytes).await {
@@ -301,7 +305,9 @@ impl HttpAuth {
                             }
                         });
                     }
-                    while tasks.join_next().await.is_some() {}
+                    while let Some(result) = tasks.join_next().await {
+                        result.map_err(AuthError::backend)?;
+                    }
                     Ok(())
                 })
             });
@@ -323,6 +329,13 @@ impl HttpAuth {
             Box::pin(async move {
                 let mut tasks = tokio::task::JoinSet::new();
                 for (credit, bytes) in batch {
+                    if tasks.len() == 16 {
+                        tasks
+                            .join_next()
+                            .await
+                            .unwrap()
+                            .map_err(AuthError::backend)?;
+                    }
                     let store = store.clone();
                     tasks.spawn(async move {
                         if let Err(e) = store
@@ -339,7 +352,9 @@ impl HttpAuth {
                         }
                     });
                 }
-                while tasks.join_next().await.is_some() {}
+                while let Some(result) = tasks.join_next().await {
+                    result.map_err(AuthError::backend)?;
+                }
                 Ok(())
             })
         });
@@ -375,13 +390,15 @@ impl AuthBackend for HttpAuth {
             return Ok(());
         };
         for node_id in nodes {
-            recorder.record(
-                ChainCredit {
-                    user_id: user_id.to_owned(),
-                    node_id: node_id.clone(),
-                },
-                bytes,
-            );
+            recorder
+                .record(
+                    ChainCredit {
+                        user_id: user_id.to_owned(),
+                        node_id: node_id.clone(),
+                    },
+                    bytes,
+                )
+                .await?;
         }
         Ok(())
     }

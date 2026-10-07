@@ -28,11 +28,9 @@ pub struct StoreAuthConfig {
     pub traffic_mode: TrafficRecordingMode,
     /// Batch flush interval (only used with [`TrafficRecordingMode::Batched`]).
     pub batch_flush_interval: Duration,
-    /// Force a flush as soon as this many distinct user_ids accumulate in the
-    /// pending map. Counts unique users — *not* total update calls — because
-    /// updates for the same user are coalesced. Use a large value (e.g. the
-    /// expected concurrent user count) to make the flush_interval the
-    /// dominant trigger.
+    /// Maximum distinct keys per batch and maximum queued updates.
+    /// A full batch triggers a flush. A full queue makes recording wait.
+    /// The value must be positive.
     pub batch_max_pending: usize,
     /// Whether to enable authentication result caching.
     pub cache_enabled: bool,

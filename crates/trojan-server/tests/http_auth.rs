@@ -49,6 +49,76 @@ use trojan_server::{CancellationToken, run_with_shutdown};
 const GOOD_PASSWORD: &str = "http-auth-good";
 const BAD_PASSWORD: &str = "http-auth-unknown";
 
+#[tokio::test]
+async fn traffic_flush_bounds_http_concurrency_and_preserves_all_updates() {
+    use axum::{Json, Router, routing::post};
+    use trojan_auth::AuthBackend;
+
+    let active = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let total = Arc::new(AtomicUsize::new(0));
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let (entered, mut requests) = tokio::sync::mpsc::channel(64);
+    let app = {
+        let (active, peak, total, gate) =
+            (active.clone(), peak.clone(), total.clone(), gate.clone());
+        Router::new().route(
+            "/traffic",
+            post(move |Json(body): Json<serde_json::Value>| {
+                let (active, peak, total, gate, entered) = (
+                    active.clone(),
+                    peak.clone(),
+                    total.clone(),
+                    gate.clone(),
+                    entered.clone(),
+                );
+                async move {
+                    let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(count, Ordering::SeqCst);
+                    entered.send(()).await.unwrap();
+                    gate.acquire().await.unwrap().forget();
+                    let bytes = usize::try_from(body["bytes"].as_u64().unwrap()).unwrap();
+                    total.fetch_add(bytes, Ordering::SeqCst);
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    Json(serde_json::json!({ "Ok": null }))
+                }
+            }),
+        )
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let auth = HttpAuth::new(HttpAuthConfig {
+        base_url: format!("http://{address}"),
+        codec: Codec::Json,
+        batch_flush_interval: Duration::from_secs(60),
+        ..Default::default()
+    });
+    for user in 0..64 {
+        auth.record_traffic(&format!("user-{user}"), 7)
+            .await
+            .unwrap();
+    }
+    let flush = tokio::spawn(async move { auth.shutdown().await });
+    for _ in 0..16 {
+        tokio::time::timeout(Duration::from_secs(5), requests.recv())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    tokio::time::timeout(Duration::from_millis(100), requests.recv())
+        .await
+        .expect_err("the seventeenth request must wait for an active request");
+    gate.add_permits(64);
+    tokio::time::timeout(Duration::from_secs(5), flush)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(total.load(Ordering::SeqCst), 64 * 7);
+    assert_eq!(peak.load(Ordering::SeqCst), 16);
+    server.abort();
+}
+
 #[ctor::ctor]
 fn init_crypto() {
     rustls::crypto::aws_lc_rs::default_provider()

@@ -295,19 +295,22 @@ impl<S: UserStore + 'static> StoreAuth<S> {
     }
 }
 
-#[async_trait]
-impl<S: UserStore + 'static> AuthBackend for StoreAuth<S> {
-    async fn verify(&self, hash: &str) -> Result<AuthResult, AuthError> {
+impl<S: UserStore + 'static> StoreAuth<S> {
+    fn cached_result(&self, hash: &str, count: bool) -> Option<Result<AuthResult, AuthError>> {
         if let Some(ref cache) = self.auth_cache {
             // 1. Negative cache — reject known-invalid hashes without store query
             if cache.is_negative(hash) {
-                return Err(AuthError::Invalid);
+                return Some(Err(AuthError::Invalid));
             }
 
             // 2. Cache lookup with stale-while-revalidate support
-            match cache.lookup(hash) {
+            match if count {
+                cache.lookup(hash)
+            } else {
+                cache.peek(hash)
+            } {
                 CacheLookup::Fresh(cached) => {
-                    return Self::validate_cached(cache, hash, cached);
+                    return Some(Self::validate_cached(cache, hash, cached));
                 }
                 CacheLookup::Stale(cached) => {
                     let result = Self::validate_cached(cache, hash, cached);
@@ -316,13 +319,15 @@ impl<S: UserStore + 'static> AuthBackend for StoreAuth<S> {
                     // cache state can recover quickly when backend state changes.
                     #[cfg(feature = "tokio-runtime")]
                     self.spawn_revalidation(cache, hash);
-                    return result;
+                    return Some(result);
                 }
                 CacheLookup::Miss => { /* fall through to store query */ }
             }
         }
+        None
+    }
 
-        // 3. Cache miss — query the store
+    async fn query_store(&self, hash: &str) -> Result<AuthResult, AuthError> {
         let record = match self.store.find_by_hash(hash).await? {
             Some(record) => record,
             None => {
@@ -338,7 +343,7 @@ impl<S: UserStore + 'static> AuthBackend for StoreAuth<S> {
         Self::validate_record(&record)?;
 
         // Cache successful result and reseed traffic delta with bytes still
-        // in the recorder pipeline (pending + in-flight).
+        // in the recorder pipeline (queued, pending, and in-flight).
         if let Some(ref cache) = self.auth_cache {
             if let Some(ref uid) = record.user_id {
                 let pending = self.pending_traffic_for(uid);
@@ -361,8 +366,34 @@ impl<S: UserStore + 'static> AuthBackend for StoreAuth<S> {
 
         Ok(Self::record_to_result(&record))
     }
+}
+
+#[async_trait]
+impl<S: UserStore + 'static> AuthBackend for StoreAuth<S> {
+    async fn verify(&self, hash: &str) -> Result<AuthResult, AuthError> {
+        if let Some(result) = self.cached_result(hash, true) {
+            return result;
+        }
+        #[cfg(feature = "tokio-runtime")]
+        if let Some(cache) = &self.auth_cache {
+            let query = cache.query_lock(hash);
+            let _guard = query.lock().await;
+            // A caller ahead of us may have populated either cache while we waited.
+            if let Some(result) = self.cached_result(hash, false) {
+                return result;
+            }
+            return self.query_store(hash).await;
+        }
+        self.query_store(hash).await
+    }
 
     async fn record_traffic(&self, user_id: &str, bytes: u64) -> Result<(), AuthError> {
+        #[cfg(feature = "batched-traffic")]
+        if self.traffic_mode == TrafficRecordingMode::Batched
+            && let Some(ref recorder) = self.traffic_recorder
+        {
+            recorder.record(user_id.to_string(), bytes).await?;
+        }
         // Update in-memory traffic delta so cache hits reflect accumulated traffic
         if let Some(ref cache) = self.auth_cache {
             cache.add_traffic_delta(user_id, bytes);
@@ -371,14 +402,7 @@ impl<S: UserStore + 'static> AuthBackend for StoreAuth<S> {
         // Persist to backend
         match self.traffic_mode {
             TrafficRecordingMode::Immediate => self.store.add_traffic(user_id, bytes).await,
-            TrafficRecordingMode::Batched => {
-                #[cfg(feature = "batched-traffic")]
-                if let Some(ref recorder) = self.traffic_recorder {
-                    recorder.record(user_id.to_string(), bytes);
-                }
-                Ok(())
-            }
-            TrafficRecordingMode::Disabled => Ok(()),
+            TrafficRecordingMode::Batched | TrafficRecordingMode::Disabled => Ok(()),
         }
     }
 
@@ -404,6 +428,100 @@ impl<S: UserStore + std::fmt::Debug> std::fmt::Debug for StoreAuth<S> {
 mod tests {
     use super::{StoreAuth, UserRecord, UserStore};
     use crate::AuthError;
+
+    #[cfg(feature = "tokio-runtime")]
+    #[tokio::test]
+    async fn cold_queries_share_cached_results_without_serializing_other_hashes() {
+        use crate::{AuthBackend, store::StoreAuthConfig};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use std::time::Duration;
+
+        struct GatedStore {
+            calls: AtomicUsize,
+            started: tokio::sync::mpsc::Sender<String>,
+            gate: tokio::sync::Semaphore,
+        }
+        #[async_trait::async_trait]
+        impl UserStore for GatedStore {
+            async fn find_by_hash(&self, hash: &str) -> Result<Option<UserRecord>, AuthError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.started.send(hash.to_owned()).await.unwrap();
+                self.gate.acquire().await.unwrap().forget();
+                Ok((hash != "missing").then(|| UserRecord {
+                    user_id: Some(hash.to_owned()),
+                    enabled: true,
+                    traffic_limit: 0,
+                    traffic_used: 0,
+                    expires_at: 0,
+                    node_quotas: Vec::new(),
+                }))
+            }
+            async fn add_traffic(&self, _user_id: &str, _bytes: u64) -> Result<(), AuthError> {
+                unreachable!()
+            }
+        }
+        let (started, mut queries) = tokio::sync::mpsc::channel(64);
+        let auth = Arc::new(StoreAuth::new(
+            GatedStore {
+                calls: AtomicUsize::new(0),
+                started,
+                gate: tokio::sync::Semaphore::new(0),
+            },
+            &StoreAuthConfig {
+                cache_enabled: true,
+                ..Default::default()
+            },
+        ));
+        let mut tasks = tokio::task::JoinSet::new();
+        for hash in ["alice", "missing"] {
+            for _ in 0..32 {
+                let auth = auth.clone();
+                tasks.spawn(async move { (hash, auth.verify(hash).await) });
+            }
+        }
+        let mut started = Vec::new();
+        for _ in 0..2 {
+            started.push(
+                tokio::time::timeout(Duration::from_secs(5), queries.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        started.sort();
+        assert_eq!(started, ["alice", "missing"]);
+        auth.store.gate.add_permits(2);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(result) = tasks.join_next().await {
+                let (hash, result) = result.unwrap();
+                if hash == "missing" {
+                    assert!(matches!(result, Err(AuthError::Invalid)));
+                } else {
+                    assert_eq!(result.unwrap().user_id.as_deref(), Some(hash));
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(auth.store.calls.load(Ordering::SeqCst), 2);
+
+        let pending = {
+            let auth = auth.clone();
+            tokio::spawn(async move { auth.verify("cancelled").await })
+        };
+        assert_eq!(queries.recv().await.unwrap(), "cancelled");
+        pending.abort();
+        assert!(pending.await.unwrap_err().is_cancelled());
+        auth.store.gate.add_permits(1);
+        let result = tokio::time::timeout(Duration::from_secs(5), auth.verify("cancelled"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.user_id.as_deref(), Some("cancelled"));
+    }
 
     #[derive(Debug)]
     struct UnusedStore;

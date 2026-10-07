@@ -36,7 +36,7 @@ pub struct SqlAuthConfig {
     /// Batch flush interval (only used with Batched mode).
     pub batch_flush_interval: Duration,
 
-    /// Maximum pending traffic updates before forced flush.
+    /// Positive limit for distinct keys per batch and queued traffic updates.
     pub batch_max_pending: usize,
 
     /// Whether to enable authentication caching.
