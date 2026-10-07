@@ -3,6 +3,39 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+## [0.14.0](https://github.com/trojan-rust/trojan-rust/compare/v0.13.0...v0.14.0) - 2026-10-07
+
+### Bug Fixes
+
+- percent-encode a password written into a subscription URL
+
+- preserve node quotas after user updates
+
+- preserve bound listeners during startup
+
+- preserve service lifecycle and honor HTTP auth
+
+- enforce authentication deadlines and UDP routing
+
+
+### Chores
+
+- ignore benchmark results
+
+
+### Performance
+
+- bound traffic reporting and coalesce cold lookups
+
+- remove relay split locks and release handshake buffers
+
+- bound destination metrics and unblock TCP and UDP scheduling
+
+
+### Tests
+
+- add real TCP and TLS performance baseline
+
 ## [0.13.0](https://github.com/trojan-rust/trojan-rust/compare/v0.12.0...v0.13.0) - 2026-08-12
 
 ### Bug Fixes
