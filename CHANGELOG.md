@@ -3,6 +3,12 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+## [0.15.0](https://github.com/trojan-rust/trojan-rust/compare/v0.14.0...v0.15.0) - 2026-10-07
+
+### Bug Fixes
+
+- acknowledge hop connections before destination failover
+
 ## [0.14.0](https://github.com/trojan-rust/trojan-rust/compare/v0.13.0...v0.14.0) - 2026-10-07
 
 ### Bug Fixes
