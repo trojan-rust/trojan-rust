@@ -3,11 +3,18 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
-## [0.15.0](https://github.com/trojan-rust/trojan-rust/compare/v0.14.0...v0.15.0) - 2026-10-07
+## [0.15.0](https://github.com/trojan-rust/trojan-rust/compare/v0.14.0...v0.15.0) - 2026-10-08
+
+### Breaking Changes
+
+- Upgrade all relay nodes before upgrading entry nodes. New entry nodes require connection responses from every relay. New relay nodes still accept legacy entry handshakes.
+- Library users must account for the new `HandshakeMetadata.ack` field and `RelayError::RemoteConnectFailed` variant.
 
 ### Bug Fixes
 
-- acknowledge hop connections before destination failover
+- Confirm each hop's target connection before forwarding client data. With `strategy = "failover"`, a failed exit connection switches to another destination within the same client connection.
+- Keep intermediate relay failures, authentication failures, and missing responses from marking exit destinations unhealthy.
+- Attempt each destination address at most once per client connection, even with zero cooldown. Never retry after payload forwarding starts.
 
 ## [0.14.0](https://github.com/trojan-rust/trojan-rust/compare/v0.13.0...v0.14.0) - 2026-10-07
 
@@ -602,4 +609,3 @@ All notable changes to this project will be documented in this file.
 ### <!-- 0 -->🚀 Features
 
 - initial trojan-rs server implementation
-
