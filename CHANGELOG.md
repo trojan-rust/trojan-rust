@@ -3,6 +3,31 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+## [0.16.0](https://github.com/trojan-rust/trojan-rust/compare/v0.15.0...v0.16.0) - 2026-10-08
+
+### Bug Fixes
+
+- track connection lifetimes and route outcomes
+
+- negotiate node accounting without version bump
+
+
+### Chores
+
+- update Cargo.lock dependencies
+
+
+### Features
+
+- add durable node quotas and traffic-aware routing
+
+- expose node rates and durable traffic history
+
+
+### Performance
+
+- buffer traffic journal writes and expose backlog
+
 
 ### Breaking Changes
 
