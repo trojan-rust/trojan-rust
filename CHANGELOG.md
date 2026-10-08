@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.16.0](https://github.com/trojan-rust/trojan-rust/compare/v0.15.0...v0.16.0) - 2026-10-08
+
 ### Breaking Changes
 
 - Library callers must account for `LbStrategy::TrafficAware`, `RuleConfig::routes`, and the route pool returned by `Router::resolve`. Every load-balancing strategy now excludes unhealthy backends and returns an error when none are available.
