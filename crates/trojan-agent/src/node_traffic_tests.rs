@@ -1,5 +1,63 @@
 use super::*;
 
+#[tokio::test]
+#[ignore = "durable I/O benchmark; run with --release --ignored --nocapture"]
+async fn journal_backlog_benchmark() {
+    const OPERATIONS: u64 = 5;
+    for backlog in [100_u64, 1_000, 10_000] {
+        let directory = tempfile::tempdir().unwrap();
+        let traffic = open(directory.path(), &config(), 30).await;
+        let stream = traffic
+            .with_journal(move |journal| {
+                let mut saved = journal.saved.clone();
+                saved.last_sequence = backlog;
+                saved.pending = (1..=backlog)
+                    .map(|sequence| NodeTrafficReport {
+                        stream_id: saved.stream_id.clone(),
+                        sequence,
+                        observed_at: 1_800_000_000 + sequence,
+                        bytes_in: 1_024,
+                        bytes_out: 2_048,
+                    })
+                    .collect();
+                let stream = saved.stream_id.clone();
+                journal.commit(saved)?;
+                Ok(stream)
+            })
+            .await
+            .unwrap();
+        let started = std::time::Instant::now();
+        for count in 1..=OPERATIONS {
+            traffic
+                .sample(counters(count, count), 1_800_010_001 + count)
+                .await
+                .unwrap();
+        }
+        let sample = started.elapsed().as_secs_f64() / OPERATIONS as f64;
+        let started = std::time::Instant::now();
+        for sequence in 1..=OPERATIONS {
+            traffic.acknowledge(stream.clone(), sequence).await.unwrap();
+        }
+        let ack = started.elapsed().as_secs_f64() / OPERATIONS as f64;
+        drop(traffic);
+        let started = std::time::Instant::now();
+        let recovered = NodeTraffic::open(directory.path(), &config(), 30)
+            .await
+            .unwrap();
+        let recovery = started.elapsed().as_secs_f64();
+        assert_eq!(pending(&recovered).await.len() as u64, backlog);
+        let size = std::fs::metadata(directory.path().join(FILENAME))
+            .unwrap()
+            .len();
+        println!(
+            "backlog={backlog} sample_ms={:.3} ack_ms={:.3} recovery_ms={:.3} file_bytes={size}",
+            sample * 1_000.0,
+            ack * 1_000.0,
+            recovery * 1_000.0
+        );
+    }
+}
+
 async fn open(path: &Path, config: &AgentConfig, interval: u64) -> NodeTraffic {
     let traffic = NodeTraffic::open(path, config, interval).await.unwrap();
     traffic.enable(NodeStats::new()).await.unwrap();

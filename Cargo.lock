@@ -4653,6 +4653,8 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "hostname",
+ "metrics",
+ "metrics-exporter-prometheus",
  "rcgen",
  "reqwest",
  "serde",

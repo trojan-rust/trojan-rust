@@ -2,10 +2,10 @@
 
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, mpsc, watch};
@@ -17,6 +17,9 @@ use crate::error::AgentError;
 use crate::protocol::{AgentMessage, NodeTrafficReport};
 
 const FILENAME: &str = "node-traffic.json";
+
+#[path = "node_traffic_observability.rs"]
+mod observability;
 
 #[derive(Clone)]
 pub(crate) struct NodeTraffic {
@@ -44,6 +47,7 @@ struct Journal {
     token_hash: String,
     baseline: NodeSnapshot,
     enabled: bool,
+    pending_bytes: f64,
     _lock: File,
 }
 
@@ -74,12 +78,16 @@ impl NodeTraffic {
         operation: impl FnOnce(&mut Journal) -> Result<T, AgentError> + Send + 'static,
     ) -> Result<T, AgentError> {
         let journal = self.journal.clone();
+        // The service can install the recorder after journal startup.
+        let metrics = observability::Backlog::new();
         // Blocking work finishes before releasing the lock, even if an async caller is cancelled.
         tokio::task::spawn_blocking(move || {
             let mut journal = journal
                 .lock()
                 .map_err(|e| AgentError::Accounting(format!("journal lock poisoned: {e}")))?;
-            operation(&mut journal).map_err(accounting_error)
+            let result = operation(&mut journal).map_err(accounting_error);
+            metrics.publish(&journal);
+            result
         })
         .await
         .map_err(|e| AgentError::Accounting(format!("journal task failed: {e}")))?
@@ -143,10 +151,17 @@ impl NodeTraffic {
     }
 
     async fn sample_stats(&self, stats: Arc<NodeStats>) -> Result<(), AgentError> {
-        self.with_journal(move |journal| {
-            journal.sample(stats.snapshot(), crate::runtime::unix_now())
-        })
-        .await?;
+        let started = Instant::now();
+        let result = self
+            .with_journal(move |journal| {
+                let observed_at = crate::runtime::unix_now();
+                journal
+                    .sample(stats.snapshot(), observed_at)
+                    .map(|()| observed_at)
+            })
+            .await;
+        observability::operation(observability::Operation::Sample, started, result.is_ok());
+        observability::sampled(result?);
         self.changed.notify_one();
         Ok(())
     }
@@ -179,21 +194,29 @@ impl NodeTraffic {
         stream_id: String,
         sequence: u64,
     ) -> Result<(), AgentError> {
-        self.with_journal(move |journal| {
-            if stream_id != journal.saved.stream_id || sequence > journal.saved.last_sequence {
-                return Err(AgentError::Accounting(
-                    "invalid traffic acknowledgement".into(),
-                ));
-            }
-            if sequence <= journal.saved.acknowledged {
-                return Ok(());
-            }
-            let mut saved = journal.saved.clone();
-            saved.acknowledged = sequence;
-            saved.pending.retain(|report| report.sequence > sequence);
-            journal.commit(saved)
-        })
-        .await?;
+        let started = Instant::now();
+        let result = self
+            .with_journal(move |journal| {
+                if stream_id != journal.saved.stream_id || sequence > journal.saved.last_sequence {
+                    return Err(AgentError::Accounting(
+                        "invalid traffic acknowledgement".into(),
+                    ));
+                }
+                if sequence <= journal.saved.acknowledged {
+                    return Ok(());
+                }
+                let mut saved = journal.saved.clone();
+                saved.acknowledged = sequence;
+                saved.pending.retain(|report| report.sequence > sequence);
+                journal.commit(saved)
+            })
+            .await;
+        observability::operation(
+            observability::Operation::Acknowledge,
+            started,
+            result.is_ok(),
+        );
+        result?;
         self.changed.notify_one();
         Ok(())
     }
@@ -211,12 +234,17 @@ impl NodeTraffic {
                 && report.sequence > sent_sequence
             {
                 sent_sequence = report.sequence;
-                tx.send(AgentMessage::NodeTraffic { report })
-                    .await
-                    .map_err(|_| AgentError::ConnectionClosed)?;
+                let started = Instant::now();
+                let result = tx.send(AgentMessage::NodeTraffic { report }).await;
+                observability::operation(observability::Operation::Send, started, result.is_ok());
+                result.map_err(|_| AgentError::ConnectionClosed)?;
             }
             self.changed.notified().await;
         }
+    }
+
+    pub(crate) fn record_rejection() {
+        observability::rejected();
     }
 }
 
@@ -295,6 +323,7 @@ impl Journal {
         };
         let journal = Self {
             path,
+            pending_bytes: pending_bytes(&saved),
             saved,
             token_hash,
             baseline: NodeSnapshot::default(),
@@ -308,10 +337,10 @@ impl Journal {
     fn persist(&self, saved: &SavedTraffic) -> Result<(), AgentError> {
         // ponytail: Use append-only storage if backlog rewrite time reaches the report interval.
         let temporary = self.path.with_extension("json.tmp");
-        let mut file = File::create(&temporary)?;
+        let mut file = BufWriter::new(File::create(&temporary)?);
         serde_json::to_writer(&mut file, saved)?;
         file.flush()?;
-        file.sync_all()?;
+        file.get_ref().sync_all()?;
         drop(file);
         atomicwrites::replace_atomic(&temporary, &self.path)?;
         Ok(())
@@ -319,6 +348,7 @@ impl Journal {
 
     fn commit(&mut self, saved: SavedTraffic) -> Result<(), AgentError> {
         self.persist(&saved)?;
+        self.pending_bytes = pending_bytes(&saved);
         self.saved = saved;
         Ok(())
     }
@@ -356,6 +386,18 @@ impl Journal {
     }
 }
 
+fn pending_bytes(saved: &SavedTraffic) -> f64 {
+    saved
+        .pending
+        .iter()
+        .map(|report| report.bytes_in as f64 + report.bytes_out as f64)
+        .sum()
+}
+
 #[cfg(test)]
 #[path = "node_traffic_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "node_traffic_metrics_tests.rs"]
+mod metrics_tests;

@@ -403,7 +403,10 @@ async fn connected(
                 Some(PanelMessage::NodeStates { snapshot }) if reg.node_traffic => sinks.node_states.update(snapshot),
                 Some(PanelMessage::NodeTrafficAck { stream_id, sequence }) if reg.node_traffic => traffic.acknowledge(stream_id, sequence).await?,
                 Some(PanelMessage::NodeStates { .. } | PanelMessage::NodeTrafficAck { .. }) => return Err(AgentError::Accounting("panel sent node traffic data without negotiating support".into())),
-                Some(PanelMessage::Error { code: crate::protocol::ErrorCode::InvalidTrafficReport, message }) => return Err(AgentError::Accounting(format!("panel rejected traffic report: {message}"))),
+                Some(PanelMessage::Error { code: crate::protocol::ErrorCode::InvalidTrafficReport, message }) => {
+                    NodeTraffic::record_rejection();
+                    return Err(AgentError::Accounting(format!("panel rejected traffic report: {message}")));
+                }
                 Some(PanelMessage::Error { code, message }) => warn!(?code, %message, "panel error"),
                 Some(PanelMessage::Registered { .. }) => warn!("duplicate panel registration"),
                 Some(PanelMessage::Ping) => {}

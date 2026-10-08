@@ -47,6 +47,7 @@ async-trait.workspace = true
 getrandom = "0.4.3"
 trojan-lb.workspace = true
 atomicwrites = "0.4.4"
+metrics.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -63,6 +64,7 @@ bytes.workspace = true
 trojan-dash.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 tokio = { workspace = true, features = ["test-util"] }
+metrics-exporter-prometheus.workspace = true
 
 [lints]
 workspace = true
