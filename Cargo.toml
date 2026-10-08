@@ -23,6 +23,9 @@ members = [
     "crates/trojan-server",
     "crates/trojan-client",
     "crates/trojan-cert",
+    # Release-plz ignores Agent's Dashboard test dependency when sorting packages.
+    # ponytail: Keep this order until https://github.com/release-plz/release-plz/issues/2697 is fixed.
+    "crates/trojan-dash",
     "crates/trojan-rs",
     "crates/trojan-relay",
     "crates/trojan-transport",
@@ -32,7 +35,6 @@ members = [
     "crates/trojan-agent",
     "crates/trojan-protocol",
     "crates/trojan-ddns",
-    "crates/trojan-dash",
 ]
 
 [workspace.package]
