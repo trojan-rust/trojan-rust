@@ -2,6 +2,8 @@
 
 Multi-hop relay chain for trojan-rs, enabling flexible traffic routing through intermediate nodes.
 
+With `metrics.listen` enabled, entries expose route selections, tunnel setup outcomes and duration, and alternate route attempts. Labels use configured rule names and fixed outcomes; see [trojan-metrics](../trojan-metrics/README.md) for metric names. Connection counts and lifetimes include cancelled sessions.
+
 ## Overview
 
 This crate implements the relay chain system:

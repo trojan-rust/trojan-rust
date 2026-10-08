@@ -21,9 +21,8 @@ use tracing::{Instrument, debug, info, info_span, warn};
 use trojan_auth::AuthBackend;
 use trojan_core::defaults;
 use trojan_metrics::{
-    ERROR_TLS_HANDSHAKE, record_connection_accepted, record_connection_closed,
-    record_connection_rejected, record_error, record_tls_handshake_duration,
-    set_connection_queue_depth,
+    ConnectionMetrics, ERROR_TLS_HANDSHAKE, record_connection_rejected, record_error,
+    record_tls_handshake_duration,
 };
 
 use crate::error::ServerError;
@@ -178,10 +177,6 @@ where
             debug!(error = %e, "failed to apply TCP options");
         }
 
-        if let Some(ref sem) = self.ctx.conn_limit {
-            set_connection_queue_depth(sem.available_permits() as f64);
-        }
-
         // A trusted proxy's address stands for every client behind it, so
         // limiting on it would throttle a whole relay chain as if it were one
         // caller. Those connections are limited in `Session::serve` instead,
@@ -227,6 +222,7 @@ where
             ctx: self.ctx.clone(),
         };
         let active = self.ctx.state.node_stats.connection_started();
+        let connection = ConnectionMetrics::start();
 
         sessions.spawn(
             async move {
@@ -236,7 +232,7 @@ where
                 let _active = active;
                 // A cancelled listener can still finish an in-progress admission.
                 if !shutdown.is_cancelled() {
-                    session.run().await;
+                    session.run(connection).await;
                 }
             }
             .instrument(span),
@@ -262,14 +258,10 @@ where
     A: AuthBackend + ?Sized + 'static,
 {
     /// Serve the connection to its end, recording how it went.
-    async fn run(self) {
-        record_connection_accepted();
-        let start = Instant::now();
-
+    async fn run(self, connection: ConnectionMetrics) {
         let result = self.serve().await;
 
-        let duration_secs = start.elapsed().as_secs_f64();
-        record_connection_closed(duration_secs);
+        let duration_secs = connection.elapsed().as_secs_f64();
 
         match result {
             Ok(()) => debug!(duration_secs, "connection closed"),

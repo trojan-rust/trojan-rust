@@ -71,6 +71,7 @@ fn session_for_config(config: &EntryConfig) -> EntrySession {
         },
         timeouts: TimeoutConfig::default(),
         counters: RelayCounters::global(),
+        metrics: Arc::new(RouteMetrics::new(&config.rules[0].name)),
     }
 }
 

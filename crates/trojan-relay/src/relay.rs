@@ -9,17 +9,14 @@
 //! 5. Bidirectionally relays data
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 use tracing::{Instrument, debug, info, info_span, warn};
 
-use trojan_metrics::{
-    NodeStats, RelayCounters, record_auth_failure, record_connection_accepted,
-    record_connection_closed,
-};
+use trojan_metrics::{ConnectionMetrics, NodeStats, RelayCounters, record_auth_failure};
 
 use crate::config::{RelayNodeConfig, TimeoutConfig, TransportType};
 use crate::error::RelayError;
@@ -147,13 +144,13 @@ where
                 // Taken here rather than inside the task so the node's active
                 // count follows the accept, not the scheduler.
                 let active = stats.connection_started();
+                let connection = ConnectionMetrics::start();
 
                 let shutdown = shutdown.clone();
                 sessions.spawn(
                     async move {
                         let _active = active;
-                        record_connection_accepted();
-                        let started = Instant::now();
+                        let _connection = connection;
 
                         tokio::select! {
                             biased;
@@ -164,8 +161,6 @@ where
                                 }
                             }
                         }
-
-                        record_connection_closed(started.elapsed().as_secs_f64());
                     }
                     .instrument(info_span!("relay", peer = %peer_addr)),
                 );

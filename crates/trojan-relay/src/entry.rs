@@ -15,7 +15,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
@@ -23,9 +23,7 @@ use tokio::task::JoinSet;
 use tracing::{Instrument, debug, error, info, info_span};
 
 use trojan_lb::NodeStateStore;
-use trojan_metrics::{
-    NodeStats, RelayCounters, record_connection_accepted, record_connection_closed,
-};
+use trojan_metrics::{ConnectionMetrics, NodeStats, RelayCounters, RouteFailure, RouteMetrics};
 
 use crate::config::{ChainConfig, EntryConfig, TimeoutConfig, TransportType};
 use crate::error::RelayError;
@@ -125,6 +123,7 @@ async fn run_with_router(
             listener,
             addr: rule.listen,
             rule: rule.name.clone(),
+            metrics: Arc::new(RouteMetrics::new(&rule.name)),
             shared: shared.clone(),
         });
     }
@@ -166,6 +165,7 @@ struct RuleListener {
     addr: SocketAddr,
     /// Rule name, for spans and the per-rule byte counters.
     rule: String,
+    metrics: Arc<RouteMetrics>,
     shared: SharedState,
 }
 
@@ -210,18 +210,19 @@ impl RuleListener {
                         timeouts: self.shared.timeouts.clone(),
                         counters: RelayCounters::with_rule(&self.rule)
                             .with_node_stats(self.shared.stats.clone()),
+                        metrics: self.metrics.clone(),
                     };
                     let rule_name = route.rule.name.clone();
                     // Taken here rather than inside the task so the node's
                     // active count follows the accept, not the scheduler.
                     let active = self.shared.stats.connection_started();
+                    let connection = ConnectionMetrics::start();
 
                     let shutdown = shutdown.clone();
                     sessions.spawn(
                         async move {
                             let _active = active;
-                            record_connection_accepted();
-                            let started = Instant::now();
+                            let _connection = connection;
 
                             tokio::select! {
                                 biased;
@@ -232,8 +233,6 @@ impl RuleListener {
                                     }
                                 }
                             }
-
-                            record_connection_closed(started.elapsed().as_secs_f64());
                         }
                         .instrument(info_span!("entry", rule = %rule_name, peer = %peer_addr)),
                     );
@@ -265,6 +264,7 @@ struct EntrySession {
     timeouts: TimeoutConfig,
     /// Byte counters for this session: global, per-rule, and node-wide.
     counters: RelayCounters,
+    metrics: Arc<RouteMetrics>,
 }
 
 impl EntrySession {
@@ -308,11 +308,20 @@ impl EntrySession {
     async fn connect_tunnel(&self) -> Result<(Tunnel, RouteSelection), RelayError> {
         let mut attempted = Vec::new();
         let mut last_error = None;
+        let mut last_failure = None;
         loop {
             let selection = match self.routes.select(self.peer.ip(), &attempted) {
                 Ok(selection) => selection,
-                Err(err) => return Err(last_error.unwrap_or_else(|| err.into())),
+                Err(err) => {
+                    self.metrics.unavailable();
+                    return Err(last_error.unwrap_or_else(|| err.into()));
+                }
             };
+            self.metrics.selected();
+            if let Some(failure) = last_failure {
+                self.metrics.failover(failure);
+            }
+            let attempt = self.metrics.setup_started();
             let route = &selection.candidate;
             debug!(dest = %route.dest, "selected route");
             let first = route.chain.config().nodes.first();
@@ -344,16 +353,30 @@ impl EntrySession {
                 }
             };
             match result {
-                Ok(tunnel) => return Ok((tunnel, selection)),
+                Ok(tunnel) => {
+                    attempt.connected();
+                    return Ok((tunnel, selection));
+                }
                 Err(TunnelError::Destination(err)) if self.routes.retry_destinations() => {
+                    attempt.failed(RouteFailure::Destination);
                     self.routes.failed(route, true, &mut attempted);
                     last_error = Some(err);
+                    last_failure = Some(RouteFailure::Destination);
                 }
                 Err(TunnelError::Relay(err)) if self.routes.retry_relays() => {
+                    attempt.failed(RouteFailure::Relay);
                     self.routes.failed(route, false, &mut attempted);
                     last_error = Some(err);
+                    last_failure = Some(RouteFailure::Relay);
                 }
-                Err(TunnelError::Destination(err) | TunnelError::Relay(err)) => return Err(err),
+                Err(TunnelError::Destination(err)) => {
+                    attempt.failed(RouteFailure::Destination);
+                    return Err(err);
+                }
+                Err(TunnelError::Relay(err)) => {
+                    attempt.failed(RouteFailure::Relay);
+                    return Err(err);
+                }
             }
         }
     }

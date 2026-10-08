@@ -9,9 +9,16 @@ use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
 use metrics::{counter, gauge, histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 
+mod connection;
 mod counters;
+mod route;
 
+pub use connection::ConnectionMetrics;
 pub use counters::{ActiveConnection, NodeSnapshot, NodeStats, RelayCounters};
+pub use route::{
+    ROUTE_FAILOVERS_TOTAL, ROUTE_SELECTIONS_TOTAL, ROUTE_SETUP_DURATION_SECONDS, ROUTE_SETUP_TOTAL,
+    RouteAttempt, RouteFailure, RouteMetrics,
+};
 
 /// Initialize metrics server with Prometheus exporter and health check endpoints.
 ///
@@ -134,7 +141,7 @@ pub const ERRORS_TOTAL: &str = "trojan_errors_total";
 pub const CONNECTIONS_REJECTED_TOTAL: &str = "trojan_connections_rejected_total";
 /// TLS handshake duration histogram (seconds).
 pub const TLS_HANDSHAKE_DURATION_SECONDS: &str = "trojan_tls_handshake_duration_seconds";
-/// Connection queue depth (pending connections in accept backlog).
+/// Caller-supplied connection queue depth. Server listeners do not emit this metric.
 pub const CONNECTION_QUEUE_DEPTH: &str = "trojan_connection_queue_depth";
 /// Per-target connection counts (by destination).
 pub const TARGET_CONNECTIONS_TOTAL: &str = "trojan_target_connections_total";
@@ -165,14 +172,14 @@ pub const AUTH_FAILURE_BY_COUNTRY: &str = "trojan_auth_failure_by_country_total"
 // Metric Recording Functions
 // ============================================================================
 
-/// Record a new connection accepted.
+/// Record a new connection accepted. Prefer [`ConnectionMetrics`] for owned sessions.
 #[inline]
 pub fn record_connection_accepted() {
     counter!(CONNECTIONS_TOTAL).increment(1);
     gauge!(CONNECTIONS_ACTIVE).increment(1.0);
 }
 
-/// Record a connection closed.
+/// Record a connection closed. Prefer [`ConnectionMetrics`] for owned sessions.
 #[inline]
 pub fn record_connection_closed(duration_secs: f64) {
     gauge!(CONNECTIONS_ACTIVE).decrement(1.0);
@@ -233,7 +240,9 @@ pub fn record_tls_handshake_duration(duration_secs: f64) {
     histogram!(TLS_HANDSHAKE_DURATION_SECONDS).record(duration_secs);
 }
 
-/// Set connection queue depth gauge.
+/// Set an actual connection queue measurement, not semaphore availability.
+///
+/// Server listeners do not call this function because they cannot observe the TCP backlog.
 #[inline]
 pub fn set_connection_queue_depth(depth: f64) {
     gauge!(CONNECTION_QUEUE_DEPTH).set(depth);

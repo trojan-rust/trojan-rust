@@ -6,23 +6,35 @@
 //! [`RelayCounters`] — against a handle resolved once per session.
 
 use std::hint::black_box;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use metrics::counter;
-use metrics_exporter_prometheus::PrometheusBuilder;
-use trojan_metrics::{BYTES_RECEIVED_TOTAL, RelayCounters, TARGET_BYTES_TOTAL};
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use trojan_metrics::{
+    BYTES_RECEIVED_TOTAL, ConnectionMetrics, RelayCounters, RouteFailure, RouteMetrics,
+    TARGET_BYTES_TOTAL, record_connection_accepted, record_connection_closed,
+};
 
 /// One relay buffer's worth of bytes, the typical report size.
 const REPORT_BYTES: u64 = 32 * 1024;
 
 const TARGET: &str = "www.example.com";
 
+fn recorder() -> &'static PrometheusHandle {
+    static HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
+    HANDLE.get_or_init(|| {
+        PrometheusBuilder::new()
+            .install_recorder()
+            .expect("install prometheus recorder")
+    })
+}
+
 fn bench_byte_report(c: &mut Criterion) {
     // A real recorder is required: without one, `counter!` resolves against
     // the no-op recorder and the comparison measures nothing.
-    let _handle = PrometheusBuilder::new()
-        .install_recorder()
-        .expect("install prometheus recorder");
+    let _handle = recorder();
 
     // Warm the registry entries so every variant measures a steady-state
     // lookup rather than a first insert.
@@ -75,5 +87,72 @@ fn bench_handle_resolution(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_byte_report, bench_handle_resolution);
+// Drain histogram buffers outside timed batches to bound benchmark memory.
+fn timed_batches(iterations: u64, mut operation: impl FnMut()) -> Duration {
+    let mut remaining = iterations;
+    let mut elapsed = Duration::ZERO;
+    while remaining != 0 {
+        let batch = remaining.min(4096);
+        let started = Instant::now();
+        for _ in 0..batch {
+            operation();
+        }
+        elapsed += started.elapsed();
+        recorder().run_upkeep();
+        remaining -= batch;
+    }
+    elapsed
+}
+
+fn bench_connection_lifetime(c: &mut Criterion) {
+    let _handle = recorder();
+    let mut group = c.benchmark_group("connection_lifetime");
+    group.bench_function("manual", |b| {
+        b.iter_custom(|iterations| {
+            timed_batches(iterations, || {
+                record_connection_accepted();
+                let started = Instant::now();
+                record_connection_closed(started.elapsed().as_secs_f64());
+            })
+        });
+    });
+    group.bench_function("guard", |b| {
+        b.iter_custom(|iterations| timed_batches(iterations, || drop(ConnectionMetrics::start())));
+    });
+    group.finish();
+}
+
+fn bench_route_metrics(c: &mut Criterion) {
+    let _handle = recorder();
+    let metrics = RouteMetrics::new("entry-rule");
+    let mut group = c.benchmark_group("route_metrics");
+    group.bench_function("connected", |b| {
+        b.iter_custom(|iterations| {
+            timed_batches(iterations, || {
+                metrics.selected();
+                metrics.setup_started().connected();
+            })
+        });
+    });
+    group.bench_function("failover", |b| {
+        b.iter_custom(|iterations| {
+            timed_batches(iterations, || {
+                metrics.selected();
+                metrics.setup_started().failed(RouteFailure::Relay);
+                metrics.selected();
+                metrics.failover(RouteFailure::Relay);
+                metrics.setup_started().connected();
+            })
+        });
+    });
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_byte_report,
+    bench_handle_resolution,
+    bench_connection_lifetime,
+    bench_route_metrics
+);
 criterion_main!(benches);
