@@ -162,6 +162,20 @@ async fn durable_node_reports_publish_quota_changes_without_billing_users() {
     assert_eq!(stored["period_bytes_in"], 40);
     assert_eq!(stored["period_bytes_out"], 60);
     assert_eq!(stored["unavailable_reason"], "traffic_exhausted");
+    assert_eq!(stored["traffic_last_observed_at"], now);
+    assert!(stored["traffic_last_received_at"].as_u64().unwrap() >= now);
+    let series = dash
+        .admin_get(&format!(
+            "/admin/nodes/{id}/traffic/series?start={}&end={}&bucket=hour",
+            now - 1,
+            now + 1
+        ))
+        .await;
+    assert_eq!(series["source"], "node_traffic");
+    assert_eq!(series["missing_buckets"], "unknown");
+    assert_eq!(series["points"].as_array().unwrap().len(), 1);
+    assert_eq!(series["points"][0]["bytes_in"], 40);
+    assert_eq!(series["points"][0]["bytes_out"], 60);
     assert_eq!(
         dash.admin_get(&format!("/admin/users/{user_id}")).await["traffic_used"],
         0
@@ -304,6 +318,86 @@ async fn a_heartbeat_becomes_the_nodes_reported_state() {
     assert_eq!(stored["uptime_secs"].as_u64(), Some(3600));
     assert_eq!(stored["agent_version"].as_str(), Some("0.0.0-test"));
     assert!(stored["last_seen"].as_u64().unwrap_or(0) > 0);
+    assert_eq!(stored["rate_status"], "warming_up");
+    assert!(stored["bytes_in_per_second"].is_null());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    agent
+        .send(AgentMessage::Heartbeat {
+            connections_active: 12,
+            bytes_in: 901_000,
+            bytes_out: 4_502_000,
+            uptime_secs: 3601,
+            memory_rss_bytes: None,
+            cpu_usage_percent: None,
+        })
+        .await;
+    let current = await_node(&dash, node_id, |node| node["rate_status"] == "current").await;
+    let interval = current["rate_interval_seconds"].as_f64().unwrap();
+    assert!(interval >= 0.05);
+    assert!((current["bytes_in_per_second"].as_f64().unwrap() * interval - 1000.0).abs() < 0.01);
+    assert!((current["bytes_out_per_second"].as_f64().unwrap() * interval - 2000.0).abs() < 0.01);
+
+    let mut second = Agent::connect(&dash).await;
+    second.register(&token).await.unwrap();
+    let multiple = await_node(&dash, node_id, |node| {
+        node["rate_status"] == "multiple_sessions"
+    })
+    .await;
+    assert!(multiple["bytes_in_per_second"].is_null());
+    second.socket.close(None).await.unwrap();
+    let warming = await_node(&dash, node_id, |node| node["rate_status"] == "warming_up").await;
+    assert!(warming["bytes_out_per_second"].is_null());
+    agent.socket.close(None).await.unwrap();
+    let offline = await_node(&dash, node_id, |node| node["rate_status"] == "offline").await;
+    assert!(offline["bytes_in_per_second"].is_null());
+    let mut reconnected = Agent::connect(&dash).await;
+    reconnected.register(&token).await.unwrap();
+    let warming = await_node(&dash, node_id, |node| node["rate_status"] == "warming_up").await;
+    assert!(warming["heartbeat_received_at"].is_null());
+}
+
+#[tokio::test]
+async fn node_series_requires_admin_and_valid_bounded_ranges() {
+    let dash = Dash::start().await;
+    let id = dash.add_node_id("series").await;
+    let path = format!("/admin/nodes/{id}/traffic/series?start=0&end=3600");
+    assert_eq!(
+        dash.get(&path).await.status(),
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+    assert!(
+        dash.admin_get(&path).await["points"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    for (path, status) in [
+        (
+            format!("/admin/nodes/{id}/traffic/series?start=0&end=3600&bucket=invalid"),
+            reqwest::StatusCode::BAD_REQUEST,
+        ),
+        (
+            format!("/admin/nodes/{id}/traffic/series?start=10&end=0"),
+            reqwest::StatusCode::BAD_REQUEST,
+        ),
+        (
+            format!("/admin/nodes/{id}/traffic/series?start=0&end=999999999"),
+            reqwest::StatusCode::BAD_REQUEST,
+        ),
+        (
+            "/admin/nodes/999999/traffic/series?start=0&end=3600".into(),
+            reqwest::StatusCode::NOT_FOUND,
+        ),
+    ] {
+        let response = dash
+            .client
+            .get(format!("{}{path}", dash.base))
+            .bearer_auth(common::ADMIN_TOKEN)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+    }
 }
 
 /// Per-user traffic over the socket lands where the HTTP endpoint puts it —

@@ -66,6 +66,22 @@ The dashboard commits each delta and its stream cursor together before acknowled
 
 The dashboard sends node availability snapshots to negotiated sessions after reports, policy updates, connections and disconnections, and at monthly resets. A node becomes offline after 90 seconds without a heartbeat. Snapshots expire within 90 seconds and at the next reset boundary. These messages do not change `config_version` or restart services. Quotas govern new connections; existing connections can continue consuming traffic.
 
+### Node observability
+
+Node responses expose `bytes_in_per_second` and `bytes_out_per_second` as the mean forwarded byte rate between two received heartbeats. `rate_interval_seconds` contains the actual monotonic receive interval, not the configured reporting interval. These rates describe recent activity; they do not measure link capacity, latency, or packet loss. The existing `bytes_in` and `bytes_out` fields remain process counters from the most recent heartbeat.
+
+`rate_status` is `current`, `warming_up`, `stale`, `multiple_sessions`, or `offline`. Rates and their interval are `null` unless the status is `current`. The first heartbeat, a counter or uptime reset, and an interval of at least 90 seconds require a new baseline. Connecting or disconnecting a session clears that baseline. More than one live session makes the rate unknown because protocol v1 does not identify each process's counters. `heartbeat_received_at` is the Unix receipt time of the last heartbeat in the current single-session baseline; `heartbeat_age_seconds` uses a monotonic clock. Both are `null` without that baseline, including after dashboard restart or disconnection.
+
+`traffic_last_observed_at` is the newest observation timestamp in accepted durable reports. `traffic_last_received_at` is the receipt time of the most recently accepted report. Replays do not advance either value. An older report from another stream may advance receipt time without advancing observation time. Migrated history has a known observation time and an unknown receipt time. These fields describe reports, not accounting completeness: idle agents send no nonzero delta, and protocol v1 has no backlog-complete watermark. A fresh heartbeat or availability snapshot does not prove that all traffic reports have arrived.
+
+`GET /admin/nodes/{id}/traffic/series?start=1727740800&end=1727827200&bucket=hour` returns directional bytes from the durable node ledger. `start` and `end` are Unix seconds with an inclusive start and exclusive end. `bucket` accepts `minute`, `hour` (default), or `day`. Requests may cover at most 366 days and 2,160 buckets. Buckets align to UTC; the first and last buckets include only samples inside the requested range. Each point has `timestamp`, `bytes_in`, and `bytes_out`. Reports belong to their `observed_at` bucket, including delayed reports, rather than their receipt bucket.
+
+The response identifies `source: "node_traffic"` and `missing_buckets: "unknown"`. Missing buckets are omitted because absent reports cannot distinguish idle traffic from missing accounting. The existing `/admin/traffic`, `/admin/traffic/series`, and `/me/traffic` endpoints continue to represent user settlement. Their totals can differ from node forwarding totals, and adding totals across hops counts the same transfer at each hop.
+
+Node series use the ledger's `(node_id, observed_at)` index and bound the requested range and response size. Original observations remain available for exact calendar-policy recalculation; this endpoint does not prune the ledger. Current quota windows remain cached. Calendar changes and resets rebuild windows in batches of at most 250 nodes, with one indexed scan for both directions. To measure cold rebuilds and warm snapshots against 1, 100, and 1,000 nodes with 1,000 ledger rows each, run `devenv shell -- cargo test -p trojan-dash snapshot_scaling --lib -- --ignored --nocapture`.
+
+On the development host, that benchmark used the debug profile and in-memory SQLite. At 1,000 nodes and 1 million ledger rows, a cold rebuild fell from 1.08 seconds to 0.49 seconds. Mean warm snapshots measured 14.4 milliseconds before and 14.6 milliseconds after, with no demonstrated improvement. These measurements exclude disk durability costs and WebSocket fanout.
+
 ## Subscriptions
 
 `GET /sub/{name}?pwd=` renders the template `name` for whoever the password

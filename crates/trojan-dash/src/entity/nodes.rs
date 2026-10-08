@@ -43,6 +43,10 @@ pub struct Model {
     pub traffic_period_end: i64,
     pub traffic_period_bytes_in: i64,
     pub traffic_period_bytes_out: i64,
+    /// Latest observation timestamp in accepted durable reports.
+    pub traffic_last_observed_at: Option<i64>,
+    /// Receipt timestamp of the most recently accepted durable report.
+    pub traffic_last_received_at: Option<i64>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

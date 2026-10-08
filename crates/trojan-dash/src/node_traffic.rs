@@ -1,9 +1,11 @@
 //! Timestamped node traffic and calendar billing windows, separate from user usage.
 
+use std::collections::BTreeMap;
+
 use jiff::{Timestamp, ToSpan, civil::Date, tz::TimeZone};
 use sea_orm::{
     ConnectionTrait, DatabaseBackend, DatabaseConnection, FromQueryResult, Statement,
-    TransactionTrait,
+    TransactionTrait, Value,
 };
 use serde::Serialize;
 use trojan_protocol::NodeTrafficReport;
@@ -109,19 +111,60 @@ pub(crate) async fn current_usage(
             bytes_out: node.traffic_period_bytes_out,
         });
     }
-    Usage::find_by_statement(Statement::from_sql_and_values(
-        DatabaseBackend::Sqlite,
-        "UPDATE nodes SET traffic_period_start = ?2, traffic_period_end = ?3, \
-             traffic_period_bytes_in = (SELECT COALESCE(SUM(bytes_in), 0) FROM node_traffic \
-                 WHERE node_id = ?1 AND observed_at >= ?2 AND observed_at < ?3), \
-             traffic_period_bytes_out = (SELECT COALESCE(SUM(bytes_out), 0) FROM node_traffic \
-                 WHERE node_id = ?1 AND observed_at >= ?2 AND observed_at < ?3) \
-         WHERE id = ?1 RETURNING traffic_period_bytes_in AS bytes_in, traffic_period_bytes_out AS bytes_out",
-        [node.id.into(), period.start.into(), period.end.into()],
-    ))
-    .one(db)
-    .await?
-    .ok_or(DashError::NotFound)
+    refresh_usage(db, &[(node.id, period)])
+        .await?
+        .remove(&node.id)
+        .ok_or(DashError::NotFound)
+}
+
+/// Rebuild both directions with one indexed range scan per node and one statement per batch.
+pub(crate) async fn refresh_usage(
+    db: &DatabaseConnection,
+    windows: &[(i64, Period)],
+) -> Result<BTreeMap<i64, Usage>, DashError> {
+    #[derive(FromQueryResult)]
+    struct Row {
+        node_id: i64,
+        bytes_in: i64,
+        bytes_out: i64,
+    }
+
+    let mut result = BTreeMap::new();
+    for batch in windows.chunks(250) {
+        let placeholders = std::iter::repeat_n("(?, ?, ?)", batch.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let values: Vec<Value> = batch
+            .iter()
+            .flat_map(|(id, period)| [(*id).into(), period.start.into(), period.end.into()])
+            .collect();
+        let sql = format!(
+            "WITH windows(id, start, end) AS (VALUES {placeholders}) \
+             UPDATE nodes SET traffic_period_start = w.start, traffic_period_end = w.end, \
+                 (traffic_period_bytes_in, traffic_period_bytes_out) = \
+                     (SELECT COALESCE(SUM(t.bytes_in), 0), COALESCE(SUM(t.bytes_out), 0) \
+                      FROM node_traffic t WHERE t.node_id = nodes.id AND t.observed_at >= w.start AND t.observed_at < w.end) \
+             FROM windows w WHERE nodes.id = w.id \
+             RETURNING id AS node_id, traffic_period_bytes_in AS bytes_in, traffic_period_bytes_out AS bytes_out"
+        );
+        for row in Row::find_by_statement(Statement::from_sql_and_values(
+            DatabaseBackend::Sqlite,
+            sql,
+            values,
+        ))
+        .all(db)
+        .await?
+        {
+            result.insert(
+                row.node_id,
+                Usage {
+                    bytes_in: row.bytes_in,
+                    bytes_out: row.bytes_out,
+                },
+            );
+        }
+    }
+    Ok(result)
 }
 
 fn signed(value: u64, field: &str) -> Result<i64, DashError> {
@@ -148,6 +191,7 @@ pub(crate) async fn record(
     }
     let sequence = signed(report.sequence, "sequence")?;
     let observed = signed(report.observed_at, "observed_at")?;
+    let received = signed(now, "received_at")?;
     Timestamp::from_second(observed)?;
     let bytes_in = signed(report.bytes_in, "bytes_in")?;
     let bytes_out = signed(report.bytes_out, "bytes_out")?;
@@ -190,12 +234,14 @@ pub(crate) async fn record(
     let updated = tx.execute(Statement::from_sql_and_values(
         DatabaseBackend::Sqlite,
         "UPDATE nodes SET traffic_total = traffic_total + ?5, \
+             traffic_last_observed_at = MAX(COALESCE(traffic_last_observed_at, ?2), ?2), \
+             traffic_last_received_at = ?7, \
              traffic_period_bytes_in = traffic_period_bytes_in + \
                  CASE WHEN ?2 >= traffic_period_start AND ?2 < traffic_period_end THEN ?3 ELSE 0 END, \
              traffic_period_bytes_out = traffic_period_bytes_out + \
                  CASE WHEN ?2 >= traffic_period_start AND ?2 < traffic_period_end THEN ?4 ELSE 0 END \
          WHERE id = ?1 AND traffic_total <= ?6",
-        [node_id.into(), observed.into(), bytes_in.into(), bytes_out.into(), total.into(), (i64::MAX - total).into()],
+        [node_id.into(), observed.into(), bytes_in.into(), bytes_out.into(), total.into(), (i64::MAX - total).into(), received.into()],
     )).await?;
     if updated.rows_affected() == 0 {
         return Err(DashError::BadRequest(

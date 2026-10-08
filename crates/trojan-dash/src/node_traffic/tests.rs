@@ -256,3 +256,125 @@ async fn combined_overflow_rolls_back_the_ledger_cache_and_cursor() {
         2
     );
 }
+
+#[tokio::test]
+async fn report_clocks_distinguish_delayed_data_and_ignore_replays() {
+    let db = database("sqlite::memory:").await;
+    let now = timestamp("2025-06-15T12:00:00Z");
+    let first = report(1, now - 100, 1, 2);
+    record(&db, 1, &first, now).await.unwrap();
+    record(&db, 1, &first, now + 50).await.unwrap();
+    let node = nodes::Entity::find_by_id(1)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        node.traffic_last_observed_at,
+        Some((now - 100).cast_signed())
+    );
+    assert_eq!(node.traffic_last_received_at, Some(now.cast_signed()));
+    let older = NodeTrafficReport {
+        stream_id: "other-agent".into(),
+        ..report(1, now - 200, 3, 4)
+    };
+    record(&db, 1, &older, now + 60).await.unwrap();
+    let node = nodes::Entity::find_by_id(1)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        node.traffic_last_observed_at,
+        Some((now - 100).cast_signed())
+    );
+    assert_eq!(
+        node.traffic_last_received_at,
+        Some((now + 60).cast_signed())
+    );
+}
+
+#[tokio::test]
+async fn batch_rebuild_preserves_distinct_windows_and_omits_deleted_nodes() {
+    let db = database("sqlite::memory:").await;
+    db.execute_unprepared("INSERT INTO nodes (id, name, token) VALUES (2, 'exit', 't2')")
+        .await
+        .unwrap();
+    let now = timestamp("2025-06-15T12:00:00Z");
+    record(&db, 1, &report(1, now, 10, 20), now).await.unwrap();
+    record(&db, 2, &report(1, now, 30, 40), now).await.unwrap();
+    let current = period(1, "UTC", now).unwrap();
+    let past = period(1, "UTC", now - 86400 * 31).unwrap();
+    let result = refresh_usage(&db, &[(1, current), (2, past), (999, current)])
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[&1].bytes_in, 10);
+    assert_eq!(result[&1].bytes_out, 20);
+    assert_eq!(result[&2].total().unwrap(), 0);
+    record(&db, 1, &report(2, now, 1, 2), now).await.unwrap();
+    assert_eq!(cached(&db, now, 1).await, 33);
+}
+
+#[tokio::test]
+async fn observation_migration_does_not_invent_historical_receipt_times() {
+    use sea_orm_migration::MigratorTrait;
+
+    let db = database("sqlite::memory:").await;
+    let now = timestamp("2025-06-15T12:00:00Z");
+    record(&db, 1, &report(1, now - 60, 10, 20), now)
+        .await
+        .unwrap();
+    crate::migration::Migrator::down(&db, Some(1))
+        .await
+        .unwrap();
+    crate::migration::Migrator::up(&db, Some(1)).await.unwrap();
+    let node = nodes::Entity::find_by_id(1)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        node.traffic_last_observed_at,
+        Some((now - 60).cast_signed())
+    );
+    assert_eq!(node.traffic_last_received_at, None);
+    assert_eq!(cached(&db, now, 1).await, 30);
+}
+
+#[tokio::test]
+async fn rebuild_crosses_batch_boundary_with_independent_calendars_and_deleted_rows() {
+    let db = crate::db::connect("sqlite::memory:").await.unwrap();
+    db.execute_unprepared("WITH RECURSIVE n(id) AS (SELECT 1 UNION ALL SELECT id + 1 FROM n WHERE id < 251) INSERT INTO nodes (id, name, token) SELECT id, 'n' || id, 't' || id FROM n").await.unwrap();
+    let now = timestamp("2025-06-15T12:00:00Z");
+    db.execute(Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "INSERT INTO node_traffic SELECT id, ?1, id, id * 2 FROM nodes",
+        [now.into()],
+    ))
+    .await
+    .unwrap();
+    let current = period(1, "UTC", now).unwrap();
+    let previous = period(1, "UTC", now - 86400 * 31).unwrap();
+    let windows: Vec<_> = (1..=251)
+        .map(|id| (id, if id % 2 == 0 { previous } else { current }))
+        .collect();
+    nodes::Entity::delete_by_id(126).exec(&db).await.unwrap();
+    let result = refresh_usage(&db, &windows).await.unwrap();
+    assert_eq!(result.len(), 250);
+    assert!(!result.contains_key(&126));
+    for (id, period) in windows {
+        if id == 126 {
+            continue;
+        }
+        let expected = if period == current { id * 3 } else { 0 };
+        assert_eq!(result[&id].total().unwrap(), expected.cast_unsigned());
+        let stored = nodes::Entity::find_by_id(id)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.traffic_period_start, period.start);
+        assert_eq!(stored.traffic_period_end, period.end);
+    }
+}

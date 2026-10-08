@@ -12,6 +12,7 @@
 //! it next registers. Nothing here sends [`PanelMessage::ConfigPush`].
 
 use std::net::SocketAddr;
+use std::time::Instant;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
@@ -30,6 +31,7 @@ use sea_orm::{
 use crate::entity::nodes;
 use crate::error::DashError;
 use crate::handler::node_api::apply_traffic;
+use crate::node_observation::HeartbeatSample;
 use crate::node_traffic;
 use crate::state::AppState;
 use crate::types::clamp_i64;
@@ -304,9 +306,16 @@ async fn record_heartbeat(
     node_id: i64,
     beat: Heartbeat,
 ) -> Result<(), DashError> {
+    let sample = HeartbeatSample {
+        received: Instant::now(),
+        received_at: now_secs(),
+        bytes_in: beat.bytes_in,
+        bytes_out: beat.bytes_out,
+        uptime_secs: beat.uptime_secs,
+    };
     nodes::ActiveModel {
         id: Unchanged(node_id),
-        last_seen: Set(clamp_i64(now_secs())),
+        last_seen: Set(clamp_i64(sample.received_at)),
         connections_active: Set(i64::from(beat.connections_active)),
         bytes_in: Set(clamp_i64(beat.bytes_in)),
         bytes_out: Set(clamp_i64(beat.bytes_out)),
@@ -316,6 +325,7 @@ async fn record_heartbeat(
     .update(&state.db)
     .await?;
 
+    state.nodes.heartbeat(node_id, sample).await;
     state.nodes.refresh.notify_one();
 
     Ok(())

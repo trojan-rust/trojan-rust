@@ -14,6 +14,8 @@ For multi-hop routing, destination failover, and relay upgrade ordering, see [tr
 
 For persistent node traffic accounting and monthly quotas, see [trojan-dash](crates/trojan-dash/README.md#node-quotas). Managed entries use live quota and health information to select relay paths and exits.
 
+For node throughput and traffic history, see [node observability](crates/trojan-dash/README.md#node-observability). For Prometheus counters and route diagnostics, see [trojan-metrics](crates/trojan-metrics/README.md).
+
 ## License
 
 GPL-3.0-only

@@ -1,7 +1,7 @@
 //! Live scheduling snapshots, independent of service configuration.
 
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sea_orm::{EntityTrait, QueryOrder};
 use serde::Serialize;
@@ -11,6 +11,7 @@ use trojan_protocol::{NodeState, NodeStateSnapshot};
 
 use crate::entity::nodes;
 use crate::error::DashError;
+use crate::node_observation::{HeartbeatRates, HeartbeatSample, HeartbeatStatus};
 use crate::node_traffic;
 use crate::state::AppState;
 use crate::types::nonneg;
@@ -27,10 +28,11 @@ pub(crate) struct NodeMonitor {
     pub refresh: Notify,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct NodeConnections {
     total: usize,
     accounting: usize,
+    heartbeat: HeartbeatRates,
 }
 
 impl NodeMonitor {
@@ -47,6 +49,7 @@ impl NodeMonitor {
         let node = connections.entry(node_id).or_default();
         node.total += 1;
         node.accounting += usize::from(traffic_supported);
+        node.heartbeat = HeartbeatRates::default();
         self.refresh.notify_one();
     }
 
@@ -55,11 +58,20 @@ impl NodeMonitor {
         if let Some(node) = connections.get_mut(&node_id) {
             node.total -= 1;
             node.accounting -= usize::from(traffic_supported);
+            node.heartbeat = HeartbeatRates::default();
             if node.total == 0 {
                 connections.remove(&node_id);
             }
         }
         self.refresh.notify_one();
+    }
+
+    pub async fn heartbeat(&self, node_id: i64, sample: HeartbeatSample) {
+        if let Some(node) = self.connections.lock().await.get_mut(&node_id)
+            && node.total == 1
+        {
+            node.heartbeat.observe(sample);
+        }
     }
 }
 
@@ -80,6 +92,11 @@ pub(crate) struct NodeTrafficStatus {
     pub traffic_remaining: Option<u64>,
     pub online: bool,
     pub unavailable_reason: Option<&'static str>,
+    /// Report age does not imply stale accounting: idle agents need not send a delta.
+    pub traffic_last_observed_at: Option<u64>,
+    pub traffic_last_received_at: Option<u64>,
+    #[serde(flatten)]
+    pub heartbeat: HeartbeatStatus,
 }
 
 pub(crate) async fn status(
@@ -89,17 +106,28 @@ pub(crate) async fn status(
 ) -> Result<NodeTrafficStatus, DashError> {
     let period = node_traffic::period(node.reset_day, &node.reset_timezone, now)?;
     let usage = node_traffic::current_usage(&state.db, node, period).await?;
-    let used = usage.total()?;
-    let limit = nonneg(node.traffic_limit);
-    let (connected, traffic_supported) = state
+    let sessions = state
         .nodes
         .connections
         .lock()
         .await
         .get(&node.id)
-        .map_or((false, false), |sessions| {
-            (true, sessions.accounting == sessions.total)
-        });
+        .cloned()
+        .unwrap_or_default();
+    build_status(node, period, usage, &sessions, now)
+}
+
+fn build_status(
+    node: &nodes::Model,
+    period: node_traffic::Period,
+    usage: node_traffic::Usage,
+    sessions: &NodeConnections,
+    now: u64,
+) -> Result<NodeTrafficStatus, DashError> {
+    let used = usage.total()?;
+    let limit = nonneg(node.traffic_limit);
+    let connected = sessions.total > 0;
+    let traffic_supported = connected && sessions.accounting == sessions.total;
     let online = connected && nonneg(node.last_seen).saturating_add(STATE_TTL) > now;
     Ok(NodeTrafficStatus {
         traffic_limit: limit,
@@ -113,6 +141,9 @@ pub(crate) async fn status(
         traffic_supported,
         traffic_remaining: (traffic_supported && limit > 0).then(|| limit.saturating_sub(used)),
         online,
+        traffic_last_observed_at: node.traffic_last_observed_at.map(nonneg),
+        traffic_last_received_at: node.traffic_last_received_at.map(nonneg),
+        heartbeat: sessions.heartbeat.status(sessions.total, Instant::now()),
         unavailable_reason: if node.enabled == 0 {
             Some("disabled")
         } else if !online {
@@ -125,6 +156,52 @@ pub(crate) async fn status(
             None
         },
     })
+}
+
+/// Resolve shared calendars once and refresh all expired windows in bounded batches.
+pub(crate) async fn statuses(
+    state: &AppState,
+    nodes: Vec<nodes::Model>,
+    now: u64,
+) -> Result<Vec<(nodes::Model, NodeTrafficStatus)>, DashError> {
+    let mut calendars = BTreeMap::new();
+    let mut periods = Vec::with_capacity(nodes.len());
+    let mut expired = Vec::new();
+    for node in &nodes {
+        let key = (node.reset_day, node.reset_timezone.as_str());
+        let period = if let Some(period) = calendars.get(&key) {
+            *period
+        } else {
+            let period = node_traffic::period(key.0, key.1, now)?;
+            calendars.insert(key, period);
+            period
+        };
+        if node.traffic_period_start != period.start || node.traffic_period_end != period.end {
+            expired.push((node.id, period));
+        }
+        periods.push(period);
+    }
+    let mut refreshed = node_traffic::refresh_usage(&state.db, &expired).await?;
+    let connections = state.nodes.connections.lock().await.clone();
+    let mut result = Vec::with_capacity(nodes.len());
+    for (node, period) in nodes.into_iter().zip(periods) {
+        let usage =
+            if node.traffic_period_start == period.start && node.traffic_period_end == period.end {
+                node_traffic::Usage {
+                    bytes_in: node.traffic_period_bytes_in,
+                    bytes_out: node.traffic_period_bytes_out,
+                }
+            } else if let Some(usage) = refreshed.remove(&node.id) {
+                usage
+            } else {
+                // A deleted node has no rebuilt window and must not reappear in a snapshot.
+                continue;
+            };
+        let sessions = connections.get(&node.id).cloned().unwrap_or_default();
+        let status = build_status(&node, period, usage, &sessions, now)?;
+        result.push((node, status));
+    }
+    Ok(result)
 }
 
 async fn snapshot(state: &AppState) -> Result<NodeStateSnapshot, DashError> {
@@ -149,13 +226,7 @@ async fn snapshot_from_nodes(
         valid_until: now.saturating_add(STATE_TTL),
         nodes: Vec::with_capacity(nodes.len()),
     };
-    for node in nodes {
-        let status = match status(state, &node, now).await {
-            Ok(status) => status,
-            // An admin can delete a node after the list query and before its cached window rebuild.
-            Err(DashError::NotFound) => continue,
-            Err(error) => return Err(error),
-        };
+    for (node, status) in statuses(state, nodes, now).await? {
         // Expire the snapshot at a reset boundary rather than carrying an old quota into a new month.
         snapshot.valid_until = snapshot.valid_until.min(status.reset_at);
         if status.online {
@@ -288,3 +359,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "node_states/benchmarks.rs"]
+mod benchmarks;

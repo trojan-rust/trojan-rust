@@ -72,6 +72,7 @@ repository and is served from `panel_dir` as static files.
 **Traffic accounting:** every service records node totals in Prometheus and `NodeStats`.
 The agent persists samples until the dashboard acknowledges committed reports.
 The dashboard keeps timestamped node history and monthly quota policies separate from user quotas.
+Node APIs derive throughput from heartbeat counter differences and expose sample freshness. Node history queries read the durable ledger.
 Agent protocol version 1 enables node accounting only after both WebSocket peers negotiate `x-trojan-node-traffic: 1`.
 Live node snapshots let managed entries filter unavailable relay paths and exits without restarting services.
 User-level accounting for a chain is attributed by the exit: entry and relay
@@ -104,6 +105,7 @@ credits each hop over `/traffic/chain` when it settles the user.
 - **TLS:** rustls with `aws_lc_rs` crypto backend. No OpenSSL.
 - **Logging:** `tracing` + `tracing-subscriber` with structured fields.
 - **Metrics:** `metrics` crate → Prometheus exporter via Axum HTTP server on `/metrics`.
+- **Metric lifecycle:** Install the recorder before caching handles. Keep `ConnectionMetrics` in each session to record cancellation. Keep route labels bounded by configured rules.
 
 ## Running
 

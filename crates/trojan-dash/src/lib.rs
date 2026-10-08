@@ -47,6 +47,7 @@ mod entity;
 mod error;
 mod handler;
 mod migration;
+mod node_observation;
 mod node_states;
 mod node_traffic;
 mod retention;

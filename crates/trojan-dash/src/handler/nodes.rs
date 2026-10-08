@@ -27,10 +27,11 @@ pub async fn list(State(state): State<AppState>) -> Result<Json<Vec<NodeResponse
         .all(&state.db)
         .await?;
 
-    let mut result = Vec::with_capacity(rows.len());
-    for row in &rows {
-        result.push(response(&state, row).await?);
-    }
+    let result = node_states::statuses(&state, rows, now_secs())
+        .await?
+        .into_iter()
+        .map(|(row, status)| NodeResponse::new(&row, status))
+        .collect();
     Ok(Json(result))
 }
 

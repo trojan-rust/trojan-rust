@@ -9,7 +9,9 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use crate::auth::require_admin;
-use crate::handler::{agent, limits, me, node_api, nodes, sub, surge, templates, traffic, users};
+use crate::handler::{
+    agent, limits, me, node_api, node_series, nodes, sub, surge, templates, traffic, users,
+};
 use crate::state::AppState;
 
 /// Build the router. When the panel directory exists its contents are served
@@ -50,6 +52,7 @@ pub fn router(state: AppState, panel_dir: Option<&Path>) -> Router {
             get(nodes::get).patch(nodes::update).delete(nodes::remove),
         )
         .route("/admin/nodes/{id}/rotate", post(nodes::rotate))
+        .route("/admin/nodes/{id}/traffic/series", get(node_series::series))
         .route("/admin/traffic", get(traffic::list))
         .route("/admin/traffic/series", get(traffic::series))
         .route(

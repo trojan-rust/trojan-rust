@@ -14,10 +14,18 @@ All notable changes to this project will be documented in this file.
 - Persist node traffic independently of user accounting. Agents retain unacknowledged samples across reconnects and restarts; the dashboard deduplicates reports and assigns delayed samples to their original observation period.
 - Configure monthly node quotas with a reset day and IANA timezone. Node APIs expose directional usage, remaining bytes, reset times, and availability. Resetting a quota preserves traffic history.
 - Select complete relay paths and exits with `routes` and `strategy = "traffic_aware"`. Managed entries exclude disabled, offline, exhausted, and stale nodes, and finite-quota nodes without accounting support; live updates restore eligible routes without restarting services. Existing connections continue.
+- Expose directional node throughput with heartbeat freshness and unknown-rate states. Add bounded node traffic history queries from the durable node ledger, separate from user traffic charts.
+- Expose entry route selection, tunnel setup outcomes and duration, and actual failover attempts through Prometheus. Add agent accounting backlog and checkpoint diagnostics without changing protocol version 1.
 
 ### Bug Fixes
 
 - Close and join service connections before checkpointing final node traffic. Count accepted writes even when a later write, flush, or cancellation interrupts forwarding.
+- Release active-connection metrics when a session is cancelled or panics. Stop reporting semaphore capacity as TCP accept queue depth.
+
+### Performance
+
+- Buffer node traffic journal writes while preserving the existing file format, atomic replacement, and disk synchronization.
+- Reuse billing calendars and batch expired quota-window rebuilds for node lists and scheduling snapshots.
 
 ## [0.15.0](https://github.com/trojan-rust/trojan-rust/compare/v0.14.0...v0.15.0) - 2026-10-08
 

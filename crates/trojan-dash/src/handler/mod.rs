@@ -4,6 +4,7 @@ pub mod agent;
 pub mod limits;
 pub mod me;
 pub mod node_api;
+pub mod node_series;
 pub mod nodes;
 pub mod sub;
 pub mod surge;

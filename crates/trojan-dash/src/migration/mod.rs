@@ -13,6 +13,7 @@ mod m_002_agent_columns;
 mod m_003_hourly_traffic;
 mod m_004_user_node_limits;
 mod m_005_node_traffic;
+mod m_006_node_observation;
 
 pub struct Migrator;
 
@@ -25,6 +26,7 @@ impl MigratorTrait for Migrator {
             Box::new(m_003_hourly_traffic::Migration),
             Box::new(m_004_user_node_limits::Migration),
             Box::new(m_005_node_traffic::Migration),
+            Box::new(m_006_node_observation::Migration),
         ]
     }
 }
