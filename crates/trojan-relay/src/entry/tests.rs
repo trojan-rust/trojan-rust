@@ -3,6 +3,13 @@ use crate::config::{ChainNodeConfig, RelayNodeConfig, RouteConfig};
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
+fn init_crypto() {
+    static CRYPTO: std::sync::Once = std::sync::Once::new();
+    CRYPTO.call_once(|| {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    });
+}
+
 async fn unused_addr() -> SocketAddr {
     TcpListener::bind("127.0.0.1:0")
         .await
@@ -22,6 +29,7 @@ fn node(addr: SocketAddr, transport: TransportType) -> ChainNodeConfig {
 }
 
 async fn start_relay(transport: TransportType, shutdown: &CancellationToken) -> ChainNodeConfig {
+    init_crypto();
     let mut config: RelayNodeConfig =
         toml::from_str("[relay]\nlisten = '127.0.0.1:0'\n[relay.auth]\npassword = 'secret'")
             .unwrap();
@@ -54,10 +62,7 @@ fn session(nodes: Vec<ChainNodeConfig>, dests: Vec<String>) -> EntrySession {
 }
 
 fn session_for_config(config: &EntryConfig) -> EntrySession {
-    static CRYPTO: std::sync::Once = std::sync::Once::new();
-    CRYPTO.call_once(|| {
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-    });
+    init_crypto();
     let router = Router::new(config).unwrap();
     let route = router.resolve(&config.rules[0].listen).unwrap();
     EntrySession {

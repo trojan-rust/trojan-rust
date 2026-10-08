@@ -46,6 +46,15 @@ fn relay_chain(address: SocketAddr) -> ChainConfig {
     }
 }
 
+async fn reject_destination(listener: &TcpListener) {
+    let (mut relay, _) = listener.accept().await.unwrap();
+    let (request, residue) = handshake::read_handshake(&mut relay).await.unwrap();
+    assert_eq!(request.target, "unavailable:443");
+    assert!(request.metadata.ack);
+    assert!(residue.is_empty());
+    relay.write_all(b"TR\x01\x01").await.unwrap();
+}
+
 async fn connect_when_ready(address: SocketAddr) -> TcpStream {
     loop {
         match TcpStream::connect(address).await {
@@ -84,18 +93,32 @@ fn assert_sample(body: &str, name: &str, labels: &[(&str, &str)], expected: u64)
 }
 
 async fn destination_failover(metrics: SocketAddr) {
+    let rejected = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let target_addr = target.local_addr().unwrap();
-    let dead = available_addr().await;
     let listen = available_addr().await;
-    let config = config(
-        "destination",
-        listen,
-        vec![dead.to_string(), target_addr.to_string()],
+    let mut config = config("destination", listen, vec![]);
+    config.chains.insert(
+        "rejected".into(),
+        relay_chain(rejected.local_addr().unwrap()),
     );
+    config.rules[0].chain.clear();
+    config.rules[0].routes = vec![
+        RouteConfig {
+            chain: "rejected".into(),
+            dest: "unavailable:443".into(),
+            node_id: None,
+        },
+        RouteConfig {
+            chain: "direct".into(),
+            dest: target_addr.to_string(),
+            node_id: None,
+        },
+    ];
     let shutdown = CancellationToken::new();
     let service = tokio::spawn(trojan_relay::entry::run(config, shutdown.clone()));
     let mut client = connect_when_ready(listen).await;
+    reject_destination(&rejected).await;
     let (mut connected, _) = target.accept().await.unwrap();
     client.write_all(b"payload").await.unwrap();
     let mut payload = [0; 7];
@@ -193,12 +216,16 @@ async fn relay_failover(metrics: SocketAddr) {
 }
 
 async fn exhausted_candidates(metrics: SocketAddr) {
-    let dead = available_addr().await;
+    let rejected = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let listen = available_addr().await;
-    let config = config("exhausted", listen, vec![dead.to_string()]);
+    let mut config = config("exhausted", listen, vec!["unavailable:443".into()]);
+    config
+        .chains
+        .insert("direct".into(), relay_chain(rejected.local_addr().unwrap()));
     let shutdown = CancellationToken::new();
     let service = tokio::spawn(trojan_relay::entry::run(config, shutdown.clone()));
     let mut client = connect_when_ready(listen).await;
+    reject_destination(&rejected).await;
     let mut byte = [0];
     assert_eq!(client.read(&mut byte).await.unwrap(), 0);
     shutdown.cancel();
@@ -261,16 +288,20 @@ async fn cancelled_setup(metrics: SocketAddr) {
 #[tokio::test]
 async fn exported_metrics_follow_setup_failover_exhaustion_and_abort() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        let metrics = available_addr().await;
-        let exporter = trojan_metrics::init_metrics_server(&metrics.to_string(), None).unwrap();
-        destination_failover(metrics).await;
-        relay_failover(metrics).await;
-        exhausted_candidates(metrics).await;
-        cancelled_setup(metrics).await;
-        exporter.abort();
-        assert!(exporter.await.unwrap_err().is_cancelled());
-    })
-    .await
-    .expect("route metrics scenarios did not complete");
+    let metrics = available_addr().await;
+    let exporter = trojan_metrics::init_metrics_server(&metrics.to_string(), None).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), destination_failover(metrics))
+        .await
+        .expect("destination failover did not complete");
+    tokio::time::timeout(Duration::from_secs(5), relay_failover(metrics))
+        .await
+        .expect("relay failover did not complete");
+    tokio::time::timeout(Duration::from_secs(5), exhausted_candidates(metrics))
+        .await
+        .expect("candidate exhaustion did not complete");
+    tokio::time::timeout(Duration::from_secs(5), cancelled_setup(metrics))
+        .await
+        .expect("setup cancellation did not complete");
+    exporter.abort();
+    assert!(exporter.await.unwrap_err().is_cancelled());
 }
