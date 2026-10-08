@@ -7,13 +7,13 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest, http::HeaderValue};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::config::AgentConfig;
 use crate::error::AgentError;
-use crate::protocol::{AgentMessage, PROTOCOL_VERSION, PanelMessage};
+use crate::protocol::{AgentMessage, NODE_TRAFFIC_HEADER, PROTOCOL_VERSION, PanelMessage};
 
 /// Registration result returned on successful panel handshake.
 #[derive(Debug)]
@@ -22,6 +22,8 @@ pub struct RegistrationResult {
     pub node_type: crate::protocol::NodeType,
     pub config_version: u32,
     pub report_interval_secs: u32,
+    /// The WebSocket upgrade negotiated node accounting.
+    pub node_traffic: bool,
     /// Service config parsed from the opaque JSON bytes in the protocol message.
     pub config: serde_json::Value,
 }
@@ -45,7 +47,15 @@ pub async fn connect_and_register(
 > {
     info!(url = %config.panel_url, "connecting to panel");
 
-    let (ws_stream, _response) = tokio_tungstenite::connect_async(&config.panel_url).await?;
+    let mut request = config.panel_url.as_str().into_client_request()?;
+    request
+        .headers_mut()
+        .insert(NODE_TRAFFIC_HEADER, HeaderValue::from_static("1"));
+    let (ws_stream, response) = tokio_tungstenite::connect_async(request).await?;
+    let node_traffic = response
+        .headers()
+        .get(NODE_TRAFFIC_HEADER)
+        .is_some_and(|value| value == "1");
 
     let (mut ws_sink, mut ws_source) = ws_stream.split();
 
@@ -92,6 +102,7 @@ pub async fn connect_and_register(
                                 node_type,
                                 config_version,
                                 report_interval_secs,
+                                node_traffic,
                                 config: config_value,
                             });
                         }

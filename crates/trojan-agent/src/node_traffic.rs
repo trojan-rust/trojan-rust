@@ -30,6 +30,8 @@ struct SavedTraffic {
     panel_url: String,
     token_hash: String,
     node_id: Option<String>,
+    #[serde(default)]
+    node_traffic: bool,
     stream_id: String,
     last_sequence: u64,
     acknowledged: u64,
@@ -41,6 +43,7 @@ struct Journal {
     saved: SavedTraffic,
     token_hash: String,
     baseline: NodeSnapshot,
+    enabled: bool,
     _lock: File,
 }
 
@@ -104,6 +107,28 @@ impl NodeTraffic {
             .await
     }
 
+    pub(crate) async fn requires_support(&self) -> Result<bool, AgentError> {
+        self.with_journal(|journal| {
+            // Earlier journals recorded traffic without an explicit capability marker.
+            Ok(journal.saved.node_traffic || journal.saved.last_sequence > 0)
+        })
+        .await
+    }
+
+    pub(crate) async fn enable(&self, stats: Arc<NodeStats>) -> Result<(), AgentError> {
+        self.with_journal(move |journal| {
+            if !journal.enabled {
+                let mut saved = journal.saved.clone();
+                saved.node_traffic = true;
+                journal.commit(saved)?;
+                journal.baseline = stats.snapshot();
+                journal.enabled = true;
+            }
+            Ok(())
+        })
+        .await
+    }
+
     pub(crate) fn set_interval(&self, seconds: u64) -> Result<(), AgentError> {
         let duration = report_interval(seconds)?;
         self.interval.send_if_modified(|interval| {
@@ -117,9 +142,11 @@ impl NodeTraffic {
         Ok(())
     }
 
-    async fn sample(&self, snapshot: NodeSnapshot, observed_at: u64) -> Result<(), AgentError> {
-        self.with_journal(move |journal| journal.sample(snapshot, observed_at))
-            .await?;
+    async fn sample_stats(&self, stats: Arc<NodeStats>) -> Result<(), AgentError> {
+        self.with_journal(move |journal| {
+            journal.sample(stats.snapshot(), crate::runtime::unix_now())
+        })
+        .await?;
         self.changed.notify_one();
         Ok(())
     }
@@ -135,13 +162,13 @@ impl NodeTraffic {
             tokio::select! {
                 biased;
                 _ = shutdown.cancelled() => {
-                    return self.sample(stats.snapshot(), crate::runtime::unix_now()).await;
+                    return self.sample_stats(stats.clone()).await;
                 }
                 changed = interval.changed() => {
                     changed.map_err(|e| AgentError::Accounting(format!("sampling interval closed: {e}")))?;
                 }
                 _ = tokio::time::sleep(delay) => {
-                    self.sample(stats.snapshot(), crate::runtime::unix_now()).await?;
+                    self.sample_stats(stats.clone()).await?;
                 }
             }
         }
@@ -257,6 +284,7 @@ impl Journal {
                     panel_url,
                     token_hash: token_hash.clone(),
                     node_id: None,
+                    node_traffic: false,
                     stream_id: format!("{:032x}", u128::from_be_bytes(random)),
                     last_sequence: 0,
                     acknowledged: 0,
@@ -270,6 +298,7 @@ impl Journal {
             saved,
             token_hash,
             baseline: NodeSnapshot::default(),
+            enabled: false,
             _lock: lock,
         };
         journal.persist(&journal.saved)?;
@@ -295,6 +324,10 @@ impl Journal {
     }
 
     fn sample(&mut self, snapshot: NodeSnapshot, observed_at: u64) -> Result<(), AgentError> {
+        if !self.enabled {
+            self.baseline = snapshot;
+            return Ok(());
+        }
         let bytes_in = snapshot.bytes_in.checked_sub(self.baseline.bytes_in);
         let bytes_out = snapshot.bytes_out.checked_sub(self.baseline.bytes_out);
         let (Some(bytes_in), Some(bytes_out)) = (bytes_in, bytes_out) else {

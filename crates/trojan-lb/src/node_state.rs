@@ -55,6 +55,7 @@ impl NodeStateView {
     /// Return a fraction in `(0, 1]`; unlimited nodes have a fraction of `1`.
     ///
     /// Missing, stale, disabled, offline, and depleted nodes are unavailable.
+    /// A finite quota requires supported node accounting.
     /// A new billing period requires a fresh panel snapshot.
     pub fn remaining_fraction(&self, node_id: &str) -> Option<f64> {
         let now = SystemTime::now()
@@ -75,6 +76,9 @@ impl NodeStateView {
         if node.traffic_limit == 0 {
             return Some(1.0);
         }
+        if !node.traffic_supported {
+            return None;
+        }
         let remaining = node.traffic_limit.saturating_sub(node.used_bytes);
         (remaining > 0).then(|| remaining as f64 / node.traffic_limit as f64)
     }
@@ -92,6 +96,7 @@ mod tests {
                 node_id: "exit".into(),
                 enabled: true,
                 online: true,
+                traffic_supported: true,
                 traffic_limit: 100,
                 used_bytes: 80,
                 period_start: 0,
@@ -143,5 +148,21 @@ mod tests {
             store.update(state);
             assert_eq!(store.snapshot().remaining_fraction_at("exit", 10), expected);
         }
+    }
+
+    #[test]
+    fn legacy_nodes_cannot_satisfy_a_finite_quota() {
+        let store = NodeStateStore::default();
+        let mut state = snapshot();
+        state.nodes[0].traffic_supported = false;
+        state.nodes[0].used_bytes = 0;
+        store.update(state.clone());
+        assert_eq!(store.snapshot().remaining_fraction_at("exit", 10), None);
+        state.nodes[0].traffic_limit = 0;
+        store.update(state);
+        assert_eq!(
+            store.snapshot().remaining_fraction_at("exit", 10),
+            Some(1.0)
+        );
     }
 }

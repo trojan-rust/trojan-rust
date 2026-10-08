@@ -27,6 +27,10 @@ mod e2e;
 #[path = "runtime_shutdown_tests.rs"]
 mod shutdown_tests;
 
+#[cfg(test)]
+#[path = "runtime_capability_tests.rs"]
+mod capability_tests;
+
 struct Service {
     config: CachedConfig,
     started_at: u64,
@@ -112,6 +116,7 @@ async fn apply_config(
 ) -> Result<(), AgentError> {
     if let Some(running) = service.as_mut()
         && running.config.node_type == config.node_type
+        && running.config.node_traffic == config.node_traffic
         && running.config.config == config.config
     {
         running.config = config;
@@ -121,6 +126,31 @@ async fn apply_config(
         running.stop(drain_timeout).await?;
     }
     *service = Some(Service::start(config, sinks.clone()));
+    Ok(())
+}
+
+async fn apply_node_traffic(
+    supported: bool,
+    service: &mut Option<Service>,
+    sinks: &mut runner::ServiceSinks,
+    traffic: &NodeTraffic,
+) -> Result<(), AgentError> {
+    if !supported && (sinks.node_traffic || traffic.requires_support().await?) {
+        return Err(AgentError::Accounting(
+            "panel no longer supports node traffic accounting; restore a capable panel before restarting the service".into(),
+        ));
+    }
+    if supported && !sinks.node_traffic {
+        if let Some(running) = service.take() {
+            running
+                .stop(trojan_server::DEFAULT_SHUTDOWN_TIMEOUT)
+                .await?;
+        }
+        // Exclude all legacy traffic, including bytes carried while the old service drained.
+        traffic.enable(sinks.stats.clone()).await?;
+        sinks.node_states = Default::default();
+        sinks.node_traffic = true;
+    }
     Ok(())
 }
 
@@ -137,19 +167,26 @@ pub(crate) async fn run(
             .map_or(30, |cached| u64::from(cached.report_interval_secs))
     });
     let traffic = NodeTraffic::open(&cache_dir, &config, interval).await?;
+    let supported = cached.as_ref().is_some_and(|cached| cached.node_traffic)
+        || traffic.requires_support().await?;
+    let mut service = None;
+    apply_node_traffic(supported, &mut service, &mut sinks, &traffic).await?;
     if traffic.can_start_cached().await?
         && let Some(node_id) = cached.as_ref().and_then(|cached| cached.node_id.as_ref())
     {
         traffic.bind_node(node_id).await?;
         sinks.node_id = Some(node_id.clone());
     }
-    let mut service = cached.filter(|_| sinks.node_id.is_some()).map(|cached| {
-        info!(
-            version = cached.version,
-            "starting service from cached config"
-        );
-        Service::start(cached, sinks.clone())
-    });
+    service = cached
+        .filter(|_| sinks.node_id.is_some())
+        .map(|mut cached| {
+            cached.node_traffic = supported;
+            info!(
+                version = cached.version,
+                "starting service from cached config"
+            );
+            Service::start(cached, sinks.clone())
+        });
     let sampler_shutdown = CancellationToken::new();
     let sampler_guard = sampler_shutdown.clone().drop_guard();
     let sampler = {
@@ -277,9 +314,11 @@ async fn connected(
 ) -> Result<(), AgentError> {
     let cache_dir = cache::resolve_cache_dir(config.cache_dir.as_deref());
     traffic.bind_node(&reg.node_id).await?;
+    apply_node_traffic(reg.node_traffic, service, sinks, traffic).await?;
     sinks.node_id = Some(reg.node_id.clone());
     let mut cached = CachedConfig {
         node_id: Some(reg.node_id),
+        node_traffic: reg.node_traffic,
         version: reg.config_version,
         node_type: reg.node_type,
         report_interval_secs: reg.report_interval_secs,
@@ -332,7 +371,7 @@ async fn connected(
                 return result;
             }
             _ = &mut reporting => return Err(AgentError::ConnectionClosed),
-            result = &mut sending => return result,
+            result = &mut sending, if reg.node_traffic => return result,
             message = rx.recv() => match message {
                 None => return Err(AgentError::ConnectionClosed),
                 Some(PanelMessage::ConfigPush { version, restart_required, drain_timeout_secs, config: bytes }) => {
@@ -361,8 +400,9 @@ async fn connected(
                     tx.send(AgentMessage::ConfigAck { version, ok: true, message: None }).await.map_err(|_| AgentError::ConnectionClosed)?;
                     tx.send(AgentMessage::ServiceStatus { status: ServiceState::Running, started_at, config_version: version }).await.map_err(|_| AgentError::ConnectionClosed)?;
                 }
-                Some(PanelMessage::NodeStates { snapshot }) => sinks.node_states.update(snapshot),
-                Some(PanelMessage::NodeTrafficAck { stream_id, sequence }) => traffic.acknowledge(stream_id, sequence).await?,
+                Some(PanelMessage::NodeStates { snapshot }) if reg.node_traffic => sinks.node_states.update(snapshot),
+                Some(PanelMessage::NodeTrafficAck { stream_id, sequence }) if reg.node_traffic => traffic.acknowledge(stream_id, sequence).await?,
+                Some(PanelMessage::NodeStates { .. } | PanelMessage::NodeTrafficAck { .. }) => return Err(AgentError::Accounting("panel sent node traffic data without negotiating support".into())),
                 Some(PanelMessage::Error { code: crate::protocol::ErrorCode::InvalidTrafficReport, message }) => return Err(AgentError::Accounting(format!("panel rejected traffic report: {message}"))),
                 Some(PanelMessage::Error { code, message }) => warn!(?code, %message, "panel error"),
                 Some(PanelMessage::Registered { .. }) => warn!("duplicate panel registration"),

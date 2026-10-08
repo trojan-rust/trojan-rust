@@ -22,9 +22,15 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(15);
 /// Socket presence and the latest complete scheduling snapshot.
 #[derive(Debug)]
 pub(crate) struct NodeMonitor {
-    connections: Mutex<BTreeMap<i64, usize>>,
+    connections: Mutex<BTreeMap<i64, NodeConnections>>,
     pub snapshots: watch::Sender<NodeStateSnapshot>,
     pub refresh: Notify,
+}
+
+#[derive(Debug, Default)]
+struct NodeConnections {
+    total: usize,
+    accounting: usize,
 }
 
 impl NodeMonitor {
@@ -36,16 +42,20 @@ impl NodeMonitor {
         }
     }
 
-    pub async fn connected(&self, node_id: i64) {
-        *self.connections.lock().await.entry(node_id).or_default() += 1;
+    pub async fn connected(&self, node_id: i64, traffic_supported: bool) {
+        let mut connections = self.connections.lock().await;
+        let node = connections.entry(node_id).or_default();
+        node.total += 1;
+        node.accounting += usize::from(traffic_supported);
         self.refresh.notify_one();
     }
 
-    pub async fn disconnected(&self, node_id: i64) {
+    pub async fn disconnected(&self, node_id: i64, traffic_supported: bool) {
         let mut connections = self.connections.lock().await;
-        if let Some(count) = connections.get_mut(&node_id) {
-            *count -= 1;
-            if *count == 0 {
+        if let Some(node) = connections.get_mut(&node_id) {
+            node.total -= 1;
+            node.accounting -= usize::from(traffic_supported);
+            if node.total == 0 {
                 connections.remove(&node_id);
             }
         }
@@ -64,7 +74,9 @@ pub(crate) struct NodeTrafficStatus {
     pub period_bytes_in: u64,
     pub period_bytes_out: u64,
     pub traffic_used: u64,
-    /// Absent for an unlimited node.
+    /// True only when every live session supports durable node accounting.
+    pub traffic_supported: bool,
+    /// Absent for an unlimited node or incomplete node accounting.
     pub traffic_remaining: Option<u64>,
     pub online: bool,
     pub unavailable_reason: Option<&'static str>,
@@ -79,8 +91,16 @@ pub(crate) async fn status(
     let usage = node_traffic::current_usage(&state.db, node, period).await?;
     let used = usage.total()?;
     let limit = nonneg(node.traffic_limit);
-    let online = state.nodes.connections.lock().await.contains_key(&node.id)
-        && nonneg(node.last_seen).saturating_add(STATE_TTL) > now;
+    let (connected, traffic_supported) = state
+        .nodes
+        .connections
+        .lock()
+        .await
+        .get(&node.id)
+        .map_or((false, false), |sessions| {
+            (true, sessions.accounting == sessions.total)
+        });
+    let online = connected && nonneg(node.last_seen).saturating_add(STATE_TTL) > now;
     Ok(NodeTrafficStatus {
         traffic_limit: limit,
         reset_day: node.reset_day,
@@ -90,12 +110,15 @@ pub(crate) async fn status(
         period_bytes_in: nonneg(usage.bytes_in),
         period_bytes_out: nonneg(usage.bytes_out),
         traffic_used: used,
-        traffic_remaining: (limit > 0).then(|| limit.saturating_sub(used)),
+        traffic_supported,
+        traffic_remaining: (traffic_supported && limit > 0).then(|| limit.saturating_sub(used)),
         online,
         unavailable_reason: if node.enabled == 0 {
             Some("disabled")
         } else if !online {
             Some("offline")
+        } else if limit > 0 && !traffic_supported {
+            Some("traffic_unsupported")
         } else if limit > 0 && used >= limit {
             Some("traffic_exhausted")
         } else {
@@ -144,6 +167,7 @@ async fn snapshot_from_nodes(
             node_id: node.id.to_string(),
             enabled: node.enabled != 0,
             online: status.online,
+            traffic_supported: status.traffic_supported,
             traffic_limit: status.traffic_limit,
             used_bytes: status.traffic_used,
             period_start: status.period_start,
@@ -198,7 +222,7 @@ mod tests {
             cfg: Arc::new(config),
             nodes: Arc::new(NodeMonitor::new()),
         };
-        state.nodes.connected(1).await;
+        state.nodes.connected(1, true).await;
         node_traffic::record(
             &state.db,
             1,

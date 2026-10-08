@@ -72,6 +72,7 @@ repository and is served from `panel_dir` as static files.
 **Traffic accounting:** every service records node totals in Prometheus and `NodeStats`.
 The agent persists samples until the dashboard acknowledges committed reports.
 The dashboard keeps timestamped node history and monthly quota policies separate from user quotas.
+Agent protocol version 1 enables node accounting only after both WebSocket peers negotiate `x-trojan-node-traffic: 1`.
 Live node snapshots let managed entries filter unavailable relay paths and exits without restarting services.
 User-level accounting for a chain is attributed by the exit: entry and relay
 nodes never learn whose bytes they carry, so the entry prefixes each tunnel

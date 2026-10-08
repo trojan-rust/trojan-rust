@@ -7,7 +7,10 @@
 use serde::{Deserialize, Serialize};
 
 /// Protocol version — incremented on breaking changes.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// WebSocket upgrade header; a request and response value of `1` enables node accounting.
+pub const NODE_TRAFFIC_HEADER: &str = "x-trojan-node-traffic";
 
 /// Agent -> Panel messages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +112,8 @@ pub struct NodeState {
     pub node_id: String,
     pub enabled: bool,
     pub online: bool,
+    /// Every connected agent for this node negotiated durable node accounting.
+    pub traffic_supported: bool,
     /// Zero means unlimited.
     pub traffic_limit: u64,
     pub used_bytes: u64,

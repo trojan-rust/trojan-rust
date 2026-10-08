@@ -24,6 +24,8 @@ use crate::protocol::NodeType;
 pub struct ServiceSinks {
     /// Authenticated node identity for managed entry admission.
     pub node_id: Option<String>,
+    /// Enable managed admission only after the panel negotiates node accounting.
+    pub node_traffic: bool,
     /// Current panel availability and quota state, shared with running services.
     pub node_states: Arc<NodeStateStore>,
     /// Node-wide traffic and connection totals, read on every heartbeat.
@@ -91,12 +93,16 @@ async fn run_entry(
 
     info!("starting entry service");
 
-    trojan_relay::entry::run_with_node_states(config, sinks.stats, sinks.node_states, shutdown)
-        .await
-        .map_err(|e| {
-            error!(error = %e, "entry service exited with error");
-            AgentError::Service(e.to_string())
-        })
+    let result = if sinks.node_traffic {
+        trojan_relay::entry::run_with_node_states(config, sinks.stats, sinks.node_states, shutdown)
+            .await
+    } else {
+        trojan_relay::entry::run_with_stats(config, sinks.stats, shutdown).await
+    };
+    result.map_err(|e| {
+        error!(error = %e, "entry service exited with error");
+        AgentError::Service(e.to_string())
+    })
 }
 
 async fn run_relay(

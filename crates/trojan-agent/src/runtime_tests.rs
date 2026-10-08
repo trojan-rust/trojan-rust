@@ -8,7 +8,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
-const WAIT: Duration = Duration::from_secs(5);
+pub(super) const WAIT: Duration = Duration::from_secs(5);
 
 pub(super) fn init_crypto() {
     static INIT: std::sync::Once = std::sync::Once::new();
@@ -19,7 +19,7 @@ pub(super) fn init_crypto() {
     });
 }
 
-async fn free_address() -> SocketAddr {
+pub(super) async fn free_address() -> SocketAddr {
     TcpListener::bind("127.0.0.1:0")
         .await
         .unwrap()
@@ -27,14 +27,14 @@ async fn free_address() -> SocketAddr {
         .unwrap()
 }
 
-fn entry_config(listen: SocketAddr, target: SocketAddr) -> serde_json::Value {
+pub(super) fn entry_config(listen: SocketAddr, target: SocketAddr) -> serde_json::Value {
     json!({
         "chains": {"direct": {"nodes": []}},
         "rules": [{"name": "test", "listen": listen, "chain": "direct", "dest": target.to_string()}]
     })
 }
 
-fn agent_config(panel: SocketAddr, cache: &std::path::Path) -> AgentConfig {
+pub(super) fn agent_config(panel: SocketAddr, cache: &std::path::Path) -> AgentConfig {
     AgentConfig {
         panel_url: format!("ws://{panel}/ws/agent"),
         token: "token".into(),
@@ -50,12 +50,37 @@ fn agent_config(panel: SocketAddr, cache: &std::path::Path) -> AgentConfig {
     }
 }
 
-async fn register(panel: &TcpListener, config: &serde_json::Value) -> WebSocketStream<TcpStream> {
+#[expect(
+    clippy::unnecessary_wraps,
+    clippy::result_large_err,
+    reason = "the WebSocket handshake callback requires an HTTP response Result"
+)]
+pub(super) fn accept_node_traffic(
+    request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+    mut response: tokio_tungstenite::tungstenite::handshake::server::Response,
+) -> Result<
+    tokio_tungstenite::tungstenite::handshake::server::Response,
+    tokio_tungstenite::tungstenite::handshake::server::ErrorResponse,
+> {
+    assert_eq!(request.headers()[crate::protocol::NODE_TRAFFIC_HEADER], "1");
+    response
+        .headers_mut()
+        .insert(crate::protocol::NODE_TRAFFIC_HEADER, "1".parse().unwrap());
+    Ok(response)
+}
+
+pub(super) async fn register(
+    panel: &TcpListener,
+    config: &serde_json::Value,
+) -> WebSocketStream<TcpStream> {
     let (tcp, _) = timeout(WAIT, panel.accept()).await.unwrap().unwrap();
-    let mut ws = timeout(WAIT, tokio_tungstenite::accept_async(tcp))
-        .await
-        .unwrap()
-        .unwrap();
+    let mut ws = timeout(
+        WAIT,
+        tokio_tungstenite::accept_hdr_async(tcp, super::tests::accept_node_traffic),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert!(matches!(
         receive(&mut ws).await,
         AgentMessage::Register { .. }
@@ -75,7 +100,7 @@ async fn register(panel: &TcpListener, config: &serde_json::Value) -> WebSocketS
     ws
 }
 
-async fn send_states(ws: &mut WebSocketStream<TcpStream>, enabled: bool) {
+pub(super) async fn send_states(ws: &mut WebSocketStream<TcpStream>, enabled: bool) {
     send(
         ws,
         PanelMessage::NodeStates {
@@ -86,6 +111,7 @@ async fn send_states(ws: &mut WebSocketStream<TcpStream>, enabled: bool) {
                     node_id: "entry".into(),
                     enabled,
                     online: true,
+                    traffic_supported: true,
                     traffic_limit: 0,
                     used_bytes: 0,
                     period_start: 0,
@@ -97,7 +123,7 @@ async fn send_states(ws: &mut WebSocketStream<TcpStream>, enabled: bool) {
     .await;
 }
 
-async fn ready(ws: &mut WebSocketStream<TcpStream>, config: &serde_json::Value) -> u64 {
+pub(super) async fn ready(ws: &mut WebSocketStream<TcpStream>, config: &serde_json::Value) -> u64 {
     // The acknowledgement confirms all preceding state snapshots reached the runtime.
     send(
         ws,
@@ -119,7 +145,7 @@ async fn ready(ws: &mut WebSocketStream<TcpStream>, config: &serde_json::Value) 
     }
 }
 
-async fn receive(ws: &mut WebSocketStream<TcpStream>) -> AgentMessage {
+pub(super) async fn receive(ws: &mut WebSocketStream<TcpStream>) -> AgentMessage {
     let message = timeout(WAIT, ws.next()).await.unwrap().unwrap().unwrap();
     let Message::Binary(bytes) = message else {
         panic!("expected binary message, got {message:?}")
@@ -127,7 +153,7 @@ async fn receive(ws: &mut WebSocketStream<TcpStream>) -> AgentMessage {
     bincode::deserialize(&bytes).unwrap()
 }
 
-async fn send(ws: &mut WebSocketStream<TcpStream>, message: PanelMessage) {
+pub(super) async fn send(ws: &mut WebSocketStream<TcpStream>, message: PanelMessage) {
     ws.send(Message::Binary(
         bincode::serialize(&message).unwrap().into(),
     ))
@@ -135,7 +161,7 @@ async fn send(ws: &mut WebSocketStream<TcpStream>, message: PanelMessage) {
     .unwrap();
 }
 
-async fn connect_service(address: SocketAddr) -> TcpStream {
+pub(super) async fn connect_service(address: SocketAddr) -> TcpStream {
     timeout(WAIT, async {
         loop {
             match TcpStream::connect(address).await {
@@ -151,7 +177,7 @@ async fn connect_service(address: SocketAddr) -> TcpStream {
     .unwrap()
 }
 
-async fn round_trip(client: &mut TcpStream, target: &mut TcpStream) {
+pub(super) async fn round_trip(client: &mut TcpStream, target: &mut TcpStream) {
     client.write_all(b"payload").await.unwrap();
     let mut bytes = [0; 7];
     timeout(WAIT, target.read_exact(&mut bytes))
@@ -237,6 +263,7 @@ async fn cached_service_recovers_when_panel_returns() {
         cache.path(),
         &CachedConfig {
             node_id: Some("entry".into()),
+            node_traffic: true,
             version: 1,
             node_type: NodeType::Entry,
             report_interval_secs: 1,
@@ -278,6 +305,7 @@ async fn shutdown_during_registration_releases_cached_listener() {
         cache.path(),
         &CachedConfig {
             node_id: Some("entry".into()),
+            node_traffic: true,
             version: 1,
             node_type: NodeType::Entry,
             report_interval_secs: 1,

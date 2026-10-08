@@ -38,6 +38,7 @@ fn snapshot(used: [u64; 5]) -> NodeStateSnapshot {
                 node_id: id.into(),
                 enabled: true,
                 online: true,
+                traffic_supported: true,
                 traffic_limit: 100,
                 used_bytes: used,
                 period_start: now - 10,

@@ -41,6 +41,7 @@ async fn fixture() -> Fixture {
     let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = CachedConfig {
         node_id: Some("server".into()),
+        node_traffic: true,
         version: 1,
         node_type: crate::protocol::NodeType::Server,
         report_interval_secs: 120,
@@ -173,6 +174,7 @@ async fn assert_server_shutdown(drain_timeout: Duration) {
     let traffic = NodeTraffic::open(fixture.directory.path(), &agent_config, 120)
         .await
         .unwrap();
+    traffic.enable(NodeStats::new()).await.unwrap();
     let sampler_shutdown = CancellationToken::new();
     sampler_shutdown.cancel();
     traffic
@@ -270,7 +272,9 @@ async fn accounting_protocol_error_closes_live_server_without_a_drain_period() {
         .await
         .unwrap()
         .unwrap();
-    let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+    let mut ws = tokio_tungstenite::accept_hdr_async(tcp, super::tests::accept_node_traffic)
+        .await
+        .unwrap();
     let Message::Binary(bytes) = ws.next().await.unwrap().unwrap() else {
         panic!("expected registration")
     };

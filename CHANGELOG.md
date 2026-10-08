@@ -6,14 +6,14 @@ All notable changes to this project will be documented in this file.
 
 ### Breaking Changes
 
-- Upgrade the dashboard and agents together. Agent protocol version 2 adds acknowledged node traffic reports and live availability snapshots; version 1 registrations are rejected.
 - Library callers must account for `LbStrategy::TrafficAware`, `RuleConfig::routes`, and the route pool returned by `Router::resolve`. Every load-balancing strategy now excludes unhealthy backends and returns an error when none are available.
 
 ### Features
 
+- Keep Agent protocol version 1. The WebSocket upgrade negotiates node accounting with `x-trojan-node-traffic: 1`; legacy agents and dashboards retain baseline service behavior. Previously enabled accounting cannot silently downgrade to a legacy dashboard.
 - Persist node traffic independently of user accounting. Agents retain unacknowledged samples across reconnects and restarts; the dashboard deduplicates reports and assigns delayed samples to their original observation period.
 - Configure monthly node quotas with a reset day and IANA timezone. Node APIs expose directional usage, remaining bytes, reset times, and availability. Resetting a quota preserves traffic history.
-- Select complete relay paths and exits with `routes` and `strategy = "traffic_aware"`. Managed entries exclude disabled, offline, exhausted, and stale nodes; live updates restore eligible routes without restarting services. Existing connections continue.
+- Select complete relay paths and exits with `routes` and `strategy = "traffic_aware"`. Managed entries exclude disabled, offline, exhausted, and stale nodes, and finite-quota nodes without accounting support; live updates restore eligible routes without restarting services. Existing connections continue.
 
 ### Bug Fixes
 

@@ -15,10 +15,12 @@ use std::net::SocketAddr;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
+use axum::http::{HeaderMap, HeaderValue};
 use axum::response::Response;
 use tracing::{debug, info, warn};
 use trojan_protocol::{
-    AgentMessage, ErrorCode, NodeType, PROTOCOL_VERSION, PanelMessage, TrafficRecord,
+    AgentMessage, ErrorCode, NODE_TRAFFIC_HEADER, NodeType, PROTOCOL_VERSION, PanelMessage,
+    TrafficRecord,
 };
 
 use sea_orm::{
@@ -42,13 +44,23 @@ const REPORT_INTERVAL_SECS: u32 = 30;
 pub async fn ws(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    upgrade.on_upgrade(move |socket| async move {
-        if let Err(e) = session(socket, state, peer).await {
+    let traffic_supported = headers
+        .get(NODE_TRAFFIC_HEADER)
+        .is_some_and(|value| value == "1");
+    let mut response = upgrade.on_upgrade(move |socket| async move {
+        if let Err(e) = session(socket, state, peer, traffic_supported).await {
             debug!(peer = %peer, error = %e, "agent session ended with error");
         }
-    })
+    });
+    if traffic_supported {
+        response
+            .headers_mut()
+            .insert(NODE_TRAFFIC_HEADER, HeaderValue::from_static("1"));
+    }
+    response
 }
 
 /// Register the agent, then serve it until it disconnects.
@@ -56,6 +68,7 @@ async fn session(
     mut socket: WebSocket,
     state: AppState,
     peer: SocketAddr,
+    traffic_supported: bool,
 ) -> Result<(), DashError> {
     let Some(node) = register(&mut socket, &state, peer).await? else {
         return Ok(());
@@ -69,9 +82,9 @@ async fn session(
         "agent registered"
     );
 
-    state.nodes.connected(node.id).await;
-    let result = serve_registered(&mut socket, &state, node.id).await;
-    state.nodes.disconnected(node.id).await;
+    state.nodes.connected(node.id, traffic_supported).await;
+    let result = serve_registered(&mut socket, &state, node.id, traffic_supported).await;
+    state.nodes.disconnected(node.id, traffic_supported).await;
     info!(node_id = node.id, "agent disconnected");
     result
 }
@@ -80,15 +93,18 @@ async fn serve_registered(
     socket: &mut WebSocket,
     state: &AppState,
     node_id: i64,
+    traffic_supported: bool,
 ) -> Result<(), DashError> {
     let mut snapshots = state.nodes.snapshots.subscribe();
-    // One publisher preserves ordering when snapshots share a second-resolution timestamp.
-    let snapshot = snapshots.borrow_and_update().clone();
-    send(socket, &PanelMessage::NodeStates { snapshot }).await?;
+    if traffic_supported {
+        // One publisher preserves ordering when snapshots share a second-resolution timestamp.
+        let snapshot = snapshots.borrow_and_update().clone();
+        send(socket, &PanelMessage::NodeStates { snapshot }).await?;
+    }
 
     loop {
         let frame = tokio::select! {
-            changed = snapshots.changed() => {
+            changed = snapshots.changed(), if traffic_supported => {
                 if changed.is_err() {
                     break;
                 }
@@ -135,6 +151,11 @@ async fn serve_registered(
                 record_traffic(state, node_id, &records).await?;
             }
             AgentMessage::NodeTraffic { report } => {
+                if !traffic_supported {
+                    return Err(DashError::BadRequest(
+                        "node traffic reports require capability negotiation".into(),
+                    ));
+                }
                 let sequence =
                     match node_traffic::record(&state.db, node_id, &report, now_secs()).await {
                         Ok(sequence) => sequence,
@@ -354,7 +375,9 @@ mod tests {
     use futures_util::{SinkExt, StreamExt};
     use sea_orm::ConnectionTrait;
     use tokio::net::{TcpListener, TcpStream};
-    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite};
+    use tokio_tungstenite::{
+        MaybeTlsStream, WebSocketStream, tungstenite, tungstenite::client::IntoClientRequest,
+    };
     use trojan_protocol::{NodeState, NodeStateSnapshot};
 
     use super::*;
@@ -385,6 +408,7 @@ mod tests {
                     node_id: "1".into(),
                     enabled: true,
                     online: true,
+                    traffic_supported: true,
                     traffic_limit: 100,
                     used_bytes: 90,
                     period_start: now - 1,
@@ -412,10 +436,14 @@ mod tests {
                 .await
                 .unwrap();
             });
-            let (mut socket, _) =
-                tokio_tungstenite::connect_async(format!("ws://{address}/ws/agent"))
-                    .await
-                    .unwrap();
+            let mut request = format!("ws://{address}/ws/agent")
+                .into_client_request()
+                .unwrap();
+            request
+                .headers_mut()
+                .insert(NODE_TRAFFIC_HEADER, HeaderValue::from_static("1"));
+            let (mut socket, response) = tokio_tungstenite::connect_async(request).await.unwrap();
+            assert_eq!(response.headers()[NODE_TRAFFIC_HEADER], "1");
             let register = AgentMessage::Register {
                 protocol_version: PROTOCOL_VERSION,
                 token: "token".into(),

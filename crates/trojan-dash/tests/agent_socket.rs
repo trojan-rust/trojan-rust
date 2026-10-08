@@ -16,9 +16,10 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use trojan_protocol::{
-    AgentMessage, ErrorCode, NodeState, NodeTrafficReport, NodeType, PROTOCOL_VERSION,
-    PanelMessage, ServiceState, TrafficRecord,
+    AgentMessage, ErrorCode, NODE_TRAFFIC_HEADER, NodeState, NodeTrafficReport, NodeType,
+    PROTOCOL_VERSION, PanelMessage, ServiceState, TrafficRecord,
 };
 
 mod common;
@@ -35,7 +36,12 @@ struct Agent {
 impl Agent {
     async fn connect(dash: &Dash) -> Self {
         let url = format!("{}/ws/agent", dash.base.replace("http://", "ws://"));
-        let (socket, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+        let mut request = url.into_client_request().unwrap();
+        request
+            .headers_mut()
+            .insert(NODE_TRAFFIC_HEADER, "1".parse().unwrap());
+        let (socket, response) = tokio_tungstenite::connect_async(request).await.unwrap();
+        assert_eq!(response.headers()[NODE_TRAFFIC_HEADER], "1");
         Self { socket }
     }
 

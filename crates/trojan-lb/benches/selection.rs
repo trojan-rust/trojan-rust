@@ -23,6 +23,7 @@ fn selection(c: &mut Criterion) {
                 node_id: id.clone(),
                 enabled: true,
                 online: true,
+                traffic_supported: true,
                 traffic_limit: 1000,
                 used_bytes: 200,
                 period_start: now - 100,

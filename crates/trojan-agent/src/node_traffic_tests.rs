@@ -1,5 +1,18 @@
 use super::*;
 
+async fn open(path: &Path, config: &AgentConfig, interval: u64) -> NodeTraffic {
+    let traffic = NodeTraffic::open(path, config, interval).await.unwrap();
+    traffic.enable(NodeStats::new()).await.unwrap();
+    traffic
+}
+
+impl NodeTraffic {
+    async fn sample(&self, snapshot: NodeSnapshot, observed_at: u64) -> Result<(), AgentError> {
+        self.with_journal(move |journal| journal.sample(snapshot, observed_at))
+            .await
+    }
+}
+
 fn config() -> AgentConfig {
     serde_json::from_value(serde_json::json!({
         "panel_url": "ws://localhost:8080/ws/agent", "token": "node-token"
@@ -25,7 +38,7 @@ async fn pending(traffic: &NodeTraffic) -> Vec<NodeTrafficReport> {
 #[tokio::test]
 async fn offline_reports_survive_restart_with_original_timestamps_and_new_counter_baseline() {
     let dir = tempfile::tempdir().unwrap();
-    let traffic = NodeTraffic::open(dir.path(), &config(), 30).await.unwrap();
+    let traffic = open(dir.path(), &config(), 30).await;
     traffic.bind_node("node-1").await.unwrap();
     traffic
         .sample(counters(12, 5), 1_800_000_000)
@@ -38,7 +51,7 @@ async fn offline_reports_survive_restart_with_original_timestamps_and_new_counte
     let before = pending(&traffic).await;
     drop(traffic);
 
-    let restarted = NodeTraffic::open(dir.path(), &config(), 30).await.unwrap();
+    let restarted = open(dir.path(), &config(), 30).await;
     restarted
         .sample(counters(3, 4), 1_800_000_060)
         .await
@@ -65,7 +78,7 @@ async fn offline_reports_survive_restart_with_original_timestamps_and_new_counte
 #[tokio::test]
 async fn replay_survives_lost_ack_and_ack_checkpoint_survives_restart() {
     let dir = tempfile::tempdir().unwrap();
-    let traffic = NodeTraffic::open(dir.path(), &config(), 30).await.unwrap();
+    let traffic = open(dir.path(), &config(), 30).await;
     traffic
         .sample(counters(42, 11), 1_800_000_000)
         .await
@@ -82,7 +95,7 @@ async fn replay_survives_lost_ack_and_ack_checkpoint_survives_restart() {
     assert!(sending.await.unwrap_err().is_cancelled());
     drop(traffic);
 
-    let restarted = NodeTraffic::open(dir.path(), &config(), 30).await.unwrap();
+    let restarted = open(dir.path(), &config(), 30).await;
     let replay = pending(&restarted).await;
     assert_eq!(
         (replay[0].stream_id.as_str(), replay[0].sequence),
@@ -106,7 +119,7 @@ async fn replay_survives_lost_ack_and_ack_checkpoint_survives_restart() {
         .unwrap();
     drop(restarted);
 
-    let acknowledged = NodeTraffic::open(dir.path(), &config(), 30).await.unwrap();
+    let acknowledged = open(dir.path(), &config(), 30).await;
     assert!(pending(&acknowledged).await.is_empty());
     acknowledged
         .sample(counters(7, 8), 1_800_000_100)
@@ -120,7 +133,7 @@ async fn replay_survives_lost_ack_and_ack_checkpoint_survives_restart() {
 #[tokio::test]
 async fn acknowledgement_cannot_discard_another_stream_or_future_sequence() {
     let dir = tempfile::tempdir().unwrap();
-    let traffic = NodeTraffic::open(dir.path(), &config(), 30).await.unwrap();
+    let traffic = open(dir.path(), &config(), 30).await;
     traffic.sample(counters(9, 2), 1_800_000_000).await.unwrap();
     let report = pending(&traffic).await.remove(0);
     assert!(
@@ -136,7 +149,7 @@ async fn acknowledgement_cannot_discard_another_stream_or_future_sequence() {
 #[tokio::test]
 async fn journal_rejects_identity_changes_concurrent_owners_and_corruption() {
     let dir = tempfile::tempdir().unwrap();
-    let traffic = NodeTraffic::open(dir.path(), &config(), 30).await.unwrap();
+    let traffic = open(dir.path(), &config(), 30).await;
     traffic.bind_node("node-1").await.unwrap();
     assert!(traffic.bind_node("node-2").await.is_err());
     assert!(NodeTraffic::open(dir.path(), &config(), 30).await.is_err());
@@ -151,7 +164,7 @@ async fn journal_rejects_identity_changes_concurrent_owners_and_corruption() {
 #[tokio::test]
 async fn credential_rotation_preserves_pending_reports_only_for_the_authenticated_same_node() {
     let dir = tempfile::tempdir().unwrap();
-    let traffic = NodeTraffic::open(dir.path(), &config(), 30).await.unwrap();
+    let traffic = open(dir.path(), &config(), 30).await;
     traffic.bind_node("node-1").await.unwrap();
     traffic
         .sample(counters(13, 7), 1_800_000_000)
@@ -162,7 +175,7 @@ async fn credential_rotation_preserves_pending_reports_only_for_the_authenticate
 
     let mut rotated = config();
     rotated.token = "rotated-token".into();
-    let traffic = NodeTraffic::open(dir.path(), &rotated, 30).await.unwrap();
+    let traffic = open(dir.path(), &rotated, 30).await;
     assert!(!traffic.can_start_cached().await.unwrap());
     assert!(traffic.bind_node("node-2").await.is_err());
     assert!(!traffic.can_start_cached().await.unwrap());
@@ -170,7 +183,7 @@ async fn credential_rotation_preserves_pending_reports_only_for_the_authenticate
     assert!(traffic.can_start_cached().await.unwrap());
     drop(traffic);
 
-    let traffic = NodeTraffic::open(dir.path(), &rotated, 30).await.unwrap();
+    let traffic = open(dir.path(), &rotated, 30).await;
     assert!(traffic.can_start_cached().await.unwrap());
     let report = pending(&traffic).await.remove(0);
     assert_eq!(report.stream_id, original.stream_id);
@@ -181,7 +194,7 @@ async fn credential_rotation_preserves_pending_reports_only_for_the_authenticate
 #[tokio::test]
 async fn sampler_records_without_a_panel_and_flushes_on_shutdown() {
     let dir = tempfile::tempdir().unwrap();
-    let traffic = NodeTraffic::open(dir.path(), &config(), 1).await.unwrap();
+    let traffic = open(dir.path(), &config(), 1).await;
     let stats = NodeStats::new();
     let counters = trojan_metrics::RelayCounters::global().with_node_stats(stats.clone());
     let shutdown = CancellationToken::new();
@@ -216,7 +229,7 @@ async fn sampler_records_without_a_panel_and_flushes_on_shutdown() {
 #[tokio::test]
 async fn journal_write_failure_stops_accounting_instead_of_sending_uncommitted_bytes() {
     let dir = tempfile::tempdir().unwrap();
-    let traffic = NodeTraffic::open(dir.path(), &config(), 30).await.unwrap();
+    let traffic = open(dir.path(), &config(), 30).await;
     std::fs::create_dir(dir.path().join("node-traffic.json.tmp")).unwrap();
     assert!(matches!(
         traffic.sample(counters(9, 2), 1_800_000_000).await,
@@ -226,4 +239,34 @@ async fn journal_write_failure_stops_accounting_instead_of_sending_uncommitted_b
     let saved: SavedTraffic =
         serde_json::from_slice(&std::fs::read(dir.path().join(FILENAME)).unwrap()).unwrap();
     assert!(saved.pending.is_empty());
+}
+
+#[tokio::test]
+async fn legacy_sampling_retains_pending_reports_without_adding_or_rebilling_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let traffic = open(dir.path(), &config(), 30).await;
+    traffic.sample(counters(9, 2), 1_800_000_000).await.unwrap();
+    let original = pending(&traffic).await;
+    drop(traffic);
+
+    let traffic = NodeTraffic::open(dir.path(), &config(), 30).await.unwrap();
+    assert!(traffic.requires_support().await.unwrap());
+    let stats = NodeStats::new();
+    let counters = trojan_metrics::RelayCounters::global().with_node_stats(stats.clone());
+    for _ in 0..100 {
+        counters.add_to_target(50);
+        traffic.sample_stats(stats.clone()).await.unwrap();
+    }
+    counters.add_to_client(70);
+    traffic.enable(stats.clone()).await.unwrap();
+    counters.add_to_target(3);
+    counters.add_to_client(4);
+    traffic.sample_stats(stats).await.unwrap();
+    let after = pending(&traffic).await;
+    assert_eq!(after.len(), 2);
+    assert_eq!(
+        serde_json::to_value(&after[0]).unwrap(),
+        serde_json::to_value(&original[0]).unwrap()
+    );
+    assert_eq!((after[1].bytes_in, after[1].bytes_out), (3, 4));
 }

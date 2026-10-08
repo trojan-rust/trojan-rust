@@ -38,7 +38,7 @@ Call `select_excluding(peer_ip, &attempted_addresses)` when retrying a connectio
 
 Call `select_available(peer_ip, &attempted_addresses, capacity)` to apply node quotas. The callback returns a remaining fraction in `(0, 1]`, or `None` for an unavailable route. A route uses the minimum fraction across its entry, relays, and exit. Unlimited nodes have a fraction of `1`. Equal scores prefer configuration order.
 
-Every strategy excludes unhealthy and unavailable backends. An empty eligible pool returns an error. Health cooldowns never restore depleted quota. `NodeStateStore` accepts live panel snapshots; missing, disabled, offline, depleted, expired, and old-period states are unavailable until a fresh snapshot arrives. Existing connections keep their guards and continue forwarding.
+Every strategy excludes unhealthy and unavailable backends. An empty eligible pool returns an error. Health cooldowns never restore depleted quota. `NodeStateStore` accepts live panel snapshots; missing, disabled, offline, depleted, expired, and old-period states are unavailable until a fresh snapshot arrives. A finite quota requires every connected agent for that node to support node accounting. Unlimited legacy nodes retain static capacity after availability checks. Existing connections keep their guards and continue forwarding.
 
 ### Health Management
 

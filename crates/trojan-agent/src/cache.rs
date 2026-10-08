@@ -18,6 +18,9 @@ pub struct CachedConfig {
     /// Authenticated node identity. Legacy caches require a new registration.
     #[serde(default)]
     pub node_id: Option<String>,
+    /// Last negotiated node accounting capability.
+    #[serde(default)]
+    pub node_traffic: bool,
     /// Config version from the panel.
     pub version: u32,
     /// Node type.
@@ -92,6 +95,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cached = CachedConfig {
             node_id: Some("node-1".into()),
+            node_traffic: true,
             version: 5,
             node_type: NodeType::Server,
             report_interval_secs: 30,
@@ -104,6 +108,7 @@ mod tests {
         assert_eq!(loaded.version, 5);
         assert_eq!(loaded.node_type, NodeType::Server);
         assert_eq!(loaded.report_interval_secs, 30);
+        assert!(loaded.node_traffic);
     }
 
     #[tokio::test]
@@ -118,5 +123,14 @@ mod tests {
         let path = dir.path().join("config.json");
         tokio::fs::write(&path, b"not json").await.unwrap();
         assert!(read_cache(dir.path()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn legacy_cache_does_not_imply_accounting_support() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join(CACHE_FILENAME), br#"{"version":1,"node_type":"Entry","report_interval_secs":30,"config":{},"cached_at":1}"#).await.unwrap();
+        let loaded = read_cache(dir.path()).await.unwrap();
+        assert!(!loaded.node_traffic);
+        assert!(loaded.node_id.is_none());
     }
 }

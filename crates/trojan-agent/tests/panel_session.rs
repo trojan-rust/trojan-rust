@@ -16,6 +16,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
@@ -183,4 +184,98 @@ async fn agent_fails_when_panel_is_unreachable() {
     .expect("connecting to a dead panel should fail, not hang");
 
     outcome.expect_err("registration against a dead panel must not succeed");
+}
+
+// Freeze the v1 bincode layouts, including enum tags, independently of current protocol types.
+#[derive(Debug, Deserialize)]
+struct V1Register {
+    message_tag: u32,
+    protocol_version: u32,
+    token: String,
+    version: String,
+    hostname: String,
+    os: String,
+    arch: String,
+}
+
+#[derive(Serialize)]
+struct V1Registered {
+    message_tag: u32,
+    node_id: String,
+    node_type_tag: u32,
+    config_version: u32,
+    report_interval_secs: u32,
+    config: Vec<u8>,
+}
+
+#[tokio::test]
+async fn v1_registration_requires_an_exact_capability_echo() {
+    use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        for echo in [None, Some("1"), Some("2")] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let config = agent_config(listener.local_addr().unwrap(), "v1-token");
+            let shutdown = CancellationToken::new();
+            let panel_shutdown = shutdown.clone();
+            let panel = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                #[expect(
+                    clippy::result_large_err,
+                    reason = "tungstenite fixes the handshake callback's error type"
+                )]
+                let handshake = move |request: &Request, mut response: Response| {
+                    assert_eq!(request.headers()["x-trojan-node-traffic"], "1");
+                    if let Some(value) = echo {
+                        response
+                            .headers_mut()
+                            .insert("x-trojan-node-traffic", value.parse().unwrap());
+                    }
+                    Ok(response)
+                };
+                let mut socket = tokio_tungstenite::accept_hdr_async(stream, handshake)
+                    .await
+                    .unwrap();
+                let Message::Binary(bytes) = socket.next().await.unwrap().unwrap() else {
+                    panic!("expected v1 registration")
+                };
+                let register: V1Register = bincode::deserialize(&bytes).unwrap();
+                assert_eq!(register.message_tag, 0);
+                assert_eq!(register.protocol_version, 1);
+                assert_eq!(register.token, "v1-token");
+                assert!(!register.version.is_empty());
+                assert!(!register.hostname.is_empty());
+                assert_eq!(register.os, std::env::consts::OS);
+                assert_eq!(register.arch, std::env::consts::ARCH);
+                let registered = V1Registered {
+                    message_tag: 0,
+                    node_id: "legacy-node".into(),
+                    node_type_tag: 0,
+                    config_version: 17,
+                    report_interval_secs: 30,
+                    config: br#"{"server":{"listen":"127.0.0.1:443"}}"#.to_vec(),
+                };
+                socket
+                    .send(Message::Binary(
+                        bincode::serialize(&registered).unwrap().into(),
+                    ))
+                    .await
+                    .unwrap();
+                panel_shutdown.cancelled().await;
+            });
+            let (registration, _tx, _rx) = connect_and_register(&config, shutdown.clone())
+                .await
+                .unwrap();
+            assert_eq!(registration.node_id, "legacy-node");
+            assert_eq!(registration.node_type, NodeType::Server);
+            assert_eq!(registration.config_version, 17);
+            assert_eq!(registration.report_interval_secs, 30);
+            assert_eq!(registration.config["server"]["listen"], "127.0.0.1:443");
+            assert_eq!(registration.node_traffic, echo == Some("1"));
+            shutdown.cancel();
+            panel.await.unwrap();
+        }
+    })
+    .await
+    .expect("v1 capability handshake did not complete");
 }
