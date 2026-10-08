@@ -50,6 +50,7 @@ tower-http = { version = "0.6", features = ["fs", "trace"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 trojan-protocol.workspace = true
+jiff = { version = "0.2.38", features = ["tzdb-bundle-always"] }
 
 [dev-dependencies]
 # Drives the node-facing protocol in tests the same way a real node does.

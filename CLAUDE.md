@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build & Test Commands
 
+Run these commands inside the tracked `devenv` environment, for example `devenv shell -- cargo test --workspace`.
+
 ```bash
 # Build
 cargo build --workspace
@@ -63,12 +65,14 @@ an axum + SQLite service holding users, node tokens, traffic and subscription
 templates. Both ends share one definition of the wire format
 (`trojan_auth::protocol`, behind the `protocol` feature), so the contract cannot
 drift. It also serves `/ws/agent`, where `trojan-agent` registers with its node
-token, receives its service config, and reports heartbeats and per-user traffic
+token, receives its service config, and reports heartbeats, durable node traffic, and per-user traffic
 (`trojan_protocol`, shared the same way). Its web UI lives in a separate
 repository and is served from `panel_dir` as static files.
 
-**Traffic accounting:** node-level totals are counted locally by every service
-(Prometheus, plus a `NodeStats` handle the agent drains into heartbeats).
+**Traffic accounting:** every service records node totals in Prometheus and `NodeStats`.
+The agent persists samples until the dashboard acknowledges committed reports.
+The dashboard keeps timestamped node history and monthly quota policies separate from user quotas.
+Live node snapshots let managed entries filter unavailable relay paths and exits without restarting services.
 User-level accounting for a chain is attributed by the exit: entry and relay
 nodes never learn whose bytes they carry, so the entry prefixes each tunnel
 with a PROXY protocol v2 header (real client + chain node ids), and the exit
@@ -76,11 +80,12 @@ credits each hop over `/traffic/chain` when it settles the user.
 
 **Standalone utility crates (no trojan internal dependencies):**
 - `trojan-transport` — `TransportAcceptor`/`TransportConnector` traits + plain/TLS/WS implementations
-- `trojan-lb` — `LbPolicy` trait + round-robin, IP hash, least-connections, failover strategies
 - `trojan-config` — loads TOML/YAML/JSON/JSONC via serde. It owns the shape of a
   node's config file, not every crate's settings: analytics, GeoIP acquisition
   and the like are defined by the crate that reads them
 - `trojan-proto` — zero-copy Trojan protocol parser using `bytes::BytesMut`
+
+`trojan-lb` provides `LbPolicy`, five selection strategies, and live node budgets. It depends on `trojan-protocol` for node snapshots.
 
 **Key trait abstractions:**
 - `AuthBackend` (trojan-auth) — `verify_password()`, `record_traffic()`, `record_chain_traffic()` with Memory/SQL/Reloadable impls

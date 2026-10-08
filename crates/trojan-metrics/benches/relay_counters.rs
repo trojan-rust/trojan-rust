@@ -1,6 +1,6 @@
-//! Benchmarks for the relay's per-flush byte reporting.
+//! Benchmarks for the relay's per-write byte reporting.
 //!
-//! The relay reports bytes once per flush rather than once per connection, so
+//! The relay reports bytes once per write rather than once per connection, so
 //! the cost of a single report sits directly on the data path. These compare
 //! resolving the metric on every report — what the server did before
 //! [`RelayCounters`] — against a handle resolved once per session.

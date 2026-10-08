@@ -1874,7 +1874,7 @@ async fn test_header_fragmented_across_reads() {
 ///
 /// 4 MiB against a 32 KiB relay buffer spans many read/write/flush cycles in
 /// both directions, which is what exercises the deferred-flush state machine
-/// and the per-flush byte reporting. Reads run concurrently with writes so
+/// and the per-write byte reporting. Reads run concurrently with writes so
 /// the test cannot pass by accident on socket buffering alone.
 #[tokio::test]
 async fn test_large_transfer_round_trip() {

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -16,7 +17,7 @@ use crate::rate_limit::RateLimiter;
 use crate::resolve::resolve_sockaddr;
 use crate::state::ServerState;
 use crate::tls::load_tls_config;
-use crate::util::{ConnectionTracker, create_listener};
+use crate::util::create_listener;
 use trojan_auth::AuthBackend;
 #[cfg(feature = "ws")]
 use trojan_config::WebSocketMode;
@@ -286,7 +287,6 @@ pub async fn run_with_stats(
         geoip_analytics: geoip.analytics,
     });
     let auth = Arc::new(auth);
-    let tracker = ConnectionTracker::new();
 
     // Connection limiter (None = unlimited)
     let conn_limit: Option<Arc<Semaphore>> = config.server.max_connections.map(|n| {
@@ -315,10 +315,11 @@ pub async fn run_with_stats(
         tls: acceptor,
         state,
         auth,
-        tracker: tracker.clone(),
         conn_limit,
         rate_limiter: rate_limiter.clone(),
     };
+
+    let mut listeners = JoinSet::new();
 
     // The dedicated WebSocket port, when `split` mode asks for one, runs
     // alongside the main listener rather than in place of it.
@@ -337,11 +338,7 @@ pub async fn run_with_stats(
         );
         let ws_shutdown = shutdown.clone();
         info!(address = %ws_addr, "websocket split listener started");
-        tokio::spawn(async move {
-            if let Err(e) = ws_listener.serve(ws_shutdown).await {
-                warn!(error = %e, "websocket listener stopped");
-            }
-        });
+        listeners.spawn(ws_listener.serve(ws_shutdown));
     }
 
     #[cfg(not(feature = "ws"))]
@@ -349,31 +346,30 @@ pub async fn run_with_stats(
         warn!("websocket.enabled=true but ws feature is disabled; ignoring websocket");
     }
 
-    ctx.listener(listener, ListenerKind::Trojan)
-        .serve(shutdown)
-        .await?;
+    listeners.spawn(
+        ctx.listener(listener, ListenerKind::Trojan)
+            .serve(shutdown.clone()),
+    );
+    let mut result = Ok(());
+    while let Some(joined) = listeners.join_next().await {
+        let stopped = joined
+            .map_err(|error| ServerError::Io(std::io::Error::other(error)))
+            .and_then(std::convert::identity);
+        if stopped.is_err() {
+            shutdown.cancel();
+            if result.is_ok() {
+                result = stopped;
+            }
+        }
+    }
 
     // Shutdown rate limiter cleanup task
     if let Some(ref limiter) = rate_limiter {
         limiter.shutdown();
     }
 
-    // Graceful drain: wait for active connections
-    let active = tracker.count();
-    if active > 0 {
-        info!("waiting for {} active connections to drain", active);
-        if tracker.wait_for_zero(DEFAULT_SHUTDOWN_TIMEOUT).await {
-            info!("all connections drained");
-        } else {
-            warn!(
-                "shutdown timeout, {} connections still active",
-                tracker.count()
-            );
-        }
-    }
-
     info!("server stopped");
-    Ok(())
+    result
 }
 
 /// Run the server (blocking until error, no graceful shutdown).

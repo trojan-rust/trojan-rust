@@ -38,6 +38,10 @@ pub enum DashError {
     #[error("serialization: {0}")]
     Serde(String),
 
+    /// A billing calendar or observation timestamp is invalid.
+    #[error("billing calendar: {0}")]
+    Calendar(#[from] jiff::Error),
+
     /// Configuration is unusable.
     #[error("{0}")]
     Config(String),
@@ -66,7 +70,7 @@ impl DashError {
         match self {
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::NotFound | Self::Database(DbErr::RecordNotFound(_)) => StatusCode::NOT_FOUND,
-            Self::BadRequest(_) | Self::Codec(_) => StatusCode::BAD_REQUEST,
+            Self::BadRequest(_) | Self::Codec(_) | Self::Calendar(_) => StatusCode::BAD_REQUEST,
             Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Database(_) | Self::Serde(_) | Self::Config(_) | Self::Io(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR

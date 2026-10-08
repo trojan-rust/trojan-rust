@@ -255,8 +255,7 @@ where
     buf.clear();
     let addr = address_from_socket(peer);
     write_udp_packet(buf, &addr, payload).map_err(ServerError::ProtoWrite)?;
-    stream.write_all(buf).await?;
+    crate::relay::write_all_counted(stream, buf, |bytes| counters.add_to_client(bytes)).await?;
     stream.flush().await?;
-    counters.add_to_client(buf.len() as u64);
     Ok(())
 }

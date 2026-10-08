@@ -14,11 +14,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// Top-level entry node configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntryConfig {
-    /// Id this node is known by on the panel.
+    /// Panel node identifier for chain attribution and managed admission.
     ///
-    /// Sent to the exit in the chain header so per-user traffic through this
-    /// node can be credited to it. Absent = this hop goes unnamed and is not
-    /// billed for what it carries.
+    /// The agent replaces this value with its authenticated identifier.
+    /// Standalone entries use this identifier only in the per-user chain header.
     #[serde(default)]
     pub node_id: Option<String>,
 
@@ -62,9 +61,10 @@ pub struct ChainNodeConfig {
     /// Relay node address (host:port).
     pub addr: String,
 
-    /// Id this hop is known by on the panel, for chain traffic attribution.
+    /// Panel node identifier for per-user chain attribution and managed eligibility.
     ///
-    /// Absent = the hop goes unnamed and is not billed for what it carries.
+    /// Absent hops have static eligibility and no per-user chain attribution.
+    /// The hop's own agent still reports node traffic independently.
     #[serde(default)]
     pub node_id: Option<String>,
 
@@ -91,23 +91,28 @@ pub struct RuleConfig {
     pub listen: SocketAddr,
 
     /// Name of the chain to use.
+    #[serde(default)]
     pub chain: String,
 
     /// Final destination address(es) (the exit trojan-server(s), host:port).
     /// Accepts a single string `"host:port"` or an array `["host1:port", "host2:port"]`.
     /// When multiple destinations are configured, the `strategy` field controls
     /// how connections are distributed.
-    #[serde(deserialize_with = "deserialize_one_or_many")]
+    #[serde(default, deserialize_with = "deserialize_one_or_many")]
     #[serde(serialize_with = "serialize_one_or_many")]
     pub dest: Vec<String>,
 
+    /// Complete candidate routes. Mutually exclusive with `chain` and `dest`.
+    #[serde(default)]
+    pub routes: Vec<RouteConfig>,
+
     /// Load balancing strategy (default: round_robin).
-    /// Only meaningful when `dest` has multiple entries.
+    /// Applies to destinations or complete routes.
     #[serde(default)]
     pub strategy: trojan_lb::LbStrategy,
 
     /// Failover cooldown in seconds before retrying a failed backend.
-    /// Only used when `strategy = "failover"`.
+    /// Applies to all strategies.
     #[serde(default = "default_failover_cooldown")]
     pub failover_cooldown_secs: u64,
 
@@ -119,6 +124,18 @@ pub struct RuleConfig {
     /// expect the header will read it as a broken TLS handshake.
     #[serde(default)]
     pub proxy_protocol: bool,
+}
+
+/// A complete relay chain and final exit, selected as one candidate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteConfig {
+    /// Named chain; an empty chain connects directly to the destination.
+    pub chain: String,
+    /// Exit address in `host:port` form.
+    pub dest: String,
+    /// Managed exit identifier. Absent destinations use static availability.
+    #[serde(default)]
+    pub node_id: Option<String>,
 }
 
 impl RuleConfig {

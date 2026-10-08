@@ -11,6 +11,7 @@ use crate::cache::{self, CachedConfig};
 use crate::client::{self, RegistrationResult};
 use crate::config::AgentConfig;
 use crate::error::AgentError;
+use crate::node_traffic::NodeTraffic;
 use crate::protocol::{AgentMessage, PanelMessage, ServiceState};
 use crate::{reporter, runner};
 
@@ -18,11 +19,20 @@ use crate::{reporter, runner};
 #[path = "runtime_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "runtime_e2e.rs"]
+mod e2e;
+
+#[cfg(test)]
+#[path = "runtime_shutdown_tests.rs"]
+mod shutdown_tests;
+
 struct Service {
     config: CachedConfig,
     started_at: u64,
     shutdown: CancellationToken,
     task: JoinHandle<Result<(), AgentError>>,
+    stats: std::sync::Arc<trojan_metrics::NodeStats>,
 }
 
 impl Service {
@@ -30,6 +40,7 @@ impl Service {
         let token = CancellationToken::new();
         let service_token = token.clone();
         let service_config = config.clone();
+        let stats = sinks.stats.clone();
         let task = tokio::spawn(async move {
             runner::run_service(
                 service_config.node_type,
@@ -44,12 +55,13 @@ impl Service {
             started_at: unix_now(),
             shutdown: token,
             task,
+            stats,
         }
     }
 
     async fn stop(mut self, drain_timeout: Duration) -> Result<(), AgentError> {
         self.shutdown.cancel();
-        match tokio::time::timeout(drain_timeout, &mut self.task).await {
+        let result = match tokio::time::timeout(drain_timeout, &mut self.task).await {
             Ok(result) => service_result(result),
             Err(_) => {
                 warn!("service drain timed out, aborting service task");
@@ -57,7 +69,16 @@ impl Service {
                 let _ = (&mut self.task).await;
                 Ok(())
             }
-        }
+        };
+        wait_for_connections(&self.stats).await;
+        result
+    }
+}
+
+async fn wait_for_connections(stats: &trojan_metrics::NodeStats) {
+    // Runner abort drops owned tasks; wait for their final counter updates.
+    while stats.snapshot().connections_active != 0 {
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
 }
 
@@ -107,29 +128,78 @@ pub(crate) async fn run(
     config: AgentConfig,
     shutdown: CancellationToken,
 ) -> Result<(), AgentError> {
-    let sinks = runner::ServiceSinks::default();
+    let mut sinks = runner::ServiceSinks::default();
     let cache_dir = cache::resolve_cache_dir(config.cache_dir.as_deref());
-    let mut service = cache::read_cache(&cache_dir).await.map(|cached| {
+    let cached = cache::read_cache(&cache_dir).await;
+    let interval = config.report_interval_secs.unwrap_or_else(|| {
+        cached
+            .as_ref()
+            .map_or(30, |cached| u64::from(cached.report_interval_secs))
+    });
+    let traffic = NodeTraffic::open(&cache_dir, &config, interval).await?;
+    if traffic.can_start_cached().await?
+        && let Some(node_id) = cached.as_ref().and_then(|cached| cached.node_id.as_ref())
+    {
+        traffic.bind_node(node_id).await?;
+        sinks.node_id = Some(node_id.clone());
+    }
+    let mut service = cached.filter(|_| sinks.node_id.is_some()).map(|cached| {
         info!(
             version = cached.version,
             "starting service from cached config"
         );
         Service::start(cached, sinks.clone())
     });
-    let result = reconnect(&config, &shutdown, &sinks, &mut service).await;
-    if let Some(running) = service {
-        let stopped = running.stop(trojan_server::DEFAULT_SHUTDOWN_TIMEOUT).await;
-        result.and(stopped)
+    let sampler_shutdown = CancellationToken::new();
+    let sampler_guard = sampler_shutdown.clone().drop_guard();
+    let sampler = {
+        let traffic = traffic.clone();
+        let stats = sinks.stats.clone();
+        let shutdown = sampler_shutdown.clone();
+        tokio::spawn(async move { traffic.run_sampler(stats, shutdown).await })
+    };
+    tokio::pin!(sampler);
+    let (result, mut sampler_result) = tokio::select! {
+        result = reconnect(&config, &shutdown, &mut sinks, &mut service, &traffic) => (result, None),
+        result = &mut sampler => (Ok(()), Some(result)),
+    };
+    let drain_timeout = if sampler_result.is_some()
+        || matches!(
+            &result,
+            Err(AgentError::Accounting(_) | AgentError::AccountingStorage(_))
+        ) {
+        Duration::ZERO
     } else {
-        result
+        trojan_server::DEFAULT_SHUTDOWN_TIMEOUT
+    };
+    let stopped = match service {
+        Some(running) if sampler_result.is_none() => tokio::select! {
+            stopped = running.stop(drain_timeout) => stopped,
+            sampled = &mut sampler => {
+                // Dropping the stop future aborts the service before the connection wait below.
+                sampler_result = Some(sampled);
+                Ok(())
+            }
+        },
+        Some(running) => running.stop(drain_timeout).await,
+        None => Ok(()),
+    };
+    wait_for_connections(&sinks.stats).await;
+    drop(sampler_guard);
+    let sampled = match sampler_result {
+        Some(result) => result,
+        None => sampler.await,
     }
+    .map_err(|e| AgentError::Accounting(format!("traffic sampler task failed: {e}")))?;
+    sampled.and(result).and(stopped)
 }
 
 async fn reconnect(
     config: &AgentConfig,
     shutdown: &CancellationToken,
-    sinks: &runner::ServiceSinks,
+    sinks: &mut runner::ServiceSinks,
     service: &mut Option<Service>,
+    traffic: &NodeTraffic,
 ) -> Result<(), AgentError> {
     let started = Instant::now();
     let mut delay_ms = config.reconnect.initial_delay_ms;
@@ -153,11 +223,14 @@ async fn reconnect(
                         sinks,
                         &session_shutdown,
                         started,
+                        traffic,
                     ))
                     .await;
                 match result {
                     None => return Ok(()),
                     Some(Err(e @ AgentError::Service(_))) => return Err(e),
+                    Some(Err(e @ AgentError::Accounting(_))) => return Err(e),
+                    Some(Err(e @ AgentError::AccountingStorage(_))) => return Err(e),
                     Some(Err(e)) => warn!(error = %e, "panel session ended"),
                     Some(Ok(())) => return Ok(()),
                 }
@@ -197,12 +270,16 @@ async fn connected(
         mpsc::Receiver<PanelMessage>,
     ),
     service: &mut Option<Service>,
-    sinks: &runner::ServiceSinks,
+    sinks: &mut runner::ServiceSinks,
     session_shutdown: &CancellationToken,
     started: Instant,
+    traffic: &NodeTraffic,
 ) -> Result<(), AgentError> {
     let cache_dir = cache::resolve_cache_dir(config.cache_dir.as_deref());
+    traffic.bind_node(&reg.node_id).await?;
+    sinks.node_id = Some(reg.node_id.clone());
     let mut cached = CachedConfig {
+        node_id: Some(reg.node_id),
         version: reg.config_version,
         node_type: reg.node_type,
         report_interval_secs: reg.report_interval_secs,
@@ -235,6 +312,7 @@ async fn connected(
             .report_interval_secs
             .unwrap_or_else(|| u64::from(reg.report_interval_secs)),
     );
+    traffic.set_interval(interval.as_secs())?;
     let reporting = reporter::run_reporter(
         tx.clone(),
         sinks.traffic.clone(),
@@ -244,6 +322,8 @@ async fn connected(
         started,
     );
     tokio::pin!(reporting);
+    let sending = traffic.send_pending(tx.clone());
+    tokio::pin!(sending);
     loop {
         tokio::select! {
             biased;
@@ -252,6 +332,7 @@ async fn connected(
                 return result;
             }
             _ = &mut reporting => return Err(AgentError::ConnectionClosed),
+            result = &mut sending => return result,
             message = rx.recv() => match message {
                 None => return Err(AgentError::ConnectionClosed),
                 Some(PanelMessage::ConfigPush { version, restart_required, drain_timeout_secs, config: bytes }) => {
@@ -280,6 +361,9 @@ async fn connected(
                     tx.send(AgentMessage::ConfigAck { version, ok: true, message: None }).await.map_err(|_| AgentError::ConnectionClosed)?;
                     tx.send(AgentMessage::ServiceStatus { status: ServiceState::Running, started_at, config_version: version }).await.map_err(|_| AgentError::ConnectionClosed)?;
                 }
+                Some(PanelMessage::NodeStates { snapshot }) => sinks.node_states.update(snapshot),
+                Some(PanelMessage::NodeTrafficAck { stream_id, sequence }) => traffic.acknowledge(stream_id, sequence).await?,
+                Some(PanelMessage::Error { code: crate::protocol::ErrorCode::InvalidTrafficReport, message }) => return Err(AgentError::Accounting(format!("panel rejected traffic report: {message}"))),
                 Some(PanelMessage::Error { code, message }) => warn!(?code, %message, "panel error"),
                 Some(PanelMessage::Registered { .. }) => warn!("duplicate panel registration"),
                 Some(PanelMessage::Ping) => {}
@@ -288,7 +372,7 @@ async fn connected(
     }
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

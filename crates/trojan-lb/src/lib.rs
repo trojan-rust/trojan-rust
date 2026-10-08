@@ -1,25 +1,26 @@
 //! Generic load balancer for trojan-rs.
 //!
-//! Provides a trait-based load balancing abstraction with four built-in
-//! strategies: round-robin, IP hash, least connections, and failover.
+//! Provides round-robin, IP hash, least connections, failover, and
+//! traffic-aware strategies with shared health and quota filtering.
 //!
 //! The [`LoadBalancer`] is `Send + Sync + 'static` and designed to be
 //! shared across async tasks via `Arc<LoadBalancer>`.
 
 pub mod guard;
+mod node_state;
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::sync::RwLock;
 
 pub use guard::{BackendCounter, ConnectionGuard};
+pub use node_state::{NodeStateStore, NodeStateView};
 
 // ── Errors ──
 
@@ -43,6 +44,8 @@ pub enum LbStrategy {
     IpHash,
     LeastConnections,
     Failover,
+    /// Prefer routes with more remaining quota and fewer active connections.
+    TrafficAware,
 }
 
 // ── Policy trait ──
@@ -56,6 +59,21 @@ pub trait LbPolicy: Send + Sync + 'static {
     ///
     /// Returns `None` if no suitable backend is available.
     fn select(&self, backends: &[Arc<Backend>], peer_ip: IpAddr) -> Option<usize>;
+
+    /// Return the health recovery delay; the default requires explicit recovery.
+    fn recovery_cooldown(&self) -> Duration {
+        Duration::MAX
+    }
+
+    /// Select among eligible backends with normalized remaining capacities.
+    fn select_with_capacity(
+        &self,
+        backends: &[Arc<Backend>],
+        _capacity: &[f64],
+        peer_ip: IpAddr,
+    ) -> Option<usize> {
+        self.select(backends, peer_ip)
+    }
 }
 
 // ── Backend ──
@@ -63,12 +81,12 @@ pub trait LbPolicy: Send + Sync + 'static {
 /// A single backend destination with health and connection tracking state.
 pub struct Backend {
     addr: String,
-    /// Active connection count (used by LeastConnections).
+    /// Active connections used by least-connections and traffic-aware selection.
     pub(crate) active_conns: BackendCounter,
-    /// Whether this backend is considered healthy (used by Failover).
+    /// Whether every selection policy may consider this backend.
     healthy: AtomicBool,
     /// When the backend was last marked unhealthy.
-    last_failure: RwLock<Option<Instant>>,
+    last_failure: Mutex<Option<Instant>>,
 }
 
 impl Backend {
@@ -77,7 +95,7 @@ impl Backend {
             addr,
             active_conns: BackendCounter::new(),
             healthy: AtomicBool::new(true),
-            last_failure: RwLock::new(None),
+            last_failure: Mutex::new(None),
         }
     }
 
@@ -111,7 +129,7 @@ impl std::fmt::Debug for Backend {
 pub struct Selection {
     /// The selected backend address.
     pub addr: String,
-    /// Optional connection guard (present for LeastConnections).
+    /// Connection guard for every successful selection.
     /// Must be held alive for the duration of the connection.
     pub guard: Option<ConnectionGuard>,
 }
@@ -123,13 +141,13 @@ pub struct LoadBalancer {
     backends: Vec<Arc<Backend>>,
     policy: Box<dyn LbPolicy>,
     strategy: LbStrategy,
+    cooldown: Duration,
 }
 
 impl LoadBalancer {
     /// Create a new load balancer with the given addresses and strategy.
     ///
-    /// `failover_cooldown` configures the [`Failover`] policy and is ignored by
-    /// every other strategy, none of which has a notion of recovery timing.
+    /// Failed backends recover after `failover_cooldown` for every strategy.
     pub fn new(addrs: Vec<String>, strategy: LbStrategy, failover_cooldown: Duration) -> Self {
         let policy: Box<dyn LbPolicy> = match &strategy {
             LbStrategy::RoundRobin => Box::new(RoundRobin::new()),
@@ -138,14 +156,16 @@ impl LoadBalancer {
             LbStrategy::Failover => Box::new(Failover {
                 cooldown: failover_cooldown,
             }),
+            LbStrategy::TrafficAware => Box::new(TrafficAware),
         };
-        Self::with_policy(addrs, policy, strategy)
+        let mut balancer = Self::with_policy(addrs, policy, strategy);
+        balancer.cooldown = failover_cooldown;
+        balancer
     }
 
     /// Create a load balancer with a custom policy.
     ///
-    /// Any timing the policy needs belongs to the policy — see [`Failover`],
-    /// which carries its own cooldown.
+    /// Uses the policy's recovery delay before passing eligible backends to it.
     pub fn with_policy(
         addrs: Vec<String>,
         policy: Box<dyn LbPolicy>,
@@ -155,16 +175,18 @@ impl LoadBalancer {
             .into_iter()
             .map(|a| Arc::new(Backend::new(a)))
             .collect();
+        let cooldown = policy.recovery_cooldown();
         Self {
             backends,
             policy,
             strategy,
+            cooldown,
         }
     }
 
     /// Select a backend based on the policy and peer IP.
     pub fn select(&self, peer_ip: IpAddr) -> Result<Selection, LbError> {
-        self.select_from(&self.backends, peer_ip)
+        self.select_available(peer_ip, &[], |_| Some(1.0))
     }
 
     /// Select a backend that this connection has not already attempted.
@@ -175,39 +197,60 @@ impl LoadBalancer {
         peer_ip: IpAddr,
         excluded: &[String],
     ) -> Result<Selection, LbError> {
-        if excluded.is_empty() {
-            return self.select(peer_ip);
-        }
-        let candidates: Vec<_> = self
-            .backends
-            .iter()
-            .filter(|backend| !excluded.contains(&backend.addr))
-            .cloned()
-            .collect();
-        self.select_from(&candidates, peer_ip)
+        self.select_available(peer_ip, excluded, |_| Some(1.0))
     }
 
-    fn select_from(
+    /// Filter health and quota before running any policy.
+    ///
+    /// `capacity` returns a remaining fraction in `(0, 1]`, or `None` when
+    /// unavailable. Quota exclusions never recover through the health cooldown.
+    pub fn select_available(
         &self,
-        backends: &[Arc<Backend>],
         peer_ip: IpAddr,
+        excluded: &[String],
+        mut capacity: impl FnMut(&str) -> Option<f64>,
     ) -> Result<Selection, LbError> {
-        if backends.is_empty() {
+        if self.backends.is_empty() {
             return Err(LbError::NoBackends);
+        }
+        let mut backends = Vec::with_capacity(self.backends.len());
+        let mut capacities = Vec::with_capacity(self.backends.len());
+        for backend in &self.backends {
+            if excluded.contains(&backend.addr) {
+                continue;
+            }
+            let Some(remaining) = capacity(&backend.addr) else {
+                continue;
+            };
+            if !(remaining > 0.0 && remaining <= 1.0) {
+                continue;
+            }
+            if !backend.is_healthy() {
+                let last_failure = backend
+                    .last_failure
+                    .lock()
+                    .expect("backend health lock poisoned");
+                if !last_failure.is_some_and(|when| when.elapsed() >= self.cooldown) {
+                    continue;
+                }
+                // Serialize recovery with new failures so recovery cannot erase a newer failure.
+                backend.healthy.store(true, Ordering::Relaxed);
+            }
+            backends.push(backend.clone());
+            capacities.push(remaining);
+        }
+        if backends.is_empty() {
+            return Err(LbError::NoHealthyBackend);
         }
 
         let idx = self
             .policy
-            .select(backends, peer_ip)
+            .select_with_capacity(&backends, &capacities, peer_ip)
             .ok_or(LbError::NoHealthyBackend)?;
 
         let backend = &backends[idx];
 
-        // For LeastConnections, acquire a guard to track active connections.
-        // For other strategies, no guard is needed — we detect this by checking
-        // if the policy is LeastConnections via a marker method would be over-
-        // engineering. Instead, always acquire a guard; for non-LC strategies
-        // the overhead is two atomic ops which is negligible.
+        // Guards also let traffic-aware selection account for ongoing transfers.
         let guard = Some(ConnectionGuard::acquire(&backend.active_conns));
 
         Ok(Selection {
@@ -216,19 +259,16 @@ impl LoadBalancer {
         })
     }
 
-    /// Mark a backend as unhealthy (for failover).
+    /// Exclude a backend from every policy until recovery.
     pub fn mark_unhealthy(&self, addr: &str) {
         for backend in &self.backends {
             if backend.addr == addr {
+                let mut last_failure = backend
+                    .last_failure
+                    .lock()
+                    .expect("backend health lock poisoned");
+                *last_failure = Some(Instant::now());
                 backend.healthy.store(false, Ordering::Relaxed);
-                // Non-blocking: spawn a task-local write. Since this is
-                // called rarely (on failure), blocking briefly is acceptable.
-                let last_failure = &backend.last_failure;
-                // Use try_write to avoid blocking; if contended, the timestamp
-                // is "close enough" from the previous write.
-                if let Ok(mut guard) = last_failure.try_write() {
-                    *guard = Some(Instant::now());
-                }
                 return;
             }
         }
@@ -238,6 +278,10 @@ impl LoadBalancer {
     pub fn mark_healthy(&self, addr: &str) {
         for backend in &self.backends {
             if backend.addr == addr {
+                let _last_failure = backend
+                    .last_failure
+                    .lock()
+                    .expect("backend health lock poisoned");
                 backend.healthy.store(true, Ordering::Relaxed);
                 return;
             }
@@ -352,6 +396,10 @@ pub struct Failover {
 }
 
 impl LbPolicy for Failover {
+    fn recovery_cooldown(&self) -> Duration {
+        self.cooldown
+    }
+
     fn select(&self, backends: &[Arc<Backend>], _peer_ip: IpAddr) -> Option<usize> {
         if backends.is_empty() {
             return None;
@@ -363,222 +411,47 @@ impl LbPolicy for Failover {
             }
 
             // Check cooldown: if enough time has passed, consider it recovered.
-            if let Ok(guard) = b.last_failure.try_read()
-                && let Some(when) = *guard
-                && when.elapsed() >= self.cooldown
-            {
+            let last_failure = b.last_failure.lock().expect("backend health lock poisoned");
+            if last_failure.is_some_and(|when| when.elapsed() >= self.cooldown) {
                 // Auto-recover
                 b.healthy.store(true, Ordering::Relaxed);
                 return Some(i);
             }
         }
 
-        // All backends unhealthy and within cooldown — return first as last resort.
-        Some(0)
+        None
+    }
+}
+
+/// Prefer the highest remaining fraction divided by active connections plus one.
+#[derive(Debug)]
+pub struct TrafficAware;
+
+impl LbPolicy for TrafficAware {
+    fn select(&self, backends: &[Arc<Backend>], peer_ip: IpAddr) -> Option<usize> {
+        LeastConnections.select(backends, peer_ip)
+    }
+
+    fn select_with_capacity(
+        &self,
+        backends: &[Arc<Backend>],
+        capacity: &[f64],
+        _peer_ip: IpAddr,
+    ) -> Option<usize> {
+        let mut best = None;
+        let mut best_score = -1.0;
+        for (index, (backend, remaining)) in backends.iter().zip(capacity).enumerate() {
+            let score = remaining / (backend.active_connections() as f64 + 1.0);
+            if score > best_score {
+                best = Some(index);
+                best_score = score;
+            }
+        }
+        best
     }
 }
 
 // ── Tests ──
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::net::{Ipv4Addr, Ipv6Addr};
-
-    fn addrs(n: usize) -> Vec<String> {
-        (0..n).map(|i| format!("backend-{}:443", i)).collect()
-    }
-
-    fn localhost() -> IpAddr {
-        IpAddr::V4(Ipv4Addr::LOCALHOST)
-    }
-
-    // ── RoundRobin ──
-
-    #[test]
-    fn round_robin_cycles() {
-        let lb = LoadBalancer::new(addrs(3), LbStrategy::RoundRobin, Duration::ZERO);
-        let results: Vec<String> = (0..6)
-            .map(|_| lb.select(localhost()).unwrap().addr)
-            .collect();
-        assert_eq!(
-            results,
-            vec![
-                "backend-0:443",
-                "backend-1:443",
-                "backend-2:443",
-                "backend-0:443",
-                "backend-1:443",
-                "backend-2:443",
-            ]
-        );
-    }
-
-    #[test]
-    fn round_robin_single() {
-        let lb = LoadBalancer::new(addrs(1), LbStrategy::RoundRobin, Duration::ZERO);
-        for _ in 0..5 {
-            assert_eq!(lb.select(localhost()).unwrap().addr, "backend-0:443");
-        }
-    }
-
-    // ── IpHash ──
-
-    #[test]
-    fn ip_hash_consistent() {
-        let lb = LoadBalancer::new(addrs(5), LbStrategy::IpHash, Duration::ZERO);
-        let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
-        let first = lb.select(ip).unwrap().addr;
-        for _ in 0..20 {
-            assert_eq!(lb.select(ip).unwrap().addr, first);
-        }
-    }
-
-    #[test]
-    fn ip_hash_distributes() {
-        let lb = LoadBalancer::new(addrs(3), LbStrategy::IpHash, Duration::ZERO);
-        let mut seen = std::collections::HashSet::new();
-        // Try many different IPs — should hit multiple backends
-        for i in 0..100u8 {
-            let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, i));
-            seen.insert(lb.select(ip).unwrap().addr);
-        }
-        assert!(seen.len() > 1, "IP hash should distribute across backends");
-    }
-
-    #[test]
-    fn ip_hash_ipv6() {
-        let lb = LoadBalancer::new(addrs(3), LbStrategy::IpHash, Duration::ZERO);
-        let ip = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
-        let result = lb.select(ip).unwrap();
-        assert!(result.addr.starts_with("backend-"));
-    }
-
-    // ── LeastConnections ──
-
-    #[test]
-    fn least_connections_picks_minimum() {
-        let lb = LoadBalancer::new(addrs(3), LbStrategy::LeastConnections, Duration::ZERO);
-
-        // Acquire guards on backend-0 and backend-1
-        let _g0 = lb.select(localhost()).unwrap().guard; // backend-0 gets 1 conn
-        let _g1a = lb.select(localhost()).unwrap().guard; // backend-1 gets 1 conn (0 already has 1)
-
-        // Wait, LeastConnections picks min. After first select, backend-0 has 1.
-        // Second select: backend-1 has 0 (min), so it picks backend-1.
-        // Third select: backend-2 has 0 (min), so it picks backend-2.
-        // Fourth select: backend-1 and backend-2 both have 1, backend-0 has 1 — picks backend-0 (first min).
-
-        // Actually let's verify step by step.
-        let lb = LoadBalancer::new(addrs(3), LbStrategy::LeastConnections, Duration::ZERO);
-        let s0 = lb.select(localhost()).unwrap();
-        assert_eq!(s0.addr, "backend-0:443"); // all at 0, picks first
-
-        let s1 = lb.select(localhost()).unwrap();
-        assert_eq!(s1.addr, "backend-1:443"); // 0 has 1, 1 has 0
-
-        let s2 = lb.select(localhost()).unwrap();
-        assert_eq!(s2.addr, "backend-2:443"); // 0 has 1, 1 has 1, 2 has 0
-
-        // Now all have 1
-        let s3 = lb.select(localhost()).unwrap();
-        assert_eq!(s3.addr, "backend-0:443"); // all at 1, picks first
-
-        // Drop s1 → backend-1 goes to 0
-        drop(s1);
-        let s4 = lb.select(localhost()).unwrap();
-        assert_eq!(s4.addr, "backend-1:443"); // 0:2, 1:0, 2:1
-    }
-
-    // ── Failover ──
-
-    #[test]
-    fn failover_prefers_first() {
-        let lb = LoadBalancer::new(addrs(3), LbStrategy::Failover, Duration::from_secs(60));
-        for _ in 0..5 {
-            assert_eq!(lb.select(localhost()).unwrap().addr, "backend-0:443");
-        }
-    }
-
-    #[test]
-    fn failover_skips_unhealthy() {
-        let lb = LoadBalancer::new(addrs(3), LbStrategy::Failover, Duration::from_secs(60));
-        lb.mark_unhealthy("backend-0:443");
-        assert_eq!(lb.select(localhost()).unwrap().addr, "backend-1:443");
-
-        lb.mark_unhealthy("backend-1:443");
-        assert_eq!(lb.select(localhost()).unwrap().addr, "backend-2:443");
-    }
-
-    #[test]
-    fn failover_recovers_after_cooldown() {
-        let lb = LoadBalancer::new(addrs(2), LbStrategy::Failover, Duration::from_millis(50));
-        lb.mark_unhealthy("backend-0:443");
-        assert_eq!(lb.select(localhost()).unwrap().addr, "backend-1:443");
-
-        // Wait for cooldown
-        std::thread::sleep(Duration::from_millis(60));
-        assert_eq!(lb.select(localhost()).unwrap().addr, "backend-0:443");
-    }
-
-    #[test]
-    fn failover_all_unhealthy_returns_first() {
-        let lb = LoadBalancer::new(addrs(2), LbStrategy::Failover, Duration::from_secs(60));
-        lb.mark_unhealthy("backend-0:443");
-        lb.mark_unhealthy("backend-1:443");
-        // Falls back to first
-        assert_eq!(lb.select(localhost()).unwrap().addr, "backend-0:443");
-    }
-
-    #[test]
-    fn failover_mark_healthy_recovers() {
-        let lb = LoadBalancer::new(addrs(2), LbStrategy::Failover, Duration::from_secs(60));
-        lb.mark_unhealthy("backend-0:443");
-        assert_eq!(lb.select(localhost()).unwrap().addr, "backend-1:443");
-
-        lb.mark_healthy("backend-0:443");
-        assert_eq!(lb.select(localhost()).unwrap().addr, "backend-0:443");
-    }
-
-    // ── Edge cases ──
-
-    #[test]
-    fn empty_backends_error() {
-        let lb = LoadBalancer::new(vec![], LbStrategy::RoundRobin, Duration::ZERO);
-        lb.select(localhost()).unwrap_err();
-    }
-
-    #[test]
-    fn send_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<LoadBalancer>();
-    }
-
-    // ── Custom policies ──
-
-    /// The point of `with_policy`: selection is delegated to the caller's
-    /// policy, and whatever state that policy needs it carries itself.
-    #[test]
-    fn with_policy_delegates_selection() {
-        struct AlwaysLast;
-
-        impl LbPolicy for AlwaysLast {
-            fn select(&self, backends: &[Arc<Backend>], _peer_ip: IpAddr) -> Option<usize> {
-                backends.len().checked_sub(1)
-            }
-        }
-
-        let lb = LoadBalancer::with_policy(
-            addrs(3),
-            Box::new(AlwaysLast),
-            // The strategy tag is metadata for callers; it must not override
-            // the policy that was handed in.
-            LbStrategy::RoundRobin,
-        );
-
-        for _ in 0..3 {
-            assert_eq!(lb.select(localhost()).unwrap().addr, "backend-2:443");
-        }
-        assert!(!lb.is_failover());
-    }
-}
+mod tests;

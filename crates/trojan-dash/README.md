@@ -42,6 +42,26 @@ a status: 409 when a name is taken, 401 when the token is wrong.
 User updates invalidate cached verification data. The next verification reloads
 the user and all node quotas.
 
+## Node quotas
+
+`POST /admin/nodes` and `PATCH /admin/nodes/{id}` accept a node's monthly allowance independently of user allowances:
+
+```json
+{
+  "traffic_limit": 1099511627776,
+  "reset_day": 15,
+  "reset_timezone": "Asia/Shanghai"
+}
+```
+
+`traffic_limit` counts incoming plus outgoing forwarded bytes; zero means unlimited. The default reset is local midnight on day 1 in `UTC`. `reset_day` accepts 1–31 and uses the last day of shorter months. `reset_timezone` accepts an IANA timezone. A repeated midnight uses its first occurrence; a missing midnight advances across the DST gap. Timezone data is included in the binary.
+
+Node responses include `period_bytes_in`, `period_bytes_out`, `traffic_used`, `traffic_remaining` (`null` when unlimited), `period_start`, `reset_at`, `online`, and `unavailable_reason` (`disabled`, `offline`, `traffic_exhausted`, or `null`). All timestamps are Unix seconds. A calendar edit recalculates the current window from retained history. A monthly reset opens a new window without deleting history, including after dashboard downtime.
+
+Protocol version 2 agents send ordered durable node deltas. The dashboard commits each delta and its stream cursor together before acknowledging the report. Replays do not charge twice. Delayed reports belong to their observation timestamp, so a reporting interval that crosses midnight is charged to the new window. Node accounting does not add charges to user quotas or user traffic logs. Accounting starts with version 2 reports; process-local heartbeat counters are not imported as historical usage.
+
+The dashboard sends node availability snapshots after reports, policy updates, connections and disconnections, and at monthly resets. A node becomes offline after 90 seconds without a heartbeat. Snapshots expire within 90 seconds and at the next reset boundary. These messages do not change `config_version` or restart services. Quotas govern new connections; existing connections can continue consuming traffic. Upgrade agents and the dashboard together because version 1 registrations are rejected.
+
 ## Subscriptions
 
 `GET /sub/{name}?pwd=` renders the template `name` for whoever the password
@@ -75,6 +95,8 @@ already migrated rather than re-created; `m_002_agent_columns` adds the columns
 the agent socket needs, and `m_003_hourly_traffic` the rollup below. Pointing
 this service at such a database applies only the later ones, and leaves every
 row alone.
+
+`m_005_node_traffic` adds independent node observations, reporting cursors, and monthly policies. Cached period counters are updated in the reporting transaction and rebuilt from observations only when the billing window changes. Node history is retained until the node is deleted. Each node's lifetime combined count is bounded by SQLite's signed 64-bit integer range; a report that exceeds the bound is rejected without advancing its cursor.
 
 Traffic is summed twice by one accounting event: `traffic_logs` per day, which
 is the record of history, and `traffic_hourly` per hour, which is the only

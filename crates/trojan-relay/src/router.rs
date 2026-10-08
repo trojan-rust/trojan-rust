@@ -1,14 +1,14 @@
 //! Rule router: matches listen addresses to chains and destinations.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
 use trojan_core::proxy_protocol::ChainInfo;
-use trojan_lb::LoadBalancer;
+use trojan_lb::{ConnectionGuard, LoadBalancer, NodeStateStore};
 
-use crate::config::{ChainConfig, EntryConfig, RuleConfig};
+use crate::config::{ChainConfig, EntryConfig, RouteConfig, RuleConfig};
 use crate::error::RelayError;
 use crate::handshake;
 
@@ -94,41 +94,209 @@ pub struct Router {
     rules_by_addr: HashMap<SocketAddr, usize>,
     /// All rules in order
     rules: Vec<RuleConfig>,
-    /// Chain name → compiled chain (Arc-wrapped to avoid cloning per connection)
-    chains: HashMap<String, Arc<CompiledChain>>,
-    /// One LoadBalancer per rule, indexed same as `rules`.
-    load_balancers: Vec<Arc<LoadBalancer>>,
+    pools: Vec<Arc<RoutePool>>,
 }
 
-/// A resolved route: the compiled chain + destination + load balancer.
+/// The candidate pool for a resolved rule.
 #[derive(Debug)]
 pub struct ResolvedRoute<'a> {
+    /// The rule matched by the listener address.
     pub rule: &'a RuleConfig,
+    /// Select a candidate through this pool and retain its guard while forwarding.
+    pub pool: &'a Arc<RoutePool>,
+}
+
+/// One compiled chain and its exit.
+#[derive(Debug)]
+pub struct RouteCandidate {
+    key: String,
+    chain_name: String,
+    /// Compiled relay hops.
     pub chain: Arc<CompiledChain>,
-    pub lb: &'a Arc<LoadBalancer>,
+    /// Final exit address.
+    pub dest: String,
+    node_id: Option<String>,
+    node_ids: Vec<String>,
+}
+
+impl RouteCandidate {
+    /// Opaque identifier within this pool, used to exclude an attempted route.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+}
+
+/// A selected route and its active connection guard.
+#[derive(Debug)]
+pub struct RouteSelection {
+    /// Selected chain and exit.
+    pub candidate: Arc<RouteCandidate>,
+    /// Keep this guard alive until forwarding ends.
+    pub guard: Option<ConnectionGuard>,
+}
+
+/// Per-rule health, load balancing, and live quota selection.
+#[derive(Debug)]
+pub struct RoutePool {
+    candidates: HashMap<String, Arc<RouteCandidate>>,
+    lb: LoadBalancer,
+    node_states: Option<Arc<NodeStateStore>>,
+    retry_relays: bool,
+}
+
+impl RoutePool {
+    /// Select an available route, excluding identifiers from [`RouteCandidate::key`].
+    pub fn select(
+        &self,
+        peer: IpAddr,
+        attempted: &[String],
+    ) -> Result<RouteSelection, trojan_lb::LbError> {
+        let state = self.node_states.as_ref().map(|states| states.snapshot());
+        let selected = self.lb.select_available(peer, attempted, |key| {
+            let candidate = &self.candidates[key];
+            candidate.node_ids.iter().try_fold(1.0_f64, |capacity, id| {
+                let remaining = state
+                    .as_ref()
+                    .map_or(Some(1.0), |state| state.remaining_fraction(id))?;
+                Some(capacity.min(remaining))
+            })
+        })?;
+        Ok(RouteSelection {
+            candidate: self.candidates[&selected.addr].clone(),
+            guard: selected.guard,
+        })
+    }
+
+    pub(crate) fn retry_destinations(&self) -> bool {
+        self.retry_relays || self.lb.is_failover()
+    }
+
+    pub(crate) fn retry_relays(&self) -> bool {
+        self.retry_relays
+    }
+
+    pub(crate) fn failed(
+        &self,
+        route: &RouteCandidate,
+        destination: bool,
+        attempted: &mut Vec<String>,
+    ) {
+        for candidate in self.candidates.values() {
+            let affected = if destination {
+                candidate.dest == route.dest
+                    || route
+                        .node_id
+                        .as_ref()
+                        .is_some_and(|id| candidate.node_id.as_ref() == Some(id))
+            } else {
+                candidate.chain_name == route.chain_name
+            };
+            if affected {
+                self.lb.mark_unhealthy(&candidate.key);
+                attempted.push(candidate.key.clone());
+            }
+        }
+    }
 }
 
 impl Router {
     /// Build a router from an entry config. Validates references.
     pub fn new(config: &EntryConfig) -> Result<Self, RelayError> {
+        Self::build(config, None)
+    }
+
+    /// Build a router whose managed nodes require fresh panel state.
+    pub fn with_node_states(
+        config: &EntryConfig,
+        states: Arc<NodeStateStore>,
+    ) -> Result<Self, RelayError> {
+        Self::build(config, Some(states))
+    }
+
+    fn build(
+        config: &EntryConfig,
+        states: Option<Arc<NodeStateStore>>,
+    ) -> Result<Self, RelayError> {
         let mut rules_by_addr = HashMap::with_capacity(config.rules.len());
-        let mut load_balancers = Vec::with_capacity(config.rules.len());
+        let mut pools = Vec::with_capacity(config.rules.len());
+        let chains = config
+            .chains
+            .iter()
+            .map(|(name, chain)| {
+                CompiledChain::new(name, chain.clone(), config.node_id.as_deref())
+                    .map(|compiled| (name.clone(), Arc::new(compiled)))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
 
         for (i, rule) in config.rules.iter().enumerate() {
-            // Validate: chain must exist
-            if !config.chains.contains_key(&rule.chain) {
-                return Err(RelayError::ChainNotFound(format!(
-                    "rule '{}' references unknown chain '{}'",
-                    rule.name, rule.chain
+            if !rule.routes.is_empty() && (!rule.chain.is_empty() || !rule.dest.is_empty()) {
+                return Err(RelayError::Config(format!(
+                    "rule '{}' must use routes or chain/dest, not both",
+                    rule.name
                 )));
             }
-
-            // Validate: dest must not be empty
-            if rule.dest.is_empty() {
+            let definitions: Vec<RouteConfig> = if rule.routes.is_empty() {
+                rule.dest
+                    .iter()
+                    .map(|dest| RouteConfig {
+                        chain: rule.chain.clone(),
+                        dest: dest.clone(),
+                        node_id: None,
+                    })
+                    .collect()
+            } else {
+                rule.routes.clone()
+            };
+            if definitions.is_empty() {
                 return Err(RelayError::Config(format!(
                     "rule '{}' has empty dest",
                     rule.name
                 )));
+            }
+            let mut candidates = HashMap::with_capacity(definitions.len());
+            let mut keys = Vec::with_capacity(definitions.len());
+            for (index, definition) in definitions.into_iter().enumerate() {
+                let chain = chains
+                    .get(&definition.chain)
+                    .ok_or_else(|| {
+                        RelayError::ChainNotFound(format!(
+                            "rule '{}' references unknown chain '{}'",
+                            rule.name, definition.chain
+                        ))
+                    })?
+                    .clone();
+                if definition.dest.trim().is_empty() {
+                    return Err(RelayError::Config(format!(
+                        "rule '{}' has empty dest",
+                        rule.name
+                    )));
+                }
+                let node_ids = config
+                    .node_id
+                    .iter()
+                    .chain(
+                        chain
+                            .config()
+                            .nodes
+                            .iter()
+                            .filter_map(|node| node.node_id.as_ref()),
+                    )
+                    .chain(definition.node_id.iter())
+                    .cloned()
+                    .collect();
+                let key = index.to_string();
+                keys.push(key.clone());
+                candidates.insert(
+                    key.clone(),
+                    Arc::new(RouteCandidate {
+                        key,
+                        chain_name: definition.chain,
+                        chain,
+                        dest: definition.dest,
+                        node_id: definition.node_id,
+                        node_ids,
+                    }),
+                );
             }
 
             // Validate: listen address must be unique
@@ -141,28 +309,23 @@ impl Router {
 
             rules_by_addr.insert(rule.listen, i);
 
-            let lb = Arc::new(LoadBalancer::new(
-                rule.dest.clone(),
+            let lb = LoadBalancer::new(
+                keys,
                 rule.strategy.clone(),
                 Duration::from_secs(rule.failover_cooldown_secs),
-            ));
-            load_balancers.push(lb);
+            );
+            pools.push(Arc::new(RoutePool {
+                candidates,
+                lb,
+                node_states: states.clone(),
+                retry_relays: !rule.routes.is_empty(),
+            }));
         }
-
-        let chains = config
-            .chains
-            .iter()
-            .map(|(name, chain)| {
-                CompiledChain::new(name, chain.clone(), config.node_id.as_deref())
-                    .map(|compiled| (name.clone(), Arc::new(compiled)))
-            })
-            .collect::<Result<HashMap<_, _>, _>>()?;
 
         Ok(Self {
             rules_by_addr,
             rules: config.rules.clone(),
-            chains,
-            load_balancers,
+            pools,
         })
     }
 
@@ -170,9 +333,10 @@ impl Router {
     pub fn resolve(&self, listen_addr: &SocketAddr) -> Option<ResolvedRoute<'_>> {
         let idx = self.rules_by_addr.get(listen_addr)?;
         let rule = &self.rules[*idx];
-        let chain = self.chains.get(&rule.chain)?.clone();
-        let lb = &self.load_balancers[*idx];
-        Some(ResolvedRoute { rule, chain, lb })
+        Some(ResolvedRoute {
+            rule,
+            pool: &self.pools[*idx],
+        })
     }
 
     /// Get all unique listen addresses.
@@ -187,162 +351,4 @@ impl Router {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_config() -> EntryConfig {
-        toml::from_str(
-            r#"
-[chains.jp]
-nodes = [
-  { addr = "relay-hk:443", password = "hk-secret" },
-]
-
-[chains.direct]
-nodes = []
-
-[[rules]]
-name = "japan"
-listen = "127.0.0.1:1080"
-chain = "jp"
-dest = "trojan-jp:443"
-
-[[rules]]
-name = "singapore"
-listen = "127.0.0.1:1082"
-chain = "direct"
-dest = "trojan-sg:443"
-"#,
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn test_router_resolve() {
-        let config = make_config();
-        let router = Router::new(&config).unwrap();
-
-        let addr: SocketAddr = "127.0.0.1:1080".parse().unwrap();
-        let route = router.resolve(&addr).unwrap();
-        assert_eq!(route.rule.name, "japan");
-        assert_eq!(route.rule.dest, vec!["trojan-jp:443"]);
-        assert_eq!(route.chain.config().nodes.len(), 1);
-        assert_eq!(route.chain.config().nodes[0].addr, "relay-hk:443");
-        // One hash per hop, resolved at build time.
-        assert_eq!(route.chain.password_hashes().len(), 1);
-        assert_eq!(route.lb.backend_count(), 1);
-
-        let addr: SocketAddr = "127.0.0.1:1082".parse().unwrap();
-        let route = router.resolve(&addr).unwrap();
-        assert_eq!(route.rule.name, "singapore");
-        assert!(route.chain.config().nodes.is_empty());
-
-        let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
-        assert!(router.resolve(&addr).is_none());
-    }
-
-    #[test]
-    fn test_router_unknown_chain() {
-        let config: EntryConfig = toml::from_str(
-            r#"
-[chains.jp]
-nodes = []
-
-[[rules]]
-name = "bad"
-listen = "127.0.0.1:1080"
-chain = "nonexistent"
-dest = "target:443"
-"#,
-        )
-        .unwrap();
-
-        let err = Router::new(&config).unwrap_err();
-        assert!(err.to_string().contains("nonexistent"));
-    }
-
-    #[test]
-    fn test_router_duplicate_listen() {
-        let config: EntryConfig = toml::from_str(
-            r#"
-[chains.jp]
-nodes = []
-
-[[rules]]
-name = "a"
-listen = "127.0.0.1:1080"
-chain = "jp"
-dest = "target:443"
-
-[[rules]]
-name = "b"
-listen = "127.0.0.1:1080"
-chain = "jp"
-dest = "other:443"
-"#,
-        )
-        .unwrap();
-
-        let err = Router::new(&config).unwrap_err();
-        assert!(err.to_string().contains("duplicate"));
-    }
-
-    #[test]
-    fn test_router_chain_node_missing_password() {
-        let config: EntryConfig = toml::from_str(
-            r#"
-[chains.jp]
-nodes = [
-  { addr = "relay-hk:443" },
-]
-
-[[rules]]
-name = "japan"
-listen = "127.0.0.1:1080"
-chain = "jp"
-dest = "trojan-jp:443"
-"#,
-        )
-        .unwrap();
-
-        // A hop with no password is a config error. Hashes are resolved when
-        // the router is built, so it surfaces at startup rather than on the
-        // first connection through that chain.
-        let err = Router::new(&config).unwrap_err();
-        assert!(
-            err.to_string().contains("missing a password"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn test_router_listen_addrs() {
-        let config = make_config();
-        let router = Router::new(&config).unwrap();
-        let addrs = router.listen_addrs();
-        assert_eq!(addrs.len(), 2);
-    }
-
-    #[test]
-    fn test_router_multi_dest() {
-        let config: EntryConfig = toml::from_str(
-            r#"
-[chains.jp]
-nodes = []
-
-[[rules]]
-name = "ha"
-listen = "127.0.0.1:1080"
-chain = "jp"
-dest = ["a:443", "b:443", "c:443"]
-strategy = "ip_hash"
-"#,
-        )
-        .unwrap();
-
-        let router = Router::new(&config).unwrap();
-        let addr: SocketAddr = "127.0.0.1:1080".parse().unwrap();
-        let route = router.resolve(&addr).unwrap();
-        assert_eq!(route.lb.backend_count(), 3);
-    }
-}
+mod tests;

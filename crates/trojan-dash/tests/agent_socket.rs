@@ -17,7 +17,8 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 use trojan_protocol::{
-    AgentMessage, ErrorCode, NodeType, PROTOCOL_VERSION, PanelMessage, ServiceState, TrafficRecord,
+    AgentMessage, ErrorCode, NodeState, NodeTrafficReport, NodeType, PROTOCOL_VERSION,
+    PanelMessage, ServiceState, TrafficRecord,
 };
 
 mod common;
@@ -72,6 +73,148 @@ impl Agent {
         .await;
         self.recv().await
     }
+
+    async fn await_state(&mut self, node_id: u64, ready: impl Fn(&NodeState) -> bool) -> NodeState {
+        loop {
+            let message = self
+                .recv()
+                .await
+                .expect("agent disconnected before state update");
+            if let PanelMessage::NodeStates { snapshot } = message
+                && let Some(state) = snapshot
+                    .nodes
+                    .into_iter()
+                    .find(|node| node.node_id == node_id.to_string())
+                && ready(&state)
+            {
+                return state;
+            }
+        }
+    }
+
+    async fn report(&mut self, report: NodeTrafficReport) {
+        self.send(AgentMessage::NodeTraffic {
+            report: report.clone(),
+        })
+        .await;
+        loop {
+            match self.recv().await.expect("agent disconnected before ACK") {
+                PanelMessage::NodeTrafficAck {
+                    stream_id,
+                    sequence,
+                } => {
+                    assert_eq!(stream_id, report.stream_id);
+                    assert_eq!(sequence, report.sequence);
+                    return;
+                }
+                PanelMessage::NodeStates { .. } => {}
+                other => panic!("expected ACK, got {other:?}"),
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn durable_node_reports_publish_quota_changes_without_billing_users() {
+    let dash = Dash::start().await;
+    let (user_id, _) = dash.add_user("node-budget-independent").await;
+    let node = dash
+        .admin_post(
+            "/admin/nodes",
+            serde_json::json!({
+                "name": "metered-relay", "node_type": "relay", "traffic_limit": 100,
+                "reset_day": 1, "reset_timezone": "Asia/Singapore",
+            }),
+        )
+        .await;
+    let id = node["id"].as_u64().unwrap();
+    let mut agent = Agent::connect(&dash).await;
+    agent
+        .register(node["token"].as_str().unwrap())
+        .await
+        .unwrap();
+    agent
+        .await_state(id, |state| state.online && state.used_bytes == 0)
+        .await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let report = NodeTrafficReport {
+        stream_id: "durable-stream".into(),
+        sequence: 1,
+        observed_at: now,
+        bytes_in: 40,
+        bytes_out: 60,
+    };
+    agent.report(report.clone()).await;
+    agent.await_state(id, |state| state.used_bytes == 100).await;
+    agent.report(report).await;
+    let stored = dash.admin_get(&format!("/admin/nodes/{id}")).await;
+    assert_eq!(stored["traffic_used"], 100);
+    assert_eq!(stored["traffic_remaining"], 0);
+    assert_eq!(stored["period_bytes_in"], 40);
+    assert_eq!(stored["period_bytes_out"], 60);
+    assert_eq!(stored["unavailable_reason"], "traffic_exhausted");
+    assert_eq!(
+        dash.admin_get(&format!("/admin/users/{user_id}")).await["traffic_used"],
+        0
+    );
+    assert!(
+        dash.admin_get("/admin/traffic")
+            .await
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let response = dash
+        .client
+        .patch(format!("{}/admin/nodes/{id}", dash.base))
+        .bearer_auth(common::ADMIN_TOKEN)
+        .json(&serde_json::json!({"traffic_limit": 200}))
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    let state = agent
+        .await_state(id, |state| state.traffic_limit == 200)
+        .await;
+    assert_eq!(state.used_bytes, 100);
+    let stored = dash.admin_get(&format!("/admin/nodes/{id}")).await;
+    assert_eq!(stored["traffic_remaining"], 100);
+    assert_eq!(stored["config_version"], node["config_version"]);
+    assert!(stored["unavailable_reason"].is_null());
+}
+
+#[tokio::test]
+async fn agent_disconnect_and_admin_disable_publish_to_other_agents() {
+    let dash = Dash::start().await;
+    let watcher_token = dash.add_node("entry").await;
+    let node = dash
+        .admin_post("/admin/nodes", serde_json::json!({"name": "exit"}))
+        .await;
+    let id = node["id"].as_u64().unwrap();
+    let mut watcher = Agent::connect(&dash).await;
+    watcher.register(&watcher_token).await.unwrap();
+    watcher.await_state(id, |state| !state.online).await;
+    let mut exit = Agent::connect(&dash).await;
+    exit.register(node["token"].as_str().unwrap())
+        .await
+        .unwrap();
+    watcher.await_state(id, |state| state.online).await;
+    exit.socket.close(None).await.unwrap();
+    watcher.await_state(id, |state| !state.online).await;
+    let response = dash
+        .client
+        .patch(format!("{}/admin/nodes/{id}", dash.base))
+        .bearer_auth(common::ADMIN_TOKEN)
+        .json(&serde_json::json!({"enabled": false}))
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    watcher.await_state(id, |state| !state.enabled).await;
 }
 
 /// Registration hands back the service the operator configured, so the agent

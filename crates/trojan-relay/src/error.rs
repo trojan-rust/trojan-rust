@@ -8,6 +8,10 @@ pub enum RelayError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// A listener or connection task panicked.
+    #[error("relay task failed: {0}")]
+    Task(#[from] tokio::task::JoinError),
+
     #[error("TLS error: {0}")]
     Tls(#[from] rustls::Error),
 

@@ -10,7 +10,7 @@ use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
 const WAIT: Duration = Duration::from_secs(5);
 
-fn init_crypto() {
+pub(super) fn init_crypto() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
         tokio_rustls::rustls::crypto::aws_lc_rs::default_provider()
@@ -71,7 +71,52 @@ async fn register(panel: &TcpListener, config: &serde_json::Value) -> WebSocketS
         },
     )
     .await;
+    send_states(&mut ws, true).await;
     ws
+}
+
+async fn send_states(ws: &mut WebSocketStream<TcpStream>, enabled: bool) {
+    send(
+        ws,
+        PanelMessage::NodeStates {
+            snapshot: crate::protocol::NodeStateSnapshot {
+                generated_at: unix_now(),
+                valid_until: unix_now() + 90,
+                nodes: vec![crate::protocol::NodeState {
+                    node_id: "entry".into(),
+                    enabled,
+                    online: true,
+                    traffic_limit: 0,
+                    used_bytes: 0,
+                    period_start: 0,
+                    reset_at: unix_now() + 3600,
+                }],
+            },
+        },
+    )
+    .await;
+}
+
+async fn ready(ws: &mut WebSocketStream<TcpStream>, config: &serde_json::Value) -> u64 {
+    // The acknowledgement confirms all preceding state snapshots reached the runtime.
+    send(
+        ws,
+        PanelMessage::ConfigPush {
+            version: 1,
+            restart_required: false,
+            drain_timeout_secs: None,
+            config: serde_json::to_vec(config).unwrap(),
+        },
+    )
+    .await;
+    let mut started = None;
+    loop {
+        match receive(ws).await {
+            AgentMessage::ServiceStatus { started_at, .. } => started = Some(started_at),
+            AgentMessage::ConfigAck { ok: true, .. } => return started.unwrap_or(0),
+            _ => {}
+        }
+    }
 }
 
 async fn receive(ws: &mut WebSocketStream<TcpStream>) -> AgentMessage {
@@ -155,9 +200,7 @@ async fn reconnect_preserves_listener_connections_and_statistics() {
         shutdown.clone(),
     ));
     let mut first = register(&panel, &service_config).await;
-    let AgentMessage::ServiceStatus { started_at, .. } = receive(&mut first).await else {
-        panic!("missing service status")
-    };
+    let started_at = ready(&mut first, &service_config).await;
     let mut client = connect_service(listen).await;
     let (mut remote, _) = timeout(WAIT, target.accept()).await.unwrap().unwrap();
     round_trip(&mut client, &mut remote).await;
@@ -166,12 +209,7 @@ async fn reconnect_preserves_listener_connections_and_statistics() {
     drop(first);
 
     let mut second = register(&panel, &service_config).await;
-    let AgentMessage::ServiceStatus {
-        started_at: after, ..
-    } = receive(&mut second).await
-    else {
-        panic!("missing service status")
-    };
+    let after = ready(&mut second, &service_config).await;
     assert_eq!(started_at, after);
     round_trip(&mut client, &mut remote).await;
     heartbeat_with_traffic(&mut second, 14).await;
@@ -198,6 +236,7 @@ async fn cached_service_recovers_when_panel_returns() {
     cache::write_cache(
         cache.path(),
         &CachedConfig {
+            node_id: Some("entry".into()),
             version: 1,
             node_type: NodeType::Entry,
             report_interval_secs: 1,
@@ -212,11 +251,13 @@ async fn cached_service_recovers_when_panel_returns() {
         agent_config(panel_addr, cache.path()),
         shutdown.clone(),
     ));
+    drop(connect_service(listen).await);
+    let panel = TcpListener::bind(panel_addr).await.unwrap();
+    let mut ws = register(&panel, &service_config).await;
+    ready(&mut ws, &service_config).await;
     let mut client = connect_service(listen).await;
     let (mut remote, _) = timeout(WAIT, target.accept()).await.unwrap().unwrap();
     round_trip(&mut client, &mut remote).await;
-    let panel = TcpListener::bind(panel_addr).await.unwrap();
-    let mut ws = register(&panel, &service_config).await;
     heartbeat_with_traffic(&mut ws, 7).await;
     round_trip(&mut client, &mut remote).await;
     heartbeat_with_traffic(&mut ws, 14).await;
@@ -236,6 +277,7 @@ async fn shutdown_during_registration_releases_cached_listener() {
     cache::write_cache(
         cache.path(),
         &CachedConfig {
+            node_id: Some("entry".into()),
             version: 1,
             node_type: NodeType::Entry,
             report_interval_secs: 1,
@@ -274,6 +316,7 @@ async fn config_push_requires_restart_and_replaces_the_listener() {
         shutdown.clone(),
     ));
     let mut ws = register(&panel, &config).await;
+    ready(&mut ws, &config).await;
     drop(connect_service(old).await);
     for restart in [false, true] {
         send(
@@ -313,6 +356,48 @@ async fn config_push_requires_restart_and_replaces_the_listener() {
 }
 
 #[tokio::test]
+async fn node_state_push_changes_admission_without_restarting_existing_connections() {
+    init_crypto();
+    let cache = tempfile::tempdir().unwrap();
+    let panel = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let listen = free_address().await;
+    let config = entry_config(listen, target.local_addr().unwrap());
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn(run(
+        agent_config(panel.local_addr().unwrap(), cache.path()),
+        shutdown.clone(),
+    ));
+    let mut ws = register(&panel, &config).await;
+    ready(&mut ws, &config).await;
+    let mut client = connect_service(listen).await;
+    let (mut remote, _) = timeout(WAIT, target.accept()).await.unwrap().unwrap();
+    round_trip(&mut client, &mut remote).await;
+
+    send_states(&mut ws, false).await;
+    ready(&mut ws, &config).await;
+    let mut denied = connect_service(listen).await;
+    assert_eq!(
+        timeout(WAIT, denied.read(&mut [0u8]))
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    round_trip(&mut client, &mut remote).await;
+
+    send_states(&mut ws, true).await;
+    ready(&mut ws, &config).await;
+    let mut next_client = connect_service(listen).await;
+    let (mut next_remote, _) = timeout(WAIT, target.accept()).await.unwrap().unwrap();
+    round_trip(&mut next_client, &mut next_remote).await;
+    round_trip(&mut client, &mut remote).await;
+    drop((client, remote, denied, next_client, next_remote));
+    shutdown.cancel();
+    timeout(WAIT, task).await.unwrap().unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn panel_disconnect_closes_both_client_channels() {
     let cache = tempfile::tempdir().unwrap();
     let panel = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -324,6 +409,10 @@ async fn panel_disconnect_closes_both_client_channels() {
     });
     let mut ws = register(&panel, &json!({})).await;
     let (_, tx, mut rx) = client.await.unwrap();
+    assert!(matches!(
+        timeout(WAIT, rx.recv()).await.unwrap(),
+        Some(PanelMessage::NodeStates { .. })
+    ));
     ws.close(None).await.unwrap();
     drop(ws);
     timeout(WAIT, tx.closed())

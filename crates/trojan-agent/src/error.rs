@@ -32,6 +32,12 @@ pub enum AgentError {
     #[error("cache: {0}")]
     Cache(String),
 
+    #[error("node traffic accounting: {0}")]
+    Accounting(String),
+
+    #[error("node traffic journal: {0}")]
+    AccountingStorage(#[source] Box<AgentError>),
+
     #[error("protocol version mismatch: expected {expected}, got {got}")]
     ProtocolMismatch { expected: u32, got: u32 },
 

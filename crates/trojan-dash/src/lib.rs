@@ -47,6 +47,8 @@ mod entity;
 mod error;
 mod handler;
 mod migration;
+mod node_states;
+mod node_traffic;
 mod retention;
 mod routes;
 mod state;
@@ -84,6 +86,7 @@ pub async fn run_with_listener(
         cache: cache::Caches::new(config.verify_cache_ttl(), config.sub_cache_ttl()),
         admin_digest: Arc::new(sha224_hex(&admin_token)),
         cfg: Arc::new(config.clone()),
+        nodes: Arc::new(node_states::NodeMonitor::new()),
     };
 
     let app = routes::router(state.clone(), config.static_dir.as_deref());
@@ -111,9 +114,12 @@ pub async fn run_with_listener(
         app.into_make_service_with_connect_info::<SocketAddr>(),
     );
 
-    let served = serve
-        .with_graceful_shutdown(async move { shutdown.cancelled().await })
-        .await;
+    let served = tokio::select! {
+        served = serve.with_graceful_shutdown(async move { shutdown.cancelled().await }) => {
+            served.map_err(DashError::from)
+        },
+        states = node_states::run(state.clone(), internal.clone()) => states,
+    };
 
     internal.cancel();
     let _ = sweeper.await;

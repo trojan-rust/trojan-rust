@@ -13,6 +13,8 @@ This crate provides the foundational building blocks used by the trojan-rs works
 
 The bidirectional relay polls both streams in one task. Each direction continues through backpressure and half-close independently. A writer that returns zero for a nonempty buffer terminates the relay with `WriteZero`.
 
+Traffic counters record each successful write immediately. Partial writes remain counted if a connection is cancelled or later fails, including while a flush is pending. Counts measure bytes accepted by the stream writer; buffered transports can accept bytes before the peer receives them.
+
 ## Usage
 
 ```rust

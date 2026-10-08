@@ -3,6 +3,22 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+
+### Breaking Changes
+
+- Upgrade the dashboard and agents together. Agent protocol version 2 adds acknowledged node traffic reports and live availability snapshots; version 1 registrations are rejected.
+- Library callers must account for `LbStrategy::TrafficAware`, `RuleConfig::routes`, and the route pool returned by `Router::resolve`. Every load-balancing strategy now excludes unhealthy backends and returns an error when none are available.
+
+### Features
+
+- Persist node traffic independently of user accounting. Agents retain unacknowledged samples across reconnects and restarts; the dashboard deduplicates reports and assigns delayed samples to their original observation period.
+- Configure monthly node quotas with a reset day and IANA timezone. Node APIs expose directional usage, remaining bytes, reset times, and availability. Resetting a quota preserves traffic history.
+- Select complete relay paths and exits with `routes` and `strategy = "traffic_aware"`. Managed entries exclude disabled, offline, exhausted, and stale nodes; live updates restore eligible routes without restarting services. Existing connections continue.
+
+### Bug Fixes
+
+- Close and join service connections before checkpointing final node traffic. Count accepted writes even when a later write, flush, or cancellation interrupts forwarding.
+
 ## [0.15.0](https://github.com/trojan-rust/trojan-rust/compare/v0.14.0...v0.15.0) - 2026-10-08
 
 ### Breaking Changes

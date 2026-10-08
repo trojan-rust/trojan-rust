@@ -11,8 +11,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
+use tokio::task::JoinSet;
 use tracing::{Instrument, debug, info, info_span, warn};
 
 use trojan_metrics::{
@@ -28,7 +29,7 @@ use trojan_transport::tls::{TlsTransportAcceptor, TlsTransportConnector};
 use trojan_transport::ws::{WsTransportAcceptor, WsTransportConnector};
 use trojan_transport::{TransportAcceptor, TransportConnector};
 
-use trojan_core::io::relay_bidirectional;
+use trojan_core::io::{PrefixedStream, relay_bidirectional};
 
 /// Outbound connectors for all transport types, used by the relay node.
 #[derive(Clone)]
@@ -114,15 +115,26 @@ where
     let password_hash: Arc<str> = handshake::hash_password(&relay_cfg.auth.password).into();
     let timeouts = relay_cfg.timeouts.clone();
 
-    loop {
+    let mut sessions = JoinSet::new();
+    let shutdown = shutdown.child_token();
+    let _cancel = shutdown.clone().drop_guard();
+    let mut result = loop {
         tokio::select! {
             biased;
             _ = shutdown.cancelled() => {
                 info!("relay node shutting down");
-                return Ok(());
+                break Ok(());
+            }
+            Some(completed) = sessions.join_next() => {
+                if let Err(error) = completed {
+                    break Err(error.into());
+                }
             }
             accept_result = listener.accept() => {
-                let (tcp_stream, peer_addr) = accept_result?;
+                let (tcp_stream, peer_addr) = match accept_result {
+                    Ok(accepted) => accepted,
+                    Err(error) => break Err(error.into()),
+                };
                 let _ = tcp_stream.set_nodelay(true);
 
                 let session = RelaySession {
@@ -136,14 +148,21 @@ where
                 // count follows the accept, not the scheduler.
                 let active = stats.connection_started();
 
-                tokio::spawn(
+                let shutdown = shutdown.clone();
+                sessions.spawn(
                     async move {
                         let _active = active;
                         record_connection_accepted();
                         let started = Instant::now();
 
-                        if let Err(e) = session.handle(tcp_stream).await {
-                            debug!(error = %e, "relay connection error");
+                        tokio::select! {
+                            biased;
+                            _ = shutdown.cancelled() => {},
+                            result = session.handle(tcp_stream) => {
+                                if let Err(e) = result {
+                                    debug!(error = %e, "relay connection error");
+                                }
+                            }
                         }
 
                         record_connection_closed(started.elapsed().as_secs_f64());
@@ -152,7 +171,18 @@ where
                 );
             }
         }
+    };
+    shutdown.cancel();
+    sessions.abort_all();
+    while let Some(completed) = sessions.join_next().await {
+        if let Err(error) = completed
+            && !error.is_cancelled()
+            && result.is_ok()
+        {
+            result = Err(error.into());
+        }
     }
+    result
 }
 
 /// One accepted upstream connection: authenticate, dial the next hop, relay.
@@ -222,7 +252,7 @@ where
         let hop = Hop {
             target: &hs.target,
             acknowledge: hs.metadata.ack,
-            residue: &residue,
+            residue,
             timeouts: &self.timeouts,
             counters: &self.counters,
         };
@@ -238,14 +268,13 @@ where
 }
 
 /// The next hop of one relayed connection, whatever transport reaches it.
-#[derive(Clone, Copy)]
 struct Hop<'a> {
     /// `host:port` to dial.
     target: &'a str,
     /// Legacy upstreams must receive payload bytes without a response prefix.
     acknowledge: bool,
     /// Bytes already read past the handshake, owed to the target verbatim.
-    residue: &'a [u8],
+    residue: Vec<u8>,
     timeouts: &'a TimeoutConfig,
     counters: &'a RelayCounters,
 }
@@ -272,11 +301,9 @@ where
         };
         handshake::write_response(&mut inbound, response).await?;
     }
-    let mut outbound = result?;
-
-    if !hop.residue.is_empty() {
-        outbound.write_all(hop.residue).await?;
-    }
+    let outbound = result?;
+    // Buffered payload must use the same byte accounting as later reads.
+    let inbound = PrefixedStream::new(hop.residue.into(), inbound);
 
     relay_bidirectional(
         inbound,
@@ -288,4 +315,51 @@ where
     .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn handshake_residue_counts_as_forwarded_node_traffic() {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap().to_string();
+            let (mut client, inbound) = tokio::io::duplex(64);
+            let stats = NodeStats::new();
+            let counters = RelayCounters::global().with_node_stats(stats.clone());
+            let task = tokio::spawn(async move {
+                dial_and_relay(
+                    inbound,
+                    &PlainTransportConnector::new(),
+                    Hop {
+                        target: &address,
+                        acknowledge: false,
+                        residue: b"buffered-".to_vec(),
+                        timeouts: &TimeoutConfig::default(),
+                        counters: &counters,
+                    },
+                )
+                .await
+            });
+            client.write_all(b"payload").await.unwrap();
+            client.shutdown().await.unwrap();
+            let (mut target, _) = listener.accept().await.unwrap();
+            let mut received = Vec::new();
+            target.read_to_end(&mut received).await.unwrap();
+            assert_eq!(received, b"buffered-payload");
+            target.write_all(b"reply").await.unwrap();
+            target.shutdown().await.unwrap();
+            let mut response = Vec::new();
+            client.read_to_end(&mut response).await.unwrap();
+            assert_eq!(response, b"reply");
+            task.await.unwrap().unwrap();
+            assert_eq!(stats.snapshot().bytes_in, 16);
+            assert_eq!(stats.snapshot().bytes_out, 5);
+        })
+        .await
+        .expect("buffered payload relay did not complete");
+    }
 }

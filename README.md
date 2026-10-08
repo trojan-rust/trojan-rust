@@ -12,6 +12,8 @@ See the full documentation at [trojan.rs](https://trojan.rs).
 
 For multi-hop routing, destination failover, and relay upgrade ordering, see [trojan-relay](crates/trojan-relay/README.md).
 
+For persistent node traffic accounting and monthly quotas, see [trojan-dash](crates/trojan-dash/README.md#node-quotas). Managed entries use live quota and health information to select relay paths and exits.
+
 ## License
 
 GPL-3.0-only

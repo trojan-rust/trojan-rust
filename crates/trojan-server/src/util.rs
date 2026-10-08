@@ -3,78 +3,16 @@
 use std::collections::VecDeque;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use socket2::{Domain, Protocol, Socket, TcpKeepalive, Type};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Notify;
 use trojan_config::TcpConfig;
 
 use crate::error::ServerError;
 
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Tracks active connections for graceful shutdown.
-#[derive(Clone, Debug, Default)]
-pub struct ConnectionTracker {
-    active: Arc<AtomicUsize>,
-    zero_notify: Arc<Notify>,
-}
-
-impl ConnectionTracker {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Count a connection as active until the returned guard drops.
-    ///
-    /// The count is only ever raised here, so it cannot be raised without a
-    /// guard to lower it again — including when the connection ends by panic
-    /// or early return, which is what a graceful drain depends on.
-    pub fn connection_started(&self) -> ConnectionGuard {
-        self.active.fetch_add(1, Ordering::Relaxed);
-        ConnectionGuard {
-            tracker: self.clone(),
-        }
-    }
-
-    pub fn count(&self) -> usize {
-        // Acquire to synchronize with Release from the guard's drop
-        self.active.load(Ordering::Acquire)
-    }
-
-    pub async fn wait_for_zero(&self, timeout: Duration) -> bool {
-        if self.count() == 0 {
-            return true;
-        }
-        tokio::select! {
-            _ = self.zero_notify.notified() => {
-                // Double-check in case of race
-                self.count() == 0
-            }
-            _ = tokio::time::sleep(timeout) => false,
-        }
-    }
-}
-
-/// Holds a connection's place in the active count until dropped.
-#[derive(Debug)]
-pub struct ConnectionGuard {
-    tracker: ConnectionTracker,
-}
-
-impl Drop for ConnectionGuard {
-    fn drop(&mut self) {
-        // AcqRel: Acquire to see previous increments, Release to make the
-        // decrement visible to whoever is waiting for the count to reach zero.
-        if self.tracker.active.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.tracker.zero_notify.notify_waiters();
-        }
-    }
-}
 
 /// Create a TCP listener with custom backlog and TCP options.
 pub fn create_listener(
@@ -278,7 +216,7 @@ async fn connect_socket(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[tokio::test]
     async fn stalled_preferred_family_does_not_block_ipv4_and_loser_is_cancelled() {

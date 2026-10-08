@@ -15,6 +15,9 @@ const CACHE_FILENAME: &str = "config.json";
 /// Cached configuration persisted to disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedConfig {
+    /// Authenticated node identity. Legacy caches require a new registration.
+    #[serde(default)]
+    pub node_id: Option<String>,
     /// Config version from the panel.
     pub version: u32,
     /// Node type.
@@ -88,6 +91,7 @@ mod tests {
     async fn write_and_read_cache() {
         let dir = tempfile::tempdir().unwrap();
         let cached = CachedConfig {
+            node_id: Some("node-1".into()),
             version: 5,
             node_type: NodeType::Server,
             report_interval_secs: 30,

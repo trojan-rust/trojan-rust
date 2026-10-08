@@ -8,6 +8,7 @@ use tracing::{error, info};
 
 use trojan_auth::{AuthBackend, AuthError, AuthResult};
 use trojan_config::{AuthConfig, Config};
+use trojan_lb::NodeStateStore;
 use trojan_metrics::NodeStats;
 use trojan_relay::config::{EntryConfig, RelayNodeConfig};
 
@@ -21,6 +22,10 @@ use crate::protocol::NodeType;
 /// numbers themselves, not a Prometheus endpoint someone might scrape.
 #[derive(Debug, Clone, Default)]
 pub struct ServiceSinks {
+    /// Authenticated node identity for managed entry admission.
+    pub node_id: Option<String>,
+    /// Current panel availability and quota state, shared with running services.
+    pub node_states: Arc<NodeStateStore>,
     /// Node-wide traffic and connection totals, read on every heartbeat.
     pub stats: Arc<NodeStats>,
     /// Per-user traffic, drained into each traffic report.
@@ -78,12 +83,15 @@ async fn run_entry(
     sinks: ServiceSinks,
     shutdown: CancellationToken,
 ) -> Result<(), AgentError> {
-    let config: EntryConfig = serde_json::from_value(config_json.clone())
+    let mut config: EntryConfig = serde_json::from_value(config_json.clone())
         .map_err(|e| AgentError::Service(format!("invalid entry config: {e}")))?;
+    if let Some(node_id) = sinks.node_id {
+        config.node_id = Some(node_id);
+    }
 
     info!("starting entry service");
 
-    trojan_relay::entry::run_with_stats(config, sinks.stats, shutdown)
+    trojan_relay::entry::run_with_node_states(config, sinks.stats, sinks.node_states, shutdown)
         .await
         .map_err(|e| {
             error!(error = %e, "entry service exited with error");

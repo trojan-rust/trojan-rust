@@ -14,11 +14,12 @@ async fn udp_write_backpressure_does_not_block_uploads_or_idle_expiry() {
     write_udp_packet(&mut initial, &address, b"first").unwrap();
     let mut state = state();
     state.udp_idle_timeout = Duration::from_millis(500);
+    let state = Arc::new(state);
     let (mut client, server) = duplex(64);
     let task = tokio::spawn(handle_trojan_stream(
         server,
         initial,
-        Arc::new(state),
+        state.clone(),
         auth(),
         connection(),
     ));
@@ -46,6 +47,13 @@ async fn udp_write_backpressure_does_not_block_uploads_or_idle_expiry() {
         .expect("idle expiry must cancel a blocked response")
         .unwrap()
         .unwrap();
+    let mut remaining = Vec::new();
+    client.read_to_end(&mut remaining).await.unwrap();
+    assert_eq!(
+        state.node_stats.snapshot().bytes_out,
+        (remaining.len() + 1) as u64
+    );
+    assert!(!remaining.is_empty());
 }
 
 #[tokio::test]

@@ -28,6 +28,7 @@ use sea_orm::{
 use crate::entity::nodes;
 use crate::error::DashError;
 use crate::handler::node_api::apply_traffic;
+use crate::node_traffic;
 use crate::state::AppState;
 use crate::types::clamp_i64;
 use crate::util::now_secs;
@@ -68,16 +69,44 @@ async fn session(
         "agent registered"
     );
 
-    while let Some(frame) = socket.recv().await {
-        let Ok(Message::Binary(bytes)) = frame else {
-            // Anything that is not a binary frame is either a close, a
-            // transport-level ping axum already answered, or noise.
-            break;
+    state.nodes.connected(node.id).await;
+    let result = serve_registered(&mut socket, &state, node.id).await;
+    state.nodes.disconnected(node.id).await;
+    info!(node_id = node.id, "agent disconnected");
+    result
+}
+
+async fn serve_registered(
+    socket: &mut WebSocket,
+    state: &AppState,
+    node_id: i64,
+) -> Result<(), DashError> {
+    let mut snapshots = state.nodes.snapshots.subscribe();
+    // One publisher preserves ordering when snapshots share a second-resolution timestamp.
+    let snapshot = snapshots.borrow_and_update().clone();
+    send(socket, &PanelMessage::NodeStates { snapshot }).await?;
+
+    loop {
+        let frame = tokio::select! {
+            changed = snapshots.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let snapshot = snapshots.borrow_and_update().clone();
+                send(socket, &PanelMessage::NodeStates { snapshot }).await?;
+                continue;
+            },
+            frame = socket.recv() => frame,
+        };
+        let bytes = match frame {
+            Some(Ok(Message::Binary(bytes))) => bytes,
+            Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
+            _ => break,
         };
         let message: AgentMessage = match bincode::deserialize(&bytes) {
             Ok(message) => message,
             Err(e) => {
-                warn!(node_id = node.id, error = %e, "undecodable agent message");
+                warn!(node_id, error = %e, "undecodable agent message");
                 continue;
             }
         };
@@ -91,8 +120,8 @@ async fn session(
                 ..
             } => {
                 record_heartbeat(
-                    &state,
-                    node.id,
+                    state,
+                    node_id,
                     Heartbeat {
                         connections_active,
                         bytes_in,
@@ -103,17 +132,44 @@ async fn session(
                 .await?;
             }
             AgentMessage::Traffic { records } => {
-                record_traffic(&state, node.id, &records).await?;
+                record_traffic(state, node_id, &records).await?;
+            }
+            AgentMessage::NodeTraffic { report } => {
+                let sequence =
+                    match node_traffic::record(&state.db, node_id, &report, now_secs()).await {
+                        Ok(sequence) => sequence,
+                        Err(error @ (DashError::BadRequest(_) | DashError::Calendar(_))) => {
+                            send(
+                                socket,
+                                &PanelMessage::Error {
+                                    code: ErrorCode::InvalidTrafficReport,
+                                    message: error.to_string(),
+                                },
+                            )
+                            .await?;
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    };
+                state.nodes.refresh.notify_one();
+                send(
+                    socket,
+                    &PanelMessage::NodeTrafficAck {
+                        stream_id: report.stream_id,
+                        sequence,
+                    },
+                )
+                .await?;
             }
             AgentMessage::ServiceStatus {
                 status,
                 config_version,
                 ..
             } => {
-                debug!(node_id = node.id, ?status, config_version, "service status");
+                debug!(node_id, ?status, config_version, "service status");
             }
             AgentMessage::ConfigAck { version, ok, .. } => {
-                debug!(node_id = node.id, version, ok, "config ack");
+                debug!(node_id, version, ok, "config ack");
             }
             // A second Register on a live socket, or a Pong to a Ping this
             // end never sends: nothing to do either way.
@@ -121,7 +177,6 @@ async fn session(
         }
     }
 
-    info!(node_id = node.id, "agent disconnected");
     Ok(())
 }
 
@@ -206,7 +261,7 @@ async fn register(
         report_interval_secs: REPORT_INTERVAL_SECS,
         config: node.config.clone().into_bytes(),
     };
-    send(socket, &registered).await;
+    send(socket, &registered).await?;
 
     Ok(Some(node))
 }
@@ -240,6 +295,8 @@ async fn record_heartbeat(
     .update(&state.db)
     .await?;
 
+    state.nodes.refresh.notify_one();
+
     Ok(())
 }
 
@@ -264,28 +321,136 @@ async fn record_traffic(
     Ok(())
 }
 
-/// Send a message, logging rather than failing: a socket that cannot be
-/// written to is about to end the session anyway.
-async fn send(socket: &mut WebSocket, message: &PanelMessage) {
-    match bincode::serialize(message) {
-        Ok(bytes) => {
-            if let Err(e) = socket.send(Message::Binary(bytes.into())).await {
-                debug!(error = %e, "failed to send to agent");
-            }
-        }
-        Err(e) => warn!(error = %e, "failed to encode panel message"),
-    }
+/// End the session if the peer cannot receive state or accounting acknowledgments.
+async fn send(socket: &mut WebSocket, message: &PanelMessage) -> Result<(), DashError> {
+    let bytes = bincode::serialize(message).map_err(|e| DashError::Serde(e.to_string()))?;
+    socket
+        .send(Message::Binary(bytes.into()))
+        .await
+        .map_err(|e| DashError::Io(std::io::Error::other(e)))
 }
 
 /// Tell the agent why it is not welcome, then let the session end.
 async fn reject(socket: &mut WebSocket, code: ErrorCode, message: &str) {
     warn!(?code, message, "agent registration refused");
-    send(
+    if let Err(error) = send(
         socket,
         &PanelMessage::Error {
             code,
             message: message.to_owned(),
         },
     )
-    .await;
+    .await
+    {
+        debug!(%error, "could not send registration rejection");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use futures_util::{SinkExt, StreamExt};
+    use sea_orm::ConnectionTrait;
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite};
+    use trojan_protocol::{NodeState, NodeStateSnapshot};
+
+    use super::*;
+    use crate::{DashConfig, cache::Caches, node_states::NodeMonitor};
+
+    async fn receive(socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>) -> PanelMessage {
+        let tungstenite::Message::Binary(bytes) = socket.next().await.unwrap().unwrap() else {
+            panic!("expected a panel binary message");
+        };
+        bincode::deserialize(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn registration_and_updates_use_one_ordered_snapshot_publisher() {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let db = crate::db::connect("sqlite::memory:").await.unwrap();
+            db.execute_unprepared(
+                "INSERT INTO nodes (id, name, token, traffic_limit) VALUES (1, 'entry', 'token', 100)",
+            )
+            .await
+            .unwrap();
+            let nodes = Arc::new(NodeMonitor::new());
+            let now = now_secs();
+            let mut published = NodeStateSnapshot {
+                generated_at: now,
+                valid_until: now + 90,
+                nodes: vec![NodeState {
+                    node_id: "1".into(),
+                    enabled: true,
+                    online: true,
+                    traffic_limit: 100,
+                    used_bytes: 90,
+                    period_start: now - 1,
+                    reset_at: now + 90,
+                }],
+            };
+            // Published state differs from the database so an independent snapshot cannot pass.
+            nodes.snapshots.send_replace(published.clone());
+            let config: DashConfig = toml::from_str("admin_token = 'test'").unwrap();
+            let state = AppState {
+                db,
+                cache: Caches::new(Duration::ZERO, Duration::ZERO),
+                admin_digest: Arc::new(String::new()),
+                cfg: Arc::new(config),
+                nodes: nodes.clone(),
+            };
+            let app = crate::routes::router(state, None);
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .await
+                .unwrap();
+            });
+            let (mut socket, _) =
+                tokio_tungstenite::connect_async(format!("ws://{address}/ws/agent"))
+                    .await
+                    .unwrap();
+            let register = AgentMessage::Register {
+                protocol_version: PROTOCOL_VERSION,
+                token: "token".into(),
+                version: "test".into(),
+                hostname: "test".into(),
+                os: "test".into(),
+                arch: "test".into(),
+            };
+            socket
+                .send(tungstenite::Message::Binary(
+                    bincode::serialize(&register).unwrap().into(),
+                ))
+                .await
+                .unwrap();
+            assert!(matches!(
+                receive(&mut socket).await,
+                PanelMessage::Registered { .. }
+            ));
+            let PanelMessage::NodeStates { snapshot } = receive(&mut socket).await else {
+                panic!("expected initial published state");
+            };
+            assert_eq!(snapshot, published);
+
+            // A later publication in the same second must follow the initial state.
+            published.nodes[0].used_bytes = 100;
+            nodes.snapshots.send_replace(published.clone());
+            let PanelMessage::NodeStates { snapshot } = receive(&mut socket).await else {
+                panic!("expected updated published state");
+            };
+            assert_eq!(snapshot, published);
+            socket.close(None).await.unwrap();
+            server.abort();
+            assert!(server.await.unwrap_err().is_cancelled());
+        })
+        .await
+        .expect("snapshot publication did not reach the agent");
+    }
 }

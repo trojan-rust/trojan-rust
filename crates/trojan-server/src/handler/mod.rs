@@ -505,7 +505,7 @@ where
     let target_label = state
         .per_target_metrics
         .then(|| crate::resolve::target_to_label(&address));
-    // Resolved once here rather than per flush inside the relay loop.
+    // Resolve handles before entering the data path.
     let counters = state.relay_counters(target_label.as_deref());
 
     // Connect via the outbound. Any pre-relay failure (resolve, connect, or
@@ -542,19 +542,15 @@ where
 
     debug!(peer = %peer, target = ?address, "outbound connected");
 
-    let payload_bytes = payload.len() as u64;
     if !payload.is_empty()
-        && let Err(e) = outbound_stream.write_all(payload).await
+        && let Err(e) = crate::relay::write_all_counted(&mut outbound_stream, payload, |bytes| {
+            counters.add_to_target(bytes);
+        })
+        .await
     {
         let _ = stream.shutdown().await;
         return Err(e.into());
     }
-    if !payload.is_empty() {
-        // Client → target, matching how the relay loop attributes the rest
-        // of this stream.
-        counters.add_to_target(payload_bytes);
-    }
-
     let result = crate::relay::relay_with_counters(
         stream,
         outbound_stream,

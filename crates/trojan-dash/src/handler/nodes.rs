@@ -8,8 +8,9 @@ use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait, QueryOrder, Uncha
 use crate::entity::nodes;
 use crate::error::DashError;
 use crate::state::AppState;
-use crate::types::{AddNodeRequest, NodeResponse, UpdateNodeRequest, clamp_i64};
+use crate::types::{AddNodeRequest, NodeResponse, UpdateNodeRequest, clamp_i64, nonneg};
 use crate::util::{gen_password, now_secs};
+use crate::{node_states, node_traffic};
 
 /// Store a config as text, defaulting to an empty object.
 ///
@@ -26,7 +27,11 @@ pub async fn list(State(state): State<AppState>) -> Result<Json<Vec<NodeResponse
         .all(&state.db)
         .await?;
 
-    Ok(Json(rows.iter().map(NodeResponse::from).collect()))
+    let mut result = Vec::with_capacity(rows.len());
+    for row in &rows {
+        result.push(response(&state, row).await?);
+    }
+    Ok(Json(result))
 }
 
 /// `POST /admin/nodes`
@@ -34,6 +39,7 @@ pub async fn add(
     State(state): State<AppState>,
     Json(body): Json<AddNodeRequest>,
 ) -> Result<Json<NodeResponse>, DashError> {
+    node_traffic::validate_policy(body.traffic_limit, body.reset_day, &body.reset_timezone)?;
     let inserted = nodes::ActiveModel {
         name: Set(body.name),
         token: Set(gen_password()),
@@ -49,13 +55,22 @@ pub async fn add(
         bytes_in: Set(0),
         bytes_out: Set(0),
         uptime_secs: Set(0),
+        traffic_limit: Set(body.traffic_limit.cast_signed()),
+        reset_day: Set(body.reset_day),
+        reset_timezone: Set(body.reset_timezone),
+        traffic_total: Set(0),
+        traffic_period_start: Set(0),
+        traffic_period_end: Set(0),
+        traffic_period_bytes_in: Set(0),
+        traffic_period_bytes_out: Set(0),
         ..Default::default()
     }
     .insert(&state.db)
     .await
     .map_err(DashError::from_db)?;
 
-    Ok(Json(NodeResponse::from(&inserted)))
+    state.nodes.refresh.notify_one();
+    Ok(Json(response(&state, &inserted).await?))
 }
 
 /// `GET /admin/nodes/{id}`
@@ -68,7 +83,7 @@ pub async fn get(
         .await?
         .ok_or(DashError::NotFound)?;
 
-    Ok(Json(NodeResponse::from(&row)))
+    Ok(Json(response(&state, &row).await?))
 }
 
 /// `PATCH /admin/nodes/{id}` — absent fields keep their stored value.
@@ -81,6 +96,15 @@ pub async fn update(
         .one(&state.db)
         .await?
         .ok_or(DashError::NotFound)?;
+
+    node_traffic::validate_policy(
+        body.traffic_limit
+            .unwrap_or_else(|| nonneg(existing.traffic_limit)),
+        body.reset_day.unwrap_or(existing.reset_day),
+        body.reset_timezone
+            .as_deref()
+            .unwrap_or(&existing.reset_timezone),
+    )?;
 
     let mut active = nodes::ActiveModel {
         id: Unchanged(existing.id),
@@ -95,6 +119,15 @@ pub async fn update(
     if let Some(node_type) = body.node_type {
         active.node_type = Set(node_type);
     }
+    if let Some(limit) = body.traffic_limit {
+        active.traffic_limit = Set(limit.cast_signed());
+    }
+    if let Some(day) = body.reset_day {
+        active.reset_day = Set(day);
+    }
+    if let Some(timezone) = body.reset_timezone {
+        active.reset_timezone = Set(timezone);
+    }
     if let Some(config) = body.config {
         // The version is how an agent tells one config from another; a changed
         // config that kept its version would be ignored.
@@ -107,7 +140,8 @@ pub async fn update(
 
     let updated = active.update(&state.db).await.map_err(DashError::from_db)?;
 
-    Ok(Json(NodeResponse::from(&updated)))
+    state.nodes.refresh.notify_one();
+    Ok(Json(response(&state, &updated).await?))
 }
 
 /// `DELETE /admin/nodes/{id}`
@@ -116,6 +150,7 @@ pub async fn remove(
     Path(id): Path<i64>,
 ) -> Result<&'static str, DashError> {
     nodes::Entity::delete_by_id(id).exec(&state.db).await?;
+    state.nodes.refresh.notify_one();
     Ok("deleted")
 }
 
@@ -138,5 +173,12 @@ pub async fn rotate(
     .await
     .map_err(DashError::from_db)?;
 
-    Ok(Json(NodeResponse::from(&updated)))
+    Ok(Json(response(&state, &updated).await?))
+}
+
+async fn response(state: &AppState, node: &nodes::Model) -> Result<NodeResponse, DashError> {
+    Ok(NodeResponse::new(
+        node,
+        node_states::status(state, node, now_secs()).await?,
+    ))
 }

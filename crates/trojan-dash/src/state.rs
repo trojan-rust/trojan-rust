@@ -6,6 +6,7 @@ use sea_orm::DatabaseConnection;
 
 use crate::cache::Caches;
 use crate::config::DashConfig;
+use crate::node_states::NodeMonitor;
 
 /// Handles and settings the handlers need. Cheap to clone — the connection
 /// and the caches are reference-counted internally.
@@ -21,4 +22,6 @@ pub struct AppState {
     pub admin_digest: Arc<String>,
     /// Settings the handlers consult.
     pub cfg: Arc<DashConfig>,
+    /// Node accounting changes and connected agent sessions.
+    pub(crate) nodes: Arc<NodeMonitor>,
 }

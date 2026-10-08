@@ -30,6 +30,19 @@ pub struct Model {
     pub bytes_in: i64,
     pub bytes_out: i64,
     pub uptime_secs: i64,
+    /// Total transferred bytes allowed per billing period. Zero is unlimited.
+    pub traffic_limit: i64,
+    /// Calendar day of the monthly reset, clamped to each month's last day.
+    pub reset_day: i64,
+    /// IANA timezone that defines the reset's local midnight.
+    pub reset_timezone: String,
+    /// Lifetime accounting bound; prevents SQLite integer overflow across reports.
+    pub traffic_total: i64,
+    /// Cached calendar window, rebuilt from history when its boundaries change.
+    pub traffic_period_start: i64,
+    pub traffic_period_end: i64,
+    pub traffic_period_bytes_in: i64,
+    pub traffic_period_bytes_out: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

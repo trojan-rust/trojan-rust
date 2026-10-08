@@ -14,10 +14,14 @@ categories = ["network-programming"]
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+trojan-protocol.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+criterion.workspace = true
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "selection"
+harness = false

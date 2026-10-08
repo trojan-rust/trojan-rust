@@ -19,7 +19,8 @@ use tokio::time::Instant as TokioInstant;
 
 /// Trait for recording relay metrics.
 ///
-/// Implementors can record bytes transferred in each direction.
+/// The relay records bytes when a writer accepts them, before flush completes.
+/// Cancellation and later I/O errors retain the accepted byte count.
 /// The server implementation typically records to Prometheus,
 /// while clients may use a no-op or custom implementation.
 pub trait RelayMetrics {
@@ -50,14 +51,14 @@ impl RelayMetrics for NoOpMetrics {
 enum CopyState {
     Reading(usize),               // accumulated bytes since last flush
     Writing(usize, usize, usize), // (pos, len, accumulated)
-    Flushing(usize, bool),        // (total bytes to report, is_eof)
+    Flushing(usize, bool),        // (bytes awaiting flush, is_eof)
     ShuttingDown,
     Done,
 }
 
 /// Result of polling one copy direction.
 enum CopyPoll {
-    /// Data was flushed — contains byte count for metrics.
+    /// Data was flushed — contains the batch size for activity tracking.
     Flushed(usize),
     /// Direction finished (EOF + shutdown).
     Finished,
@@ -75,6 +76,7 @@ fn poll_copy_direction<R, W>(
     writer: &mut W,
     buf: &mut [u8],
     state: &mut CopyState,
+    mut record_write: impl FnMut(usize),
 ) -> Poll<io::Result<CopyPoll>>
 where
     R: AsyncRead + Unpin + ?Sized,
@@ -118,6 +120,7 @@ where
                         return Poll::Ready(Err(io::ErrorKind::WriteZero.into()));
                     }
                     Poll::Ready(Ok(n)) => {
+                        record_write(n);
                         *pos += n;
                         if *pos >= *len {
                             let total = *acc + *len;
@@ -230,13 +233,20 @@ where
             let mut error: Option<io::Error> = None;
 
             if !a_done {
-                match poll_copy_direction(cx, &mut inbound, &mut outbound, &mut buf_a, &mut state_a)
-                {
-                    Poll::Ready(Ok(CopyPoll::Flushed(n))) => {
-                        let bytes = n as u64;
-                        metrics.record_inbound(bytes);
-                        total_inbound += bytes;
+                match poll_copy_direction(
+                    cx,
+                    &mut inbound,
+                    &mut outbound,
+                    &mut buf_a,
+                    &mut state_a,
+                    |n| {
+                        metrics.record_inbound(n as u64);
+                        total_inbound += n as u64;
                         activity = true;
+                    },
+                ) {
+                    Poll::Ready(Ok(CopyPoll::Flushed(n))) => {
+                        activity |= n > 0;
                         any_ready = true;
                     }
                     Poll::Ready(Ok(CopyPoll::Finished)) => {
@@ -252,13 +262,20 @@ where
             }
 
             if !b_done {
-                match poll_copy_direction(cx, &mut outbound, &mut inbound, &mut buf_b, &mut state_b)
-                {
-                    Poll::Ready(Ok(CopyPoll::Flushed(n))) => {
-                        let bytes = n as u64;
-                        metrics.record_outbound(bytes);
-                        total_outbound += bytes;
+                match poll_copy_direction(
+                    cx,
+                    &mut outbound,
+                    &mut inbound,
+                    &mut buf_b,
+                    &mut state_b,
+                    |n| {
+                        metrics.record_outbound(n as u64);
+                        total_outbound += n as u64;
                         activity = true;
+                    },
+                ) {
+                    Poll::Ready(Ok(CopyPoll::Flushed(n))) => {
+                        activity |= n > 0;
                         any_ready = true;
                     }
                     Poll::Ready(Ok(CopyPoll::Finished)) => {
@@ -277,7 +294,7 @@ where
                 return Poll::Ready(Err(e));
             }
 
-            if any_ready {
+            if any_ready || activity {
                 Poll::Ready(Ok(activity))
             } else {
                 Poll::Pending
@@ -321,6 +338,7 @@ where
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+    use std::future::Future;
     use std::sync::atomic::{AtomicU64, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
@@ -448,6 +466,80 @@ mod tests {
         assert_eq!(metrics.outbound.load(Ordering::Relaxed), stats.outbound);
     }
 
+    #[tokio::test]
+    async fn partial_write_is_counted_before_cancellation() {
+        let (mut client, inbound) = duplex(8);
+        let (outbound, mut target) = duplex(1);
+        client.write_all(b"ab").await.unwrap();
+        let metrics = TestMetrics::new();
+        let mut relay = Box::pin(relay_bidirectional(
+            inbound,
+            outbound,
+            Duration::from_secs(60),
+            8,
+            &metrics,
+        ));
+
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        assert!(relay.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(metrics.inbound.load(Ordering::Relaxed), 1);
+        drop(relay);
+
+        let mut received = Vec::new();
+        target.read_to_end(&mut received).await.unwrap();
+        assert_eq!(received, b"a");
+        assert_eq!(metrics.inbound.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn partial_write_remains_counted_after_write_error() {
+        let (mut client, inbound) = duplex(8);
+        let (outbound, target) = duplex(1);
+        client.write_all(b"ab").await.unwrap();
+        let metrics = TestMetrics::new();
+        let mut relay = Box::pin(relay_bidirectional(
+            inbound,
+            outbound,
+            Duration::from_secs(60),
+            8,
+            &metrics,
+        ));
+
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        assert!(relay.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(metrics.inbound.load(Ordering::Relaxed), 1);
+        drop(target);
+
+        assert_eq!(relay.await.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(metrics.inbound.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn accepted_bytes_are_counted_while_flush_is_pending() {
+        let (mut client, inbound) = duplex(8);
+        let (outbound, mut target) = duplex(1);
+        let outbound = tokio::io::BufWriter::with_capacity(8, outbound);
+        client.write_all(b"ab").await.unwrap();
+        let metrics = TestMetrics::new();
+        let mut relay = Box::pin(relay_bidirectional(
+            inbound,
+            outbound,
+            Duration::from_secs(60),
+            8,
+            &metrics,
+        ));
+
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        assert!(relay.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(metrics.inbound.load(Ordering::Relaxed), 2);
+        drop(relay);
+
+        let mut received = Vec::new();
+        target.read_to_end(&mut received).await.unwrap();
+        assert_eq!(received, b"a");
+        assert_eq!(metrics.inbound.load(Ordering::Relaxed), 2);
+    }
+
     #[test]
     fn zero_byte_write_returns_write_zero_without_spinning() {
         struct ZeroWriter(bool);
@@ -477,7 +569,14 @@ mod tests {
         let mut buffer = [0; 32];
         let mut state = CopyState::Reading(0);
         let mut cx = Context::from_waker(std::task::Waker::noop());
-        match poll_copy_direction(&mut cx, &mut reader, &mut writer, &mut buffer, &mut state) {
+        match poll_copy_direction(
+            &mut cx,
+            &mut reader,
+            &mut writer,
+            &mut buffer,
+            &mut state,
+            |_| {},
+        ) {
             Poll::Ready(Err(error)) => assert_eq!(error.kind(), io::ErrorKind::WriteZero),
             _ => panic!("a zero-byte write must return WriteZero"),
         }
@@ -585,7 +684,7 @@ mod tests {
         let mut total_bytes = 0;
         loop {
             let result = std::future::poll_fn(|cx| {
-                poll_copy_direction(cx, &mut reader, &mut writer, &mut buf, &mut state)
+                poll_copy_direction(cx, &mut reader, &mut writer, &mut buf, &mut state, |_| {})
             })
             .await
             .unwrap();
@@ -630,7 +729,7 @@ mod tests {
         let mut total_bytes = 0;
         loop {
             let result = std::future::poll_fn(|cx| {
-                poll_copy_direction(cx, &mut reader, &mut writer, &mut buf, &mut state)
+                poll_copy_direction(cx, &mut reader, &mut writer, &mut buf, &mut state, |_| {})
             })
             .await
             .unwrap();
@@ -665,7 +764,7 @@ mod tests {
         let mut total_bytes = 0;
         loop {
             let result = std::future::poll_fn(|cx| {
-                poll_copy_direction(cx, &mut reader, &mut writer, &mut buf, &mut state)
+                poll_copy_direction(cx, &mut reader, &mut writer, &mut buf, &mut state, |_| {})
             })
             .await
             .unwrap();

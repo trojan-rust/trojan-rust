@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Protocol version — incremented on breaking changes.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Agent -> Panel messages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +42,10 @@ pub enum AgentMessage {
         config_version: u32,
     },
     Pong,
+    /// An immutable delta. The first sequence in each stream is one.
+    NodeTraffic {
+        report: NodeTrafficReport,
+    },
 }
 
 /// Panel -> Agent messages.
@@ -67,6 +71,49 @@ pub enum PanelMessage {
         code: ErrorCode,
         message: String,
     },
+    /// Every sequence through this value has been committed for the stream.
+    NodeTrafficAck {
+        stream_id: String,
+        sequence: u64,
+    },
+    /// Scheduling state changes independently of the running service config.
+    NodeStates {
+        snapshot: NodeStateSnapshot,
+    },
+}
+
+/// Persisted node traffic delta, independent of per-user accounting.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeTrafficReport {
+    /// Unique identity of an agent's durable reporting stream.
+    pub stream_id: String,
+    /// Monotonically increasing sequence, starting at one.
+    pub sequence: u64,
+    /// Unix seconds when the delta was sampled, including during disconnection.
+    pub observed_at: u64,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+}
+
+/// Complete node scheduling state. Consumers must reject expired snapshots.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeStateSnapshot {
+    pub generated_at: u64,
+    pub valid_until: u64,
+    pub nodes: Vec<NodeState>,
+}
+
+/// One managed node's availability and current billing period.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeState {
+    pub node_id: String,
+    pub enabled: bool,
+    pub online: bool,
+    /// Zero means unlimited.
+    pub traffic_limit: u64,
+    pub used_bytes: u64,
+    pub period_start: u64,
+    pub reset_at: u64,
 }
 
 /// Per-user traffic delta record.
@@ -117,6 +164,7 @@ pub enum ErrorCode {
     ProtocolMismatch,
     RateLimited,
     InternalError,
+    InvalidTrafficReport,
 }
 
 #[cfg(test)]

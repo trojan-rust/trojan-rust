@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
@@ -29,7 +30,7 @@ use crate::error::ServerError;
 use crate::handler::{Connection, handle_conn};
 use crate::rate_limit::RateLimiter;
 use crate::state::ServerState;
-use crate::util::{ConnectionTracker, apply_tcp_options};
+use crate::util::apply_tcp_options;
 
 /// Global connection ID counter.
 static CONN_ID: AtomicU64 = AtomicU64::new(1);
@@ -61,8 +62,6 @@ pub(crate) struct ListenerContext<A: ?Sized> {
     pub tls: TlsAcceptor,
     pub state: Arc<ServerState>,
     pub auth: Arc<A>,
-    /// Active-connection count the graceful drain waits on.
-    pub tracker: ConnectionTracker,
     /// Caps connections across all listeners at once; `None` is unlimited.
     pub conn_limit: Option<Arc<Semaphore>>,
     /// Per-IP connection rate limit; `None` is disabled.
@@ -77,7 +76,6 @@ impl<A: ?Sized> Clone for ListenerContext<A> {
             tls: self.tls.clone(),
             state: self.state.clone(),
             auth: self.auth.clone(),
-            tracker: self.tracker.clone(),
             conn_limit: self.conn_limit.clone(),
             rate_limiter: self.rate_limiter.clone(),
         }
@@ -112,27 +110,70 @@ where
     /// listener sees are exhausted file descriptors and the like, where
     /// spinning on `accept` would only burn a core.
     pub async fn serve(self, shutdown: CancellationToken) -> Result<(), ServerError> {
-        loop {
+        let mut sessions = JoinSet::new();
+        let kind = self.kind;
+        let result = loop {
             tokio::select! {
                 biased;
 
                 _ = shutdown.cancelled() => {
                     info!(kind = ?self.kind, "shutdown signal received, stopping accept loop");
-                    return Ok(());
+                    break Ok(());
+                }
+
+                Some(result) = sessions.join_next(), if !sessions.is_empty() => {
+                    if let Err(error) = result {
+                        warn!(%error, "connection task failed");
+                    }
                 }
 
                 result = self.tcp.accept() => {
-                    let (tcp, peer) = result?;
-                    self.admit(tcp, peer);
+                    match result {
+                        Ok((tcp, peer)) => self.admit(tcp, peer, &mut sessions, shutdown.clone()),
+                        Err(error) => break Err(error.into()),
+                    }
                 }
             }
+        };
+        // Close the listening socket before draining established connections.
+        drop(self);
+        if result.is_ok() && !sessions.is_empty() {
+            info!(
+                ?kind,
+                active = sessions.len(),
+                "waiting for connections to drain"
+            );
+            if tokio::time::timeout(crate::server::DEFAULT_SHUTDOWN_TIMEOUT, async {
+                while let Some(result) = sessions.join_next().await {
+                    if let Err(error) = result {
+                        warn!(%error, "connection task failed during drain");
+                    }
+                }
+            })
+            .await
+            .is_err()
+            {
+                warn!(
+                    ?kind,
+                    active = sessions.len(),
+                    "shutdown timeout, closing remaining connections"
+                );
+            }
         }
+        sessions.shutdown().await;
+        result
     }
 
     /// Take one connection through admission, then hand it to its own task.
     ///
     /// A connection refused here is dropped where it stands, which closes it.
-    fn admit(&self, tcp: TcpStream, peer: SocketAddr) {
+    fn admit(
+        &self,
+        tcp: TcpStream,
+        peer: SocketAddr,
+        sessions: &mut JoinSet<()>,
+        shutdown: CancellationToken,
+    ) {
         if let Err(e) = apply_tcp_options(&tcp, &self.ctx.state.tcp_config) {
             debug!(error = %e, "failed to apply TCP options");
         }
@@ -185,15 +226,18 @@ where
             kind: self.kind,
             ctx: self.ctx.clone(),
         };
-        let active = self.ctx.tracker.connection_started();
+        let active = self.ctx.state.node_stats.connection_started();
 
-        tokio::spawn(
+        sessions.spawn(
             async move {
                 // Both outlive the connection: the permit holds its slot in
                 // the global cap, the guard its place in the drain count.
                 let _permit = permit;
                 let _active = active;
-                session.run().await;
+                // A cancelled listener can still finish an in-progress admission.
+                if !shutdown.is_cancelled() {
+                    session.run().await;
+                }
             }
             .instrument(span),
         );

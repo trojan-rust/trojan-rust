@@ -17,8 +17,8 @@ use crate::protocol::AgentMessage;
 
 /// Run the background reporter loop.
 ///
-/// Sends heartbeat and traffic messages at the configured interval
-/// until the shutdown token is cancelled.
+/// Sends heartbeat and user traffic messages until the shutdown token is cancelled.
+/// Caps the heartbeat interval at 30 seconds for the panel's 90-second liveness window.
 /// Keep `start` unchanged across panel sessions to preserve uptime.
 pub async fn run_reporter(
     tx: mpsc::Sender<AgentMessage>,
@@ -28,8 +28,10 @@ pub async fn run_reporter(
     shutdown: CancellationToken,
     start: Instant,
 ) {
-    let mut ticker = tokio::time::interval(interval);
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut heartbeat_tick = tokio::time::interval(interval.min(Duration::from_secs(30)));
+    heartbeat_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut traffic_tick = tokio::time::interval(interval);
+    traffic_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let mut sys = System::new();
 
@@ -42,7 +44,7 @@ pub async fn run_reporter(
                 return;
             }
 
-            _ = ticker.tick() => {
+            _ = heartbeat_tick.tick() => {
                 let uptime_secs = start.elapsed().as_secs();
 
                 // Refresh system info for memory/cpu
@@ -61,9 +63,7 @@ pub async fn run_reporter(
                     }
                 };
 
-                // Totals since the service started, not a delta: the panel
-                // diffs them, and a heartbeat lost in a reconnect then costs
-                // nothing.
+                // Heartbeats expose live counters; durable node reports own quota accounting.
                 let snapshot = stats.snapshot();
                 let heartbeat = AgentMessage::Heartbeat {
                     connections_active: u32::try_from(snapshot.connections_active)
@@ -79,7 +79,9 @@ pub async fn run_reporter(
                     warn!(error = %e, "failed to send heartbeat, channel closed");
                     return;
                 }
+            }
 
+            _ = traffic_tick.tick() => {
                 // Drain and send traffic records
                 let permit = match tx.reserve().await {
                     Ok(permit) => permit,
@@ -102,6 +104,55 @@ pub async fn run_reporter(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn long_report_interval_keeps_heartbeats_inside_the_liveness_window() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let collector = TrafficCollector::new();
+        collector.record("alice", 7);
+        let shutdown = CancellationToken::new();
+        let task = tokio::spawn(run_reporter(
+            tx,
+            collector.clone(),
+            NodeStats::new(),
+            Duration::from_secs(120),
+            shutdown.clone(),
+            Instant::now(),
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(AgentMessage::Heartbeat { .. })
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(AgentMessage::Traffic { .. })
+        ));
+        collector.record("alice", 13);
+
+        for _ in 0..3 {
+            tokio::time::advance(Duration::from_secs(30)).await;
+            assert!(matches!(
+                rx.recv().await,
+                Some(AgentMessage::Heartbeat { .. })
+            ));
+            assert!(
+                rx.try_recv().is_err(),
+                "user traffic must retain its 120-second interval"
+            );
+        }
+        tokio::time::advance(Duration::from_secs(30)).await;
+        assert!(matches!(
+            rx.recv().await,
+            Some(AgentMessage::Heartbeat { .. })
+        ));
+        let Some(AgentMessage::Traffic { records }) = rx.recv().await else {
+            panic!("expected user traffic at the configured interval")
+        };
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].bytes, 13);
+        shutdown.cancel();
+        task.await.unwrap();
+    }
 
     #[tokio::test]
     async fn cancelling_a_blocked_reporter_preserves_unsent_traffic() {

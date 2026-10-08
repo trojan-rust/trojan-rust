@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use trojan_auth::protocol::{self, AuthError, AuthMetadata, AuthResult};
 
 use crate::entity::{nodes, sub_templates, traffic_logs, users};
+use crate::node_states::NodeTrafficStatus;
 
 /// Clamp a column to the unsigned range. Negative values are not reachable
 /// through the API; a hand-edited database is not worth a panic.
@@ -195,10 +196,12 @@ pub struct NodeResponse {
     pub bytes_in: u64,
     pub bytes_out: u64,
     pub uptime_secs: u64,
+    #[serde(flatten)]
+    pub(crate) traffic: NodeTrafficStatus,
 }
 
-impl From<&nodes::Model> for NodeResponse {
-    fn from(m: &nodes::Model) -> Self {
+impl NodeResponse {
+    pub(crate) fn new(m: &nodes::Model, traffic: NodeTrafficStatus) -> Self {
         Self {
             id: nonneg(m.id),
             name: m.name.clone(),
@@ -217,6 +220,7 @@ impl From<&nodes::Model> for NodeResponse {
             bytes_in: nonneg(m.bytes_in),
             bytes_out: nonneg(m.bytes_out),
             uptime_secs: nonneg(m.uptime_secs),
+            traffic,
         }
     }
 }
@@ -231,6 +235,21 @@ pub struct AddNodeRequest {
     /// Service config for the agent, passed through untouched.
     #[serde(default)]
     pub config: Option<serde_json::Value>,
+    /// Total transferred bytes per month; zero means unlimited.
+    #[serde(default)]
+    pub traffic_limit: u64,
+    #[serde(default = "default_reset_day")]
+    pub reset_day: i64,
+    #[serde(default = "default_reset_timezone")]
+    pub reset_timezone: String,
+}
+
+fn default_reset_day() -> i64 {
+    1
+}
+
+fn default_reset_timezone() -> String {
+    "UTC".into()
 }
 
 fn default_node_type() -> String {
@@ -245,6 +264,9 @@ pub struct UpdateNodeRequest {
     pub node_type: Option<String>,
     /// Replaces the stored config and bumps `config_version`.
     pub config: Option<serde_json::Value>,
+    pub traffic_limit: Option<u64>,
+    pub reset_day: Option<i64>,
+    pub reset_timezone: Option<String>,
 }
 
 // ── traffic_logs ──────────────────────────────────────────────────

@@ -17,11 +17,12 @@ pub struct AgentConfig {
     pub token: String,
 
     /// Local cache directory for panel-down resilience.
-    /// Stores last-received config so the agent can boot without the panel.
+    /// Stores configuration and the durable node traffic journal.
     #[serde(default)]
     pub cache_dir: Option<PathBuf>,
 
-    /// Override report interval in seconds (default from panel or 30s).
+    /// Override the node traffic sample interval in seconds (default from panel or 30s).
+    /// Heartbeats run at least every 30 seconds regardless of this value.
     #[serde(default)]
     pub report_interval_secs: Option<u64>,
 

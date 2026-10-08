@@ -93,7 +93,7 @@ impl ServerState {
 
     /// Record a target connection and resolve the session's counter handles.
     ///
-    /// Done once per connection rather than per flush; see [`RelayCounters`].
+    /// Done once per connection rather than per write; see [`RelayCounters`].
     /// `target` is the destination to break the bytes down by, and `None` for a
     /// session that has no single one — a UDP association reaches a different
     /// target per packet. A breakdown is only ever added when

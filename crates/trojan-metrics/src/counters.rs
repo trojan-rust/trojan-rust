@@ -64,7 +64,7 @@ impl NodeStats {
             bytes_in: self.bytes_in.load(Ordering::Relaxed),
             bytes_out: self.bytes_out.load(Ordering::Relaxed),
             connections_total: self.connections_total.load(Ordering::Relaxed),
-            connections_active: self.connections_active.load(Ordering::Relaxed),
+            connections_active: self.connections_active.load(Ordering::Acquire),
         }
     }
 
@@ -100,9 +100,7 @@ pub struct ActiveConnection {
 
 impl Drop for ActiveConnection {
     fn drop(&mut self) {
-        self.stats
-            .connections_active
-            .fetch_sub(1, Ordering::Relaxed);
+        self.stats.connections_active.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -134,7 +132,7 @@ impl LabelledCounters {
 ///
 /// Resolving a metric through `counter!` builds its key — which allocates a
 /// `Vec` and a `String` when a label value is dynamic — and hashes that key
-/// against the recorder registry. The relay reports bytes once per *flush*
+/// against the recorder registry. The relay reports bytes once per *write*
 /// rather than once per connection (see `trojan_core::io::relay`), so doing
 /// that work per report puts an allocation and a registry lookup directly in
 /// the data path. Resolving the handles at session start reduces each report

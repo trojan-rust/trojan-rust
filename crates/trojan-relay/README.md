@@ -89,9 +89,44 @@ strategy = "failover"
 failover_cooldown_secs = 30
 ```
 
-The entry retries a failed destination connection within the same client connection. Each destination address is attempted at most once per client connection, including when the cooldown is zero. Only a failed direct dial or an explicit failure from the final relay marks a destination unhealthy. Intermediate relay failures, authentication failures, and missing responses terminate the connection without marking a destination unhealthy. The other load-balancing strategies keep their existing selection behavior.
+With legacy `chain`/`dest` rules, the failover strategy retries confirmed destination failures within the same client connection. Each destination address is attempted at most once per client connection, including when the cooldown is zero. Only a failed direct dial or an explicit failure from the final relay marks a destination unhealthy. Intermediate relay failures, authentication failures, and missing responses terminate the connection without marking a destination unhealthy.
 
-After payload forwarding starts, the entry must not retry: replaying client data could duplicate an operation. Cooldown recovery remains passive; a later selection retries the destination after the cooldown. If every destination is unhealthy, failover still attempts the configured destinations, with the same per-connection attempt limit.
+After payload forwarding starts, the entry must not retry: replaying client data could duplicate an operation. Every strategy excludes unhealthy destinations until the cooldown expires. If every candidate is unavailable, selection fails.
+
+### Managed candidate routes
+
+Use `routes` instead of `chain`/`dest` to select and fail over complete relay paths. A candidate identifies its final exit separately from the relay identifiers in the named chain:
+
+```toml
+[[rules]]
+name = "managed"
+listen = "127.0.0.1:1080"
+strategy = "traffic_aware"
+routes = [
+  { chain = "jp", dest = "trojan-jp:443", node_id = "3" },
+  { chain = "sg", dest = "trojan-sg:443", node_id = "4" },
+]
+```
+
+Define both named chains in `chains`. Use actual panel node identifiers from `/admin/nodes`, converted to strings, for each relay and exit; node names such as `relay-hk` do not resolve to panel identifiers. The agent sets the entry's identifier from its authenticated registration and supplies live panel state through `entry::run_with_node_states`. A managed route requires fresh, enabled, online, non-depleted state for the entry and every identified relay and exit. Missing identifiers on remote hops retain static availability. Standalone `run` and `run_with_stats` use static availability; their identifiers only attribute user traffic.
+
+The `traffic_aware` strategy scores each route by its lowest remaining quota fraction divided by active connections plus one. Unlimited nodes contribute a fraction of `1`. Equal scores prefer configuration order. All strategies exclude unavailable candidates before selection; a new panel snapshot restores a reset quota without restarting listeners. Stale state and an elapsed billing period fail closed until the panel publishes fresh state. Existing transfers continue.
+
+Complete routes retry tunnel setup failures before reading client payload. A relay failure excludes that chain without blaming its exit. A confirmed exit failure excludes that exit across all candidate chains. Each failed candidate is attempted at most once per client connection, even with zero cooldown. The PROXY header describes the route that connected successfully.
+
+Library callers receive a candidate pool from `Router::resolve`. Select a candidate and retain its guard while the connection remains active:
+
+```rust
+let resolved = router.resolve(&listen_addr).ok_or("no matching rule")?;
+let selected = resolved.pool.select(peer_ip, &[])?;
+let attempted = vec![selected.candidate.key().to_owned()];
+let chain = &selected.candidate.chain;
+let destination = &selected.candidate.dest;
+// Retain this guard until forwarding ends.
+let _guard = selected.guard;
+```
+
+Pass `attempted` to the next selection only when retrying before client payload forwarding starts. Candidate identifiers belong to one pool and must not be reused after rebuilding the router.
 
 Each transport connection uses `connect_timeout_secs`. Each relay response has a timeout of `connect_timeout_secs + handshake_timeout_secs` on the entry. Set relay connect timeouts no higher than the entry's connect timeout so relays can report dial timeouts before the entry stops waiting. Confirmations add one round trip per relay during tunnel setup.
 
@@ -119,8 +154,9 @@ Prometheus exporter above (`trojan_bytes_received_total`,
 `trojan_bytes_sent_total`, `trojan_connections_active`, plus
 `trojan_entry_rule_bytes_total{rule,direction}` on entry nodes), and an
 in-process `NodeStats` handle that `entry::run_with_stats` /
-`relay::run_with_stats` accumulate into, which the panel agent drains for its
-heartbeats.
+`relay::run_with_stats` accumulate into. The [panel agent](../trojan-agent/README.md) stores node traffic reports durably and retries reports until the panel acknowledges them. Heartbeat snapshots only show live health and counters.
+
+Service shutdown stops listeners, closes existing tunnels, and waits for connection cleanup before returning. The agent checkpoints final traffic after that cleanup. Panel state updates and panel reconnections keep existing tunnels open.
 
 This is node-level only. Entry and relay nodes never see who the traffic
 belongs to — the client's trojan handshake is inside end-to-end TLS that only
@@ -132,7 +168,7 @@ That header is what `proxy_protocol = true` on a rule turns on. The entry
 prefixes the tunnel with a PROXY v2 header naming the real client and listing
 `node_id` for itself and every hop in the chain; relays forward it as ordinary
 payload, and the exit reads it before the TLS handshake it precedes. Hops with
-no `node_id` are left out of the list and go uncredited.
+no `node_id` are left out of per-user chain attribution. Each hop's agent still records its own node traffic independently.
 
 ## License
 

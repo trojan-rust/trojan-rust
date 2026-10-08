@@ -44,6 +44,9 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json"] }
 trojan-metrics.workspace = true
 async-trait.workspace = true
+getrandom = "0.4.3"
+trojan-lb.workspace = true
+atomicwrites = "0.4.4"
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -57,6 +60,9 @@ rcgen.workspace = true
 tokio-rustls.workspace = true
 trojan-proto.workspace = true
 bytes.workspace = true
+trojan-dash.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

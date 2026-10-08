@@ -4,6 +4,10 @@ Target connections alternate resolved IPv4 and IPv6 addresses, starting another 
 
 Destination metric labels are disabled by default. Set `metrics.per_target = true` only for a bounded destination set; global counters remain available with the option off.
 
+Shutdown closes every listener and allows established connections to drain for up to 30 seconds. After the deadline, the server closes and joins remaining connection tasks before returning.
+
+TCP payloads and UDP responses count each successful stream write before flush. A cancelled or failed connection retains bytes accepted by the writer, including partial initial payloads and partial UDP frames.
+
 UDP associations process up to 16 datagrams concurrently. DNS work and response backpressure do not block the opposite direction or idle expiry. Datagram completion order may differ from arrival order. The pending datagrams use at most 16 payload buffers in addition to `max_udp_buffer_bytes` and the response buffers.
 
 High-performance Trojan protocol server implementation.

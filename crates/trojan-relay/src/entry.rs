@@ -19,9 +19,10 @@ use std::time::{Duration, Instant};
 
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::task::JoinSet;
 use tracing::{Instrument, debug, error, info, info_span};
 
-use trojan_lb::{ConnectionGuard, LoadBalancer};
+use trojan_lb::NodeStateStore;
 use trojan_metrics::{
     NodeStats, RelayCounters, record_connection_accepted, record_connection_closed,
 };
@@ -29,7 +30,7 @@ use trojan_metrics::{
 use crate::config::{ChainConfig, EntryConfig, TimeoutConfig, TransportType};
 use crate::error::RelayError;
 use crate::handshake::{self, ConnectResponse, HandshakeMetadata};
-use crate::router::{CompiledChain, Router};
+use crate::router::{CompiledChain, RoutePool, RouteSelection, Router};
 use trojan_transport::plain::PlainTransportConnector;
 use trojan_transport::tls::TlsTransportConnector;
 use trojan_transport::ws::WsTransportConnector;
@@ -58,9 +59,34 @@ pub async fn run_with_stats(
     stats: Arc<NodeStats>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<(), RelayError> {
+    let router = Router::new(&config)?;
+    run_with_router(config, stats, router, shutdown).await
+}
+
+/// Run an entry with live node availability and quota updates.
+///
+/// Set `config.node_id` to the authenticated panel identifier to enforce this entry's quota.
+/// Set remote hop identifiers to their panel identifiers to enforce remote quotas.
+/// Remote hops without identifiers retain static availability.
+pub async fn run_with_node_states(
+    config: EntryConfig,
+    stats: Arc<NodeStats>,
+    node_states: Arc<NodeStateStore>,
+    shutdown: tokio_util::sync::CancellationToken,
+) -> Result<(), RelayError> {
+    let router = Router::with_node_states(&config, node_states)?;
+    run_with_router(config, stats, router, shutdown).await
+}
+
+async fn run_with_router(
+    config: EntryConfig,
+    stats: Arc<NodeStats>,
+    router: Router,
+    shutdown: tokio_util::sync::CancellationToken,
+) -> Result<(), RelayError> {
     crate::metrics::start_exporter(&config.metrics);
 
-    let router = Arc::new(Router::new(&config)?);
+    let router = Arc::new(router);
 
     // Build DNS resolver from config
     let resolver = trojan_dns::DnsResolver::new(&config.dns)
@@ -81,8 +107,8 @@ pub async fn run_with_stats(
         stats,
     };
 
-    // Spawn a listener task for each rule
-    let mut handles = Vec::new();
+    // Bind every socket before starting tasks so startup failure cannot leave a listener running.
+    let mut listeners = Vec::new();
 
     for rule in router.rules() {
         let listener = TcpListener::bind(rule.listen).await?;
@@ -95,25 +121,33 @@ pub async fn run_with_stats(
             "entry rule started"
         );
 
-        let rule_listener = RuleListener {
+        listeners.push(RuleListener {
             listener,
             addr: rule.listen,
             rule: rule.name.clone(),
             shared: shared.clone(),
-        };
-        let shutdown = shutdown.clone();
-
-        handles.push(tokio::spawn(rule_listener.serve(shutdown)));
+        });
     }
 
-    // Wait for all listener tasks
-    for handle in handles {
-        if let Err(e) = handle.await {
-            error!(error = %e, "listener task panicked");
+    let mut handles = JoinSet::new();
+    let shutdown = shutdown.child_token();
+    let _cancel = shutdown.clone().drop_guard();
+    for listener in listeners {
+        handles.spawn(listener.serve(shutdown.clone()));
+    }
+    let mut result = Ok(());
+    while let Some(completed) = handles.join_next().await {
+        let completed = completed
+            .map_err(RelayError::from)
+            .and_then(|result| result);
+        if let Err(error) = completed {
+            shutdown.cancel();
+            if result.is_ok() {
+                result = Err(error);
+            }
         }
     }
-
-    Ok(())
+    result
 }
 
 /// State every listener on this node shares.
@@ -138,15 +172,26 @@ struct RuleListener {
 impl RuleListener {
     /// Accept until the shutdown token fires.
     async fn serve(self, shutdown: tokio_util::sync::CancellationToken) -> Result<(), RelayError> {
-        loop {
+        let mut sessions = JoinSet::new();
+        let shutdown = shutdown.child_token();
+        let _cancel = shutdown.clone().drop_guard();
+        let mut result = loop {
             tokio::select! {
                 biased;
                 _ = shutdown.cancelled() => {
                     info!(rule = %self.rule, "entry listener shutting down");
-                    return Ok(());
+                    break Ok(());
+                }
+                Some(completed) = sessions.join_next() => {
+                    if let Err(error) = completed {
+                        break Err(error.into());
+                    }
                 }
                 accept_result = self.listener.accept() => {
-                    let (tcp_stream, peer_addr) = accept_result?;
+                    let (tcp_stream, peer_addr) = match accept_result {
+                        Ok(accepted) => accepted,
+                        Err(error) => break Err(error.into()),
+                    };
                     let _ = tcp_stream.set_nodelay(true);
 
                     let route = match self.shared.router.resolve(&self.addr) {
@@ -158,8 +203,7 @@ impl RuleListener {
                     };
 
                     let session = EntrySession {
-                        chain: route.chain.clone(),
-                        lb: route.lb.clone(),
+                        routes: route.pool.clone(),
                         peer: peer_addr,
                         announce_client: route.rule.proxy_protocol,
                         connectors: self.shared.connectors.clone(),
@@ -172,14 +216,21 @@ impl RuleListener {
                     // active count follows the accept, not the scheduler.
                     let active = self.shared.stats.connection_started();
 
-                    tokio::spawn(
+                    let shutdown = shutdown.clone();
+                    sessions.spawn(
                         async move {
                             let _active = active;
                             record_connection_accepted();
                             let started = Instant::now();
 
-                            if let Err(e) = session.handle(tcp_stream).await {
-                                debug!(error = %e, "entry connection error");
+                            tokio::select! {
+                                biased;
+                                _ = shutdown.cancelled() => {},
+                                result = session.handle(tcp_stream) => {
+                                    if let Err(e) = result {
+                                        debug!(error = %e, "entry connection error");
+                                    }
+                                }
                             }
 
                             record_connection_closed(started.elapsed().as_secs_f64());
@@ -188,14 +239,24 @@ impl RuleListener {
                     );
                 }
             }
+        };
+        shutdown.cancel();
+        sessions.abort_all();
+        while let Some(completed) = sessions.join_next().await {
+            if let Err(error) = completed
+                && !error.is_cancelled()
+                && result.is_ok()
+            {
+                result = Err(error.into());
+            }
         }
+        result
     }
 }
 
 /// One accepted client connection, after its rule resolved.
 struct EntrySession {
-    chain: Arc<CompiledChain>,
-    lb: Arc<LoadBalancer>,
+    routes: Arc<RoutePool>,
     peer: SocketAddr,
     /// Whether to tell the destination who the client is and which hops
     /// carried the connection (`proxy_protocol` on the rule).
@@ -209,7 +270,7 @@ struct EntrySession {
 impl EntrySession {
     /// Build a tunnel through the chain, then relay the client through it.
     async fn handle(self, client_stream: TcpStream) -> Result<(), RelayError> {
-        let nodes = &self.chain.config().nodes;
+        let (tunnel, route) = self.connect_tunnel().await?;
 
         // The destination only ever sees the last hop, so the header has to
         // carry both ends of the original connection. `local_addr` is what the
@@ -218,67 +279,79 @@ impl EntrySession {
             let local = client_stream.local_addr()?;
             Some(
                 trojan_core::proxy_protocol::ProxyHeader::new(self.peer, local)
-                    .with_chain(self.chain.path().clone())
+                    .with_chain(route.candidate.chain.path().clone())
                     .encode()?,
             )
         } else {
             None
         };
 
-        // Determine the first hop's transport and SNI.
-        // - Empty chain (direct): plain TCP to dest (client does its own TLS to trojan-server)
-        // - Non-empty chain: use nodes[0].transport/sni to connect to first relay
-        let first_transport = if nodes.is_empty() {
-            &TransportType::Plain
-        } else {
-            &nodes[0].transport
-        };
-        let first_sni = if nodes.is_empty() {
-            ""
-        } else {
-            nodes[0].sni.as_str()
-        };
-
-        match first_transport {
-            TransportType::Tls => {
-                let tls_connector = self.connectors.tls.with_sni(first_sni.to_string());
-                self.connect_and_relay(client_stream, &tls_connector, preamble.as_deref())
+        // The selected guard must survive until the complete transfer ends.
+        let _guard = route.guard;
+        match tunnel {
+            Tunnel::Plain(stream) => {
+                self.forward(client_stream, stream, preamble.as_deref())
                     .await
             }
-            TransportType::Plain => {
-                self.connect_and_relay(client_stream, &self.connectors.plain, preamble.as_deref())
+            Tunnel::Tls(stream) => {
+                self.forward(client_stream, stream, preamble.as_deref())
                     .await
             }
-            TransportType::Ws => {
-                self.connect_and_relay(client_stream, &self.connectors.ws, preamble.as_deref())
+            Tunnel::Ws(stream) => {
+                self.forward(client_stream, stream, preamble.as_deref())
                     .await
             }
         }
     }
 
-    /// Retry only confirmed destination failures, before consuming client bytes.
-    async fn connect_tunnel<C>(
-        &self,
-        connector: &C,
-    ) -> Result<(C::Stream, Option<ConnectionGuard>), RelayError>
-    where
-        C: TransportConnector,
-    {
+    /// Complete every handshake before consuming client bytes.
+    async fn connect_tunnel(&self) -> Result<(Tunnel, RouteSelection), RelayError> {
         let mut attempted = Vec::new();
+        let mut last_error = None;
         loop {
-            let selection = self.lb.select_excluding(self.peer.ip(), &attempted)?;
-            let dest = selection.addr;
-            debug!(%dest, "selected destination");
-
-            match build_tunnel(&self.chain, &dest, connector, &self.timeouts).await {
-                Ok(tunnel) => return Ok((tunnel, selection.guard)),
-                Err(TunnelError::Destination(err)) if self.lb.is_failover() => {
-                    debug!(%dest, error = %err, "marking backend unhealthy");
-                    self.lb.mark_unhealthy(&dest);
-                    attempted.push(dest);
-                    if attempted.len() == self.lb.backend_count() {
-                        return Err(err);
-                    }
+            let selection = match self.routes.select(self.peer.ip(), &attempted) {
+                Ok(selection) => selection,
+                Err(err) => return Err(last_error.unwrap_or_else(|| err.into())),
+            };
+            let route = &selection.candidate;
+            debug!(dest = %route.dest, "selected route");
+            let first = route.chain.config().nodes.first();
+            let result = match first.map_or(&TransportType::Plain, |node| &node.transport) {
+                TransportType::Plain => build_tunnel(
+                    &route.chain,
+                    &route.dest,
+                    &self.connectors.plain,
+                    &self.timeouts,
+                )
+                .await
+                .map(Tunnel::Plain),
+                TransportType::Ws => build_tunnel(
+                    &route.chain,
+                    &route.dest,
+                    &self.connectors.ws,
+                    &self.timeouts,
+                )
+                .await
+                .map(|stream| Tunnel::Ws(Box::new(stream))),
+                TransportType::Tls => {
+                    let connector = self
+                        .connectors
+                        .tls
+                        .with_sni(first.expect("TLS route has a first hop").sni.clone());
+                    build_tunnel(&route.chain, &route.dest, &connector, &self.timeouts)
+                        .await
+                        .map(|stream| Tunnel::Tls(Box::new(stream)))
+                }
+            };
+            match result {
+                Ok(tunnel) => return Ok((tunnel, selection)),
+                Err(TunnelError::Destination(err)) if self.routes.retry_destinations() => {
+                    self.routes.failed(route, true, &mut attempted);
+                    last_error = Some(err);
+                }
+                Err(TunnelError::Relay(err)) if self.routes.retry_relays() => {
+                    self.routes.failed(route, false, &mut attempted);
+                    last_error = Some(err);
                 }
                 Err(TunnelError::Destination(err) | TunnelError::Relay(err)) => return Err(err),
             }
@@ -286,16 +359,12 @@ impl EntrySession {
     }
 
     /// Forward payload only after every relay has confirmed its target connection.
-    async fn connect_and_relay<C>(
+    async fn forward<S: TransportStream>(
         &self,
         client_stream: TcpStream,
-        connector: &C,
+        mut tunnel: S,
         preamble: Option<&[u8]>,
-    ) -> Result<(), RelayError>
-    where
-        C: TransportConnector,
-    {
-        let (mut tunnel, _conn_guard) = self.connect_tunnel(connector).await?;
+    ) -> Result<(), RelayError> {
         // Once payload forwarding starts, retries could duplicate client data.
         if let Some(preamble) = preamble {
             tunnel.write_all(preamble).await?;
@@ -310,6 +379,14 @@ impl EntrySession {
         .await?;
         Ok(())
     }
+}
+
+/// Keep concrete transport types so payload forwarding avoids virtual I/O calls.
+#[derive(Debug)]
+enum Tunnel {
+    Plain(<PlainTransportConnector as TransportConnector>::Stream),
+    Tls(Box<<TlsTransportConnector as TransportConnector>::Stream>),
+    Ws(Box<<WsTransportConnector as TransportConnector>::Stream>),
 }
 
 /// The transports an entry node can dial its first hop over.

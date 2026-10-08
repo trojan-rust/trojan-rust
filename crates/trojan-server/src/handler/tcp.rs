@@ -12,7 +12,7 @@ use trojan_proto::AddressRef;
 
 use crate::error::ServerError;
 use crate::handler::Session;
-use crate::relay::relay_with_counters;
+use crate::relay::{relay_with_counters, write_all_counted};
 use crate::resolve::{resolve_all_addresses, target_to_label};
 use crate::state::ServerState;
 use crate::util::connect_candidates;
@@ -32,7 +32,7 @@ where
     let state = &session.state;
     let peer = session.peer;
     let target_label = state.per_target_metrics.then(|| target_to_label(&address));
-    // Resolved once here rather than per flush inside the relay loop.
+    // Resolve handles before entering the data path.
     let counters = state.relay_counters(target_label.as_deref());
 
     // Resolve + connect with fallthrough across address families. On any
@@ -48,21 +48,19 @@ where
         }
     };
 
-    let payload_bytes = payload.len() as u64;
     if !payload.is_empty() {
         // A target that closes as soon as it accepts makes this write fail,
         // and returning straight out would drop the TLS stream without a
         // close_notify — the client then cannot tell a refused target from a
         // truncation. Same contract as the dial failure above.
-        if let Err(e) = outbound.write_all(payload).await {
+        if let Err(e) = write_all_counted(&mut outbound, payload, |bytes| {
+            counters.add_to_target(bytes);
+        })
+        .await
+        {
             let _ = stream.shutdown().await;
             return Err(e.into());
         }
-        // Client → target, the same direction the relay loop reports as
-        // inbound. Previously counted against the "bytes sent to client"
-        // global, which contradicted how the relay attributes the rest of
-        // that stream.
-        counters.add_to_target(payload_bytes);
         debug!(peer = %peer, target = %target, bytes = payload.len(), "initial payload sent");
     }
     let result = relay_with_counters(

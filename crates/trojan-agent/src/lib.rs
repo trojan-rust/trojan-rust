@@ -17,6 +17,7 @@ pub mod client;
 pub mod collector;
 pub mod config;
 pub mod error;
+mod node_traffic;
 pub mod protocol;
 pub mod reporter;
 pub mod runner;
