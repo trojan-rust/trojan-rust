@@ -3,17 +3,31 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+
 ## [0.17.0](https://github.com/trojan-rust/trojan-rust/compare/v0.16.0...v0.17.0) - 2026-10-09
 
-### Chores
+### Breaking Changes
 
-- update Cargo.lock dependencies
-
+- Rust library callers must await `init_metrics_server(listen, tls, extra_routes)` and drive the returned `MetricsServer` with `run_until(service_future)`. Keep recorder initialization before metric-handle creation. Metrics configuration structs now include an optional `tls` field, and startup errors propagate through `ServerError::Metrics` and `RelayError::Metrics`.
 
 ### Features
 
-- support mTLS with service-owned listeners
+- Add optional metrics mTLS for standalone and Agent-managed server, relay, and entry nodes. Configure `metrics.tls.cert`, `key`, and `client_ca`; all listener routes require a trusted, valid client certificate. Existing HTTP configurations retain their behavior when `metrics.tls` is absent.
+- Bound TLS handshakes to five seconds and metrics connections to 128 per listener. Certificate, key, client CA, recorder, and bind failures fail startup instead of silently falling back to HTTP.
 
+### Bug Fixes
+
+- Separate the process-wide Prometheus recorder from service-owned listeners. Service shutdown closes old listeners and metrics connections before an Agent restart can bind a replacement, including HTTP-to-mTLS transitions.
+- Honor explicit Agent `restart_required=true` requests even when certificate paths are unchanged, and report service startup failures through the existing Agent error channel.
+
+### Upgrade Notes
+
+- Upgrade node binaries before enabling `metrics.tls`. Older binaries can ignore the new fields. Verify authenticated HTTPS succeeds and anonymous access fails before widening network exposure.
+- Certificate and client CA changes require a service restart. Standalone nodes must stop and restart; server SIGHUP does not reload metrics certificates. For Agent-managed nodes, save the service JSON in Dashboard and restart the Agent, or use a supported `ConfigPush` with `restart_required=true`. Dashboard PATCH saves configuration for registration and does not automatically send `ConfigPush`.
+- An Agent can start with cached HTTP configuration before registration. Confirm the active listener uses mTLS before changing firewall rules. Preserve Agent caches, traffic journals, and persistent state.
+- Restarting interrupts scrapes and proxy connections. The server may drain proxy connections for up to 30 seconds; entry and relay tunnels close immediately. Use server certificates whose SAN matches the scrape address, and keep client-side server certificate verification enabled.
+
+See [metrics configuration, Prometheus, curl, and restart examples](https://github.com/trojan-rust/trojan-rust/blob/v0.17.0/crates/trojan-metrics/README.md).
 
 ## [0.16.0](https://github.com/trojan-rust/trojan-rust/compare/v0.15.0...v0.16.0) - 2026-10-08
 
