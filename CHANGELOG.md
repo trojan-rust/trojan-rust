@@ -17,6 +17,7 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
+- Disable address reuse for the Windows proxy listener so a second service cannot bind the same address and bypass startup failure handling.
 - Separate the process-wide Prometheus recorder from service-owned listeners. Service shutdown closes old listeners and metrics connections before an Agent restart can bind a replacement, including HTTP-to-mTLS transitions.
 - Honor explicit Agent `restart_required=true` requests even when certificate paths are unchanged, and report service startup failures through the existing Agent error channel.
 

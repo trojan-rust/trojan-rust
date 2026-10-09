@@ -398,24 +398,32 @@ async fn metrics_endpoint_reports_traffic_and_honours_per_target() {
 
     let mut config = server.config.clone();
     config.server.listen = "127.0.0.1:0".into();
-    let error = run_with_shutdown(
-        config.clone(),
-        MemoryAuth::from_passwords(&config.auth.passwords),
-        CancellationToken::new(),
+    let error = tokio::time::timeout(
+        Duration::from_secs(5),
+        run_with_shutdown(
+            config.clone(),
+            MemoryAuth::from_passwords(&config.auth.passwords),
+            CancellationToken::new(),
+        ),
     )
     .await
+    .expect("invalid startup must fail promptly")
     .unwrap_err();
     assert!(matches!(error, trojan_server::ServerError::Metrics(_)));
 
     let available_metrics = free_addr().await;
     config.metrics.listen = Some(available_metrics.to_string());
     config.server.listen = server.addr.to_string();
-    let error = run_with_shutdown(
-        config.clone(),
-        MemoryAuth::from_passwords(&config.auth.passwords),
-        CancellationToken::new(),
+    let error = tokio::time::timeout(
+        Duration::from_secs(5),
+        run_with_shutdown(
+            config.clone(),
+            MemoryAuth::from_passwords(&config.auth.passwords),
+            CancellationToken::new(),
+        ),
     )
     .await
+    .expect("invalid startup must fail promptly")
     .unwrap_err();
     assert!(matches!(error, trojan_server::ServerError::Io(_)));
     let _rebound_after_failure = tokio::net::TcpListener::bind(available_metrics)
@@ -429,12 +437,16 @@ async fn metrics_endpoint_reports_traffic_and_honours_per_target() {
         key: "/nonexistent/server.key".into(),
         client_ca: "/nonexistent/clients-ca.crt".into(),
     });
-    let error = run_with_shutdown(
-        config.clone(),
-        MemoryAuth::from_passwords(&config.auth.passwords),
-        CancellationToken::new(),
+    let error = tokio::time::timeout(
+        Duration::from_secs(5),
+        run_with_shutdown(
+            config.clone(),
+            MemoryAuth::from_passwords(&config.auth.passwords),
+            CancellationToken::new(),
+        ),
     )
     .await
+    .expect("invalid startup must fail promptly")
     .unwrap_err();
     assert!(matches!(error, trojan_server::ServerError::Metrics(_)));
 

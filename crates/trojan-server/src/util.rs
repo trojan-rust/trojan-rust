@@ -30,6 +30,8 @@ pub fn create_listener(
         Domain::IPV6
     };
     let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+    // Windows SO_REUSEADDR permits a second live listener on the same address.
+    #[cfg(not(windows))]
     socket.set_reuse_address(true)?;
     socket.set_nonblocking(true)?;
 
