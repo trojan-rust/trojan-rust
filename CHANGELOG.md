@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+## [0.17.0](https://github.com/trojan-rust/trojan-rust/compare/v0.16.0...v0.17.0) - 2026-10-09
+
+### Chores
+
+- update Cargo.lock dependencies
+
+
+### Features
+
+- support mTLS with service-owned listeners
+
 
 ## [0.16.0](https://github.com/trojan-rust/trojan-rust/compare/v0.15.0...v0.16.0) - 2026-10-08
 
