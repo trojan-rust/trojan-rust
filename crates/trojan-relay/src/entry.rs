@@ -17,6 +17,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinSet;
@@ -128,17 +129,15 @@ async fn run_with_router(
             });
         }
 
-        let mut handles = JoinSet::new();
+        // Keep rule listeners in this future so aborting the service releases every port.
+        let mut handles = FuturesUnordered::new();
         let shutdown = shutdown.child_token();
         let _cancel = shutdown.clone().drop_guard();
         for listener in listeners {
-            handles.spawn(listener.serve(shutdown.clone()));
+            handles.push(listener.serve(shutdown.clone()));
         }
         let mut result = Ok(());
-        while let Some(completed) = handles.join_next().await {
-            let completed = completed
-                .map_err(RelayError::from)
-                .and_then(|result| result);
+        while let Some(completed) = handles.next().await {
             if let Err(error) = completed {
                 shutdown.cancel();
                 if result.is_ok() {

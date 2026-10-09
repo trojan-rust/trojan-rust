@@ -41,6 +41,7 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 clap.workspace = true
 tokio-util = { workspace = true, features = ["compat", "rt"] }
+futures-util.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
