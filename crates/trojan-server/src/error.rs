@@ -9,6 +9,9 @@ use trojan_proto::{ParseError, WriteError};
 /// Server error type.
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
+    /// Metrics listener startup or shutdown failed.
+    #[error("metrics: {0}")]
+    Metrics(#[from] trojan_metrics::MetricsError),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("tls: {0}")]
@@ -42,9 +45,10 @@ impl ServerError {
             ServerError::Auth(_) => ERROR_AUTH,
             // Unreadable cert or key: an operator mistake in the config, not
             // anything the handshake did.
-            ServerError::Config(_) | ServerError::Rules(_) | ServerError::TlsMaterial(_) => {
-                ERROR_CONFIG
-            }
+            ServerError::Config(_)
+            | ServerError::Rules(_)
+            | ServerError::TlsMaterial(_)
+            | ServerError::Metrics(_) => ERROR_CONFIG,
             ServerError::Proto(_) | ServerError::ProtoWrite(_) | ServerError::ProxyProtocol(_) => {
                 ERROR_PROTOCOL
             }

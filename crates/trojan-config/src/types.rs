@@ -364,6 +364,9 @@ pub struct UserEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricsConfig {
     pub listen: Option<String>,
+    /// Require client certificates on every metrics listener route.
+    #[serde(default)]
+    pub tls: Option<trojan_core::metrics::MetricsTlsConfig>,
     /// GeoIP database for per-country metrics labels (country-level).
     #[serde(default)]
     pub geoip: Option<GeoipConfig>,
@@ -384,6 +387,7 @@ impl Default for MetricsConfig {
     fn default() -> Self {
         Self {
             listen: None,
+            tls: None,
             geoip: None,
             per_target: default_metrics_per_target(),
         }
@@ -483,6 +487,42 @@ source = "dbip-country"
         assert_eq!(cfg.listen.as_deref(), Some("0.0.0.0:9100"));
         let geoip = cfg.geoip.unwrap();
         assert_eq!(geoip.source, "dbip-country");
+    }
+
+    #[test]
+    fn metrics_tls_has_the_same_toml_and_json_shape() {
+        let toml = r#"
+listen = "0.0.0.0:19001"
+per_target = true
+[geoip]
+source = "dbip-country"
+[tls]
+cert = "/node/server.crt"
+key = "/node/server.key"
+client_ca = "/node/clients-ca.crt"
+"#;
+        let config: MetricsConfig = toml::from_str(toml).unwrap();
+        let json = serde_json::to_value(&config).unwrap();
+        let roundtrip: MetricsConfig = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(roundtrip.listen.as_deref(), Some("0.0.0.0:19001"));
+        assert_eq!(roundtrip.tls, config.tls);
+        assert!(roundtrip.per_target);
+        assert_eq!(roundtrip.geoip.unwrap().source, "dbip-country");
+
+        for field in ["cert", "key", "client_ca"] {
+            let mut incomplete = json.clone();
+            incomplete["tls"].as_object_mut().unwrap().remove(field);
+            let error = serde_json::from_value::<MetricsConfig>(incomplete).unwrap_err();
+            assert!(error.to_string().contains(field));
+
+            let incomplete = toml
+                .lines()
+                .filter(|line| !line.starts_with(&format!("{field} =")))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let error = toml::from_str::<MetricsConfig>(&incomplete).unwrap_err();
+            assert!(error.to_string().contains(field));
+        }
     }
 
     #[test]

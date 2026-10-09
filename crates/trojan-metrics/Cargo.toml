@@ -13,14 +13,22 @@ categories = ["network-programming"]
 readme = "README.md"
 
 [dependencies]
-trojan-core.workspace = true
+trojan-core = { workspace = true, features = ["tls"] }
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 axum.workspace = true
-tokio = { workspace = true, features = ["rt", "net"] }
+tokio = { workspace = true, features = ["rt", "net", "macros", "time", "sync"] }
+rustls.workspace = true
+tokio-rustls.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+hyper-util = { version = "0.1.21", features = ["server-auto", "tokio", "service"] }
+futures-util.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+rcgen.workspace = true
+tempfile.workspace = true
 
 [[bench]]
 name = "relay_counters"

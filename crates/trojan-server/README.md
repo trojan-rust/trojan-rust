@@ -4,6 +4,8 @@ Target connections alternate resolved IPv4 and IPv6 addresses, starting another 
 
 Destination metric labels are disabled by default. Set `metrics.per_target = true` only for a bounded destination set; global counters remain available with the option off.
 
+Set `metrics.tls.cert`, `metrics.tls.key`, and `metrics.tls.client_ca` to require mutual TLS on the metrics listener. `/metrics`, health checks, and `/debug/rules/match` share that policy; the debug route also retains its loopback restriction. Existing HTTP configurations remain supported. Metrics TLS does not change proxy TLS or routing. See [configuration, Prometheus, and restart instructions](../trojan-metrics/README.md#mutual-tls). SIGHUP does not reload metrics certificates.
+
 Shutdown closes every listener and allows established connections to drain for up to 30 seconds. After the deadline, the server closes and joins remaining connection tasks before returning.
 
 TCP payloads and UDP responses count each successful stream write before flush. A cancelled or failed connection retains bytes accepted by the writer, including partial initial payloads and partial UDP frames.

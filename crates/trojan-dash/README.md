@@ -42,6 +42,12 @@ a status: 409 when a name is taken, 401 when the token is wrong.
 User updates invalidate cached verification data. The next verification reloads
 the user and all node quotas.
 
+## Node metrics configuration
+
+The `config` object in `POST /admin/nodes` and `PATCH /admin/nodes/{id}` stores the service JSON, including `metrics.listen` and `metrics.tls.cert`, `key`, and `client_ca`. Dashboard preserves these path strings without reading certificate files or transferring private keys. Paths refer to files on the running node. Provide the complete service configuration when replacing `config`.
+
+PATCH increments the saved configuration version. The Agent receives the saved JSON at its next registration; Dashboard does not send a live `ConfigPush`. Restart the Agent after saving settings that must take effect immediately. Upgrade the node binary before enabling metrics TLS: older binaries can ignore the fields and continue serving HTTP. See [the configuration, Prometheus example, and verification steps](../trojan-metrics/README.md#mutual-tls).
+
 ## Node quotas
 
 `POST /admin/nodes` and `PATCH /admin/nodes/{id}` accept a node's monthly allowance independently of user allowances:

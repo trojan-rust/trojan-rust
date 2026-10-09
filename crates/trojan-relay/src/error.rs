@@ -5,6 +5,10 @@ use thiserror::Error;
 /// Errors that can occur in the relay system.
 #[derive(Error, Debug)]
 pub enum RelayError {
+    /// Metrics listener startup or shutdown failed.
+    #[error("metrics: {0}")]
+    Metrics(#[from] trojan_metrics::MetricsError),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 

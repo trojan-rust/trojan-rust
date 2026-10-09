@@ -10,6 +10,7 @@ This crate provides the foundational building blocks used by the trojan-rs works
 - **Error classification** — Standardized error type constants for metrics and logging
 - **I/O utilities** — Bidirectional relay, `PrefixedStream` for prepending buffered data to a stream
 - **Transport adapters** — WebSocket transport layer (feature-gated)
+- **Metrics TLS configuration** — Shared `metrics::MetricsTlsConfig` with node-local `cert`, `key`, and `client_ca` paths for server, relay, and entry metrics listeners
 
 The bidirectional relay polls both streams in one task. Each direction continues through backpressure and half-close independently. A writer that returns zero for a nonempty buffer terminates the relay with `WriteZero`.
 

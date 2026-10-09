@@ -26,6 +26,12 @@ Server nodes use the same authentication settings as `trojan server`. When `auth
 
 Set `metrics.listen` in the panel-supplied service configuration, for example to `127.0.0.1:9090`, to expose the agent's local accounting metrics through the service's `/metrics` endpoint. The agent uses the same Prometheus recorder as the service. Metrics also work when the service starts its recorder after the journal opens. No node IDs, stream IDs, tokens, or error messages become metric labels.
 
+All three managed roles support `metrics.tls` with node-local `cert`, `key`, and `client_ca` paths. Dashboard registration and the local configuration cache preserve these fields. Certificate files must already exist on the node, including during offline startup. See [mutual TLS configuration and verification](../trojan-metrics/README.md#mutual-tls).
+
+The metrics listener belongs to the service and closes with its accepted connections before replacement, including a switch from HTTP to mTLS. The process reuses its Prometheus recorder across restarts. Certificate or bind failures propagate through the service error channel; a `ConfigAck` or `Running` message alone does not prove that a scrape works. Verify the real endpoint.
+
+Dashboard PATCH saves configuration for the next registration; it does not send a live `ConfigPush`. Restart the Agent after saving changed metrics settings. Startup can serve the previous cached configuration until registration succeeds, including cached HTTP when Dashboard has newly saved mTLS settings. Verify the real mTLS endpoint before changing network exposure. Panels that implement `ConfigPush` must set `restart_required=true`; this also forces certificate reload when paths are unchanged. An ordinary reconnect with identical configuration keeps the current listener and certificates. Preserve `cache_dir` and traffic journals. Upgrade the node binary before enabling TLS, because older binaries can ignore unknown fields and continue serving HTTP.
+
 | Metric prefix: `trojan_agent_node_traffic_` | Meaning |
 | --- | --- |
 | `enabled` | Whether the process records node traffic after capability negotiation. |

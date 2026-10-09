@@ -274,6 +274,96 @@ async fn registration_hands_the_agent_its_configured_service() {
     assert_eq!(config["node_id"], "7");
 }
 
+#[tokio::test]
+async fn metrics_tls_paths_survive_save_patch_and_registration_for_every_role() {
+    let dash = Dash::start().await;
+    for (kind, expected) in [
+        ("server", NodeType::Server),
+        ("relay", NodeType::Relay),
+        ("entry", NodeType::Entry),
+    ] {
+        let mut config = serde_json::json!({
+            "metrics": {
+                "listen": "0.0.0.0:19001", "geoip": false, "per_target": true,
+                "tls": {
+                    "cert": "/remote/node/metrics/server.crt",
+                    "key": "/remote/node/metrics/server.key",
+                    "client_ca": "/remote/node/metrics/clients-ca.crt"
+                }
+            }
+        });
+        let node = dash
+            .admin_post(
+                "/admin/nodes",
+                serde_json::json!({
+                    "name": format!("metrics-{kind}"), "node_type": kind, "config": config
+                }),
+            )
+            .await;
+        let path = format!("/admin/nodes/{}", node["id"]);
+        let stored = dash.admin_get(&path).await;
+        assert_eq!(stored["config"], config);
+        let token = node["token"].as_str().unwrap();
+        let mut agent = Agent::connect(&dash).await;
+        let Some(PanelMessage::Registered {
+            node_type,
+            config: sent,
+            config_version,
+            ..
+        }) = agent.register(token).await
+        else {
+            panic!("expected registration")
+        };
+        assert_eq!(node_type, expected);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&sent).unwrap(),
+            config
+        );
+
+        config["metrics"]["tls"]["client_ca"] =
+            serde_json::json!("/remote/node/metrics/new-clients-ca.crt");
+        config["metrics"]["listen"] = serde_json::json!("0.0.0.0:19002");
+        dash.client
+            .patch(format!("{}{path}", dash.base))
+            .bearer_auth(common::ADMIN_TOKEN)
+            .json(&serde_json::json!({"config": config}))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        let saved = dash.admin_get(&path).await;
+        assert_eq!(saved["config"], config);
+        assert_eq!(saved["config_version"], config_version + 1);
+        let delivered = tokio::time::timeout(Duration::from_millis(100), async {
+            loop {
+                let message = agent.recv().await.expect("agent disconnected after PATCH");
+                assert!(
+                    !matches!(message, PanelMessage::ConfigPush { .. }),
+                    "PATCH must not push configuration"
+                );
+            }
+        })
+        .await;
+        assert!(delivered.is_err());
+        agent.socket.close(None).await.unwrap();
+        let mut reconnect = Agent::connect(&dash).await;
+        let Some(PanelMessage::Registered {
+            config: sent,
+            config_version: new_version,
+            ..
+        }) = reconnect.register(token).await
+        else {
+            panic!("expected registration")
+        };
+        assert_eq!(new_version, config_version + 1);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&sent).unwrap(),
+            config
+        );
+    }
+}
+
 /// Heartbeats are how a relay's traffic becomes visible at all: it carries
 /// bytes for users it cannot name, so the node totals are the whole story.
 #[tokio::test]

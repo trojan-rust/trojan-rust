@@ -49,6 +49,10 @@ validate_config(&config)?;
 - **`TlsConfig`** — Certificate, key, ALPN, TLS version range, mTLS, cipher suites
 - **`CliOverrides`** — Clap-derived struct for command-line overrides
 
+## Metrics TLS
+
+`MetricsConfig` accepts an optional `tls` object with required `cert`, `key`, and `client_ca` path strings. TOML `[metrics.tls]` and JSON `metrics.tls` have the same meaning. TLS requires `metrics.listen`; omitting TLS preserves HTTP. Configuration validation checks required fields, and service startup reads and validates the local files. Existing `geoip` and `per_target` fields are unchanged. See the [minimal configuration and Prometheus example](../trojan-metrics/README.md#mutual-tls).
+
 ## License
 
 GPL-3.0-only

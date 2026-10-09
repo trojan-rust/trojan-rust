@@ -31,6 +31,10 @@ mod shutdown_tests;
 #[path = "runtime_capability_tests.rs"]
 mod capability_tests;
 
+#[cfg(test)]
+#[path = "runtime_metrics_tests.rs"]
+mod metrics_tests;
+
 struct Service {
     config: CachedConfig,
     started_at: u64,
@@ -113,8 +117,10 @@ async fn apply_config(
     config: CachedConfig,
     sinks: &runner::ServiceSinks,
     drain_timeout: Duration,
+    restart: bool,
 ) -> Result<(), AgentError> {
-    if let Some(running) = service.as_mut()
+    if !restart
+        && let Some(running) = service.as_mut()
         && running.config.node_type == config.node_type
         && running.config.node_traffic == config.node_traffic
         && running.config.config == config.config
@@ -330,6 +336,7 @@ async fn connected(
         cached.clone(),
         sinks,
         trojan_server::DEFAULT_SHUTDOWN_TIMEOUT,
+        false,
     )
     .await?;
     if let Err(e) = cache::write_cache(&cache_dir, &cached).await {
@@ -367,7 +374,13 @@ async fn connected(
         tokio::select! {
             biased;
             result = service_exit(service) => {
-                let _ = tx.send(AgentMessage::ServiceStatus { status: ServiceState::Error, started_at, config_version: cached.version }).await;
+                let sent = tokio::time::timeout(client::SHUTDOWN_SEND_TIMEOUT,
+                    tx.send(AgentMessage::ServiceStatus { status: ServiceState::Error, started_at, config_version: cached.version })).await;
+                if !matches!(sent, Ok(Ok(()))) {
+                    warn!("failed to report service error before panel session shutdown");
+                }
+                session_shutdown.cancel();
+                tx.closed().await;
                 return result;
             }
             _ = &mut reporting => return Err(AgentError::ConnectionClosed),
@@ -391,7 +404,7 @@ async fn connected(
                     if restart_required {
                         tx.send(AgentMessage::ServiceStatus { status: ServiceState::Restarting, started_at, config_version: cached.version }).await.map_err(|_| AgentError::ConnectionClosed)?;
                     }
-                    apply_config(service, updated.clone(), sinks, drain).await?;
+                    apply_config(service, updated.clone(), sinks, drain, restart_required).await?;
                     started_at = service.as_ref().expect("config starts a service").started_at;
                     if let Err(e) = cache::write_cache(&cache_dir, &updated).await {
                         warn!(error = %e, "failed to cache config; offline startup will use the previous cache");

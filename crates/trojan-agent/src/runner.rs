@@ -18,8 +18,8 @@ use crate::protocol::NodeType;
 
 /// Where a booted service reports what it carried.
 ///
-/// The agent pushes heartbeats rather than being scraped, so it needs the
-/// numbers themselves, not a Prometheus endpoint someone might scrape.
+/// The agent reads counters directly for heartbeats, independently of the
+/// optional Prometheus listener.
 #[derive(Debug, Clone, Default)]
 pub struct ServiceSinks {
     /// Authenticated node identity for managed entry admission.

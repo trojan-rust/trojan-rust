@@ -82,71 +82,76 @@ async fn run_with_router(
     router: Router,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<(), RelayError> {
-    crate::metrics::start_exporter(&config.metrics);
+    let metrics = crate::metrics::start_exporter(&config.metrics).await?;
+    let service = async {
+        let router = Arc::new(router);
 
-    let router = Arc::new(router);
+        // Build DNS resolver from config
+        let resolver = trojan_dns::DnsResolver::new(&config.dns)
+            .map_err(|e| RelayError::Config(format!("dns resolver: {e}")))?;
+        info!(dns = ?config.dns.strategy, "dns resolver initialized");
 
-    // Build DNS resolver from config
-    let resolver = trojan_dns::DnsResolver::new(&config.dns)
-        .map_err(|e| RelayError::Config(format!("dns resolver: {e}")))?;
-    info!(dns = ?config.dns.strategy, "dns resolver initialized");
+        let shared = SharedState {
+            router: router.clone(),
+            connectors: Connectors {
+                tls: TlsTransportConnector::new_insecure_with_resolver(
+                    "crates.io".to_string(),
+                    resolver.clone(),
+                ),
+                plain: PlainTransportConnector::with_resolver(resolver.clone()),
+                ws: WsTransportConnector::with_resolver(resolver),
+            },
+            timeouts: config.timeouts.clone(),
+            stats,
+        };
 
-    let shared = SharedState {
-        router: router.clone(),
-        connectors: Connectors {
-            tls: TlsTransportConnector::new_insecure_with_resolver(
-                "crates.io".to_string(),
-                resolver.clone(),
-            ),
-            plain: PlainTransportConnector::with_resolver(resolver.clone()),
-            ws: WsTransportConnector::with_resolver(resolver),
-        },
-        timeouts: config.timeouts.clone(),
-        stats,
-    };
+        // Bind every socket before starting tasks so startup failure cannot leave a listener running.
+        let mut listeners = Vec::new();
 
-    // Bind every socket before starting tasks so startup failure cannot leave a listener running.
-    let mut listeners = Vec::new();
+        for rule in router.rules() {
+            let listener = TcpListener::bind(rule.listen).await?;
+            info!(
+                name = %rule.name,
+                listen = %rule.listen,
+                chain = %rule.chain,
+                dest = ?rule.dest,
+                strategy = ?rule.strategy,
+                "entry rule started"
+            );
 
-    for rule in router.rules() {
-        let listener = TcpListener::bind(rule.listen).await?;
-        info!(
-            name = %rule.name,
-            listen = %rule.listen,
-            chain = %rule.chain,
-            dest = ?rule.dest,
-            strategy = ?rule.strategy,
-            "entry rule started"
-        );
+            listeners.push(RuleListener {
+                listener,
+                addr: rule.listen,
+                rule: rule.name.clone(),
+                metrics: Arc::new(RouteMetrics::new(&rule.name)),
+                shared: shared.clone(),
+            });
+        }
 
-        listeners.push(RuleListener {
-            listener,
-            addr: rule.listen,
-            rule: rule.name.clone(),
-            metrics: Arc::new(RouteMetrics::new(&rule.name)),
-            shared: shared.clone(),
-        });
-    }
-
-    let mut handles = JoinSet::new();
-    let shutdown = shutdown.child_token();
-    let _cancel = shutdown.clone().drop_guard();
-    for listener in listeners {
-        handles.spawn(listener.serve(shutdown.clone()));
-    }
-    let mut result = Ok(());
-    while let Some(completed) = handles.join_next().await {
-        let completed = completed
-            .map_err(RelayError::from)
-            .and_then(|result| result);
-        if let Err(error) = completed {
-            shutdown.cancel();
-            if result.is_ok() {
-                result = Err(error);
+        let mut handles = JoinSet::new();
+        let shutdown = shutdown.child_token();
+        let _cancel = shutdown.clone().drop_guard();
+        for listener in listeners {
+            handles.spawn(listener.serve(shutdown.clone()));
+        }
+        let mut result = Ok(());
+        while let Some(completed) = handles.join_next().await {
+            let completed = completed
+                .map_err(RelayError::from)
+                .and_then(|result| result);
+            if let Err(error) = completed {
+                shutdown.cancel();
+                if result.is_ok() {
+                    result = Err(error);
+                }
             }
         }
+        result
+    };
+    match metrics {
+        Some(metrics) => metrics.run_until(service).await?,
+        None => service.await,
     }
-    result
 }
 
 /// State every listener on this node shares.

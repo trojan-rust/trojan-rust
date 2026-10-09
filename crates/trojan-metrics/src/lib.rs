@@ -5,13 +5,13 @@
 
 use std::net::SocketAddr;
 
-use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
 use metrics::{counter, gauge, histogram};
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use metrics_exporter_prometheus::PrometheusBuilder;
 
 mod connection;
 mod counters;
 mod route;
+mod server;
 
 pub use connection::ConnectionMetrics;
 pub use counters::{ActiveConnection, NodeSnapshot, NodeStats, RelayCounters};
@@ -19,77 +19,7 @@ pub use route::{
     ROUTE_FAILOVERS_TOTAL, ROUTE_SELECTIONS_TOTAL, ROUTE_SETUP_DURATION_SECONDS, ROUTE_SETUP_TOTAL,
     RouteAttempt, RouteFailure, RouteMetrics,
 };
-
-/// Initialize metrics server with Prometheus exporter and health check endpoints.
-///
-/// Starts an HTTP server on the given address with:
-/// - `/metrics` - Prometheus metrics endpoint
-/// - `/health` - Liveness probe (always returns 200 OK)
-/// - `/ready` - Readiness probe (always returns 200 READY)
-///
-/// Additional routes can be merged via the `extra_routes` parameter.
-///
-/// Returns a tokio JoinHandle for the server task.
-pub fn init_metrics_server(
-    listen: &str,
-    extra_routes: Option<Router>,
-) -> Result<tokio::task::JoinHandle<()>, String> {
-    let addr: SocketAddr = listen
-        .parse()
-        .map_err(|e| format!("invalid metrics listen address: {}", e))?;
-
-    // Build the Prometheus recorder and get a handle for rendering
-    let builder = PrometheusBuilder::new();
-    let handle = builder
-        .install_recorder()
-        .map_err(|e| format!("failed to install prometheus recorder: {}", e))?;
-
-    // Build the Axum router with metrics and health endpoints
-    let mut app = Router::new()
-        .route("/metrics", get(move || metrics_handler(handle.clone())))
-        .route("/health", get(health_handler))
-        .route("/ready", get(ready_handler));
-
-    if let Some(extra) = extra_routes {
-        app = app.merge(extra);
-    }
-
-    // Spawn the server
-    let server_handle = tokio::spawn(async move {
-        let listener = match tokio::net::TcpListener::bind(addr).await {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("failed to bind metrics server to {}: {}", addr, e);
-                return;
-            }
-        };
-        if let Err(e) = axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await
-        {
-            eprintln!("metrics server error: {}", e);
-        }
-    });
-
-    Ok(server_handle)
-}
-
-/// Handler for /metrics endpoint - returns Prometheus format metrics.
-async fn metrics_handler(handle: PrometheusHandle) -> impl IntoResponse {
-    handle.render()
-}
-
-/// Handler for /health endpoint - liveness probe.
-async fn health_handler() -> impl IntoResponse {
-    (StatusCode::OK, "OK")
-}
-
-/// Handler for /ready endpoint - readiness probe.
-async fn ready_handler() -> impl IntoResponse {
-    (StatusCode::OK, "READY")
-}
+pub use server::{MetricsError, MetricsServer, init_metrics_server};
 
 /// Initialize Prometheus metrics exporter (legacy function).
 ///

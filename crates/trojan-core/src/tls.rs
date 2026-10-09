@@ -45,8 +45,11 @@ pub fn load_certs(path: impl AsRef<Path>) -> Result<Vec<CertificateDer<'static>>
     let path = path.as_ref();
     let mut reader = open(path)?;
     let certs: Vec<_> = rustls_pemfile::certs(&mut reader)
-        .filter_map(|cert| cert.ok().map(|der| der.into_owned()))
-        .collect();
+        .collect::<Result<_, _>>()
+        .map_err(|source| TlsError::Io {
+            path: display(path),
+            source,
+        })?;
 
     if certs.is_empty() {
         return Err(TlsError::Empty {
@@ -216,6 +219,26 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_malformed_certificate_after_a_valid_certificate_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cert_path, _) = write_keypair(dir.path());
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&cert_path)
+            .unwrap();
+        writeln!(
+            file,
+            "-----BEGIN CERTIFICATE-----\ninvalid-base64!\n-----END CERTIFICATE-----"
+        )
+        .unwrap();
+
+        let error = load_certs(&cert_path).unwrap_err();
+        assert!(
+            matches!(error, TlsError::Io { ref path, .. } if path == &cert_path.display().to_string())
+        );
     }
 
     #[test]

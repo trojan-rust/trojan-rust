@@ -12,6 +12,7 @@ pub mod defaults;
 pub mod errors;
 pub mod geo;
 pub mod io;
+pub mod metrics;
 pub mod proxy_protocol;
 #[cfg(feature = "tls")]
 pub mod tls;

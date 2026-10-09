@@ -105,6 +105,7 @@ async fn open_tunnel_shutdown(role: Role, stop: Stop) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let target_addr = listener.local_addr().unwrap();
         let listen = available_addr().await;
+        let metrics_listen = available_addr().await;
         let stats = NodeStats::new();
         let shutdown = CancellationToken::new();
         let task_stats = stats.clone();
@@ -112,24 +113,31 @@ async fn open_tunnel_shutdown(role: Role, stop: Stop) {
         let task = tokio::spawn(async move {
             match role {
                 Role::Entry => {
-                    trojan_relay::entry::run_with_stats(
-                        entry_config(listen, target_addr),
-                        task_stats,
-                        task_shutdown,
-                    )
-                    .await
+                    let mut config = entry_config(listen, target_addr);
+                    config.metrics.listen = Some(metrics_listen);
+                    trojan_relay::entry::run_with_stats(config, task_stats, task_shutdown).await
                 }
                 Role::Relay => {
-                    trojan_relay::relay::run_with_stats(
-                        relay_config(listen),
-                        task_stats,
-                        task_shutdown,
-                    )
-                    .await
+                    let mut config = relay_config(listen);
+                    config.metrics.listen = Some(metrics_listen);
+                    trojan_relay::relay::run_with_stats(config, task_stats, task_shutdown).await
                 }
             }
         });
         let mut client = connect_when_ready(listen).await;
+        let mut metrics = connect_when_ready(metrics_listen).await;
+        metrics
+            .write_all(b"GET /ready HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        while !response.ends_with(b"READY") {
+            let mut buffer = [0; 512];
+            let count = metrics.read(&mut buffer).await.unwrap();
+            assert!(count > 0, "metrics connection closed before the response");
+            response.extend_from_slice(&buffer[..count]);
+        }
+        assert!(response.starts_with(b"HTTP/1.1 200"));
         if matches!(role, Role::Relay) {
             handshake::write_handshake(
                 &mut client,
@@ -182,6 +190,8 @@ async fn open_tunnel_shutdown(role: Role, stop: Stop) {
         assert_eq!(target.read(&mut byte).await.unwrap(), 0);
         assert_eq!(stats.snapshot(), settled);
         let _rebound = TcpListener::bind(listen).await.unwrap();
+        let _metrics_rebound = TcpListener::bind(metrics_listen).await.unwrap();
+        assert_eq!(metrics.read(&mut byte).await.unwrap(), 0);
     })
     .await
     .expect("service left a live listener or tunnel after shutdown");
@@ -214,6 +224,8 @@ async fn entry_bind_failure_releases_previously_bound_listeners() {
     let available = available_addr().await;
     let stats = NodeStats::new();
     let mut config = entry_config(available, occupied.local_addr().unwrap());
+    let metrics = available_addr().await;
+    config.metrics.listen = Some(metrics);
     let mut second = config.rules[0].clone();
     second.name = "occupied".into();
     second.listen = occupied.local_addr().unwrap();
@@ -226,5 +238,81 @@ async fn entry_bind_failure_releases_previously_bound_listeners() {
     };
     assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
     let _rebound = TcpListener::bind(available).await.unwrap();
+    let _metrics_rebound = TcpListener::bind(metrics).await.unwrap();
     assert_eq!(stats.snapshot().connections_total, 0);
+}
+
+#[tokio::test]
+async fn relay_bind_failure_releases_metrics_listener() {
+    init_crypto();
+    let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let metrics = available_addr().await;
+    let mut config = relay_config(occupied.local_addr().unwrap());
+    config.metrics.listen = Some(metrics);
+    let error = trojan_relay::relay::run(config, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, trojan_relay::error::RelayError::Io(_)));
+    let _rebound = TcpListener::bind(metrics).await.unwrap();
+}
+
+#[tokio::test]
+async fn metrics_bind_failure_rejects_entry_and_relay_startup() {
+    init_crypto();
+    let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let listen = available_addr().await;
+    let mut entry = entry_config(listen, occupied.local_addr().unwrap());
+    entry.metrics.listen = Some(occupied.local_addr().unwrap());
+    let error = trojan_relay::entry::run(entry, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, trojan_relay::error::RelayError::Metrics(_)));
+    let _entry_rebound = TcpListener::bind(listen).await.unwrap();
+
+    let listen = available_addr().await;
+    let mut relay = relay_config(listen);
+    relay.metrics.listen = Some(occupied.local_addr().unwrap());
+    let error = trojan_relay::relay::run(relay, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, trojan_relay::error::RelayError::Metrics(_)));
+    let _relay_rebound = TcpListener::bind(listen).await.unwrap();
+}
+
+#[tokio::test]
+async fn metrics_tls_requires_listen_and_valid_files_for_entry_and_relay() {
+    let metrics = trojan_relay::config::MetricsConfig {
+        listen: None,
+        tls: Some(trojan_core::metrics::MetricsTlsConfig {
+            cert: "/nonexistent/server.crt".into(),
+            key: "/nonexistent/server.key".into(),
+            client_ca: "/nonexistent/clients-ca.crt".into(),
+        }),
+    };
+    let mut entry = entry_config(
+        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:1".parse().unwrap(),
+    );
+    entry.metrics = metrics.clone();
+    let mut relay = relay_config("127.0.0.1:0".parse().unwrap());
+    relay.metrics = metrics;
+    let error = trojan_relay::entry::run(entry.clone(), CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("metrics.listen"));
+    let error = trojan_relay::relay::run(relay.clone(), CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("metrics.listen"));
+
+    entry.metrics.listen = Some("127.0.0.1:0".parse().unwrap());
+    relay.metrics.listen = entry.metrics.listen;
+    let error = trojan_relay::entry::run(entry, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, trojan_relay::error::RelayError::Metrics(_)));
+    let error = trojan_relay::relay::run(relay, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, trojan_relay::error::RelayError::Metrics(_)));
 }

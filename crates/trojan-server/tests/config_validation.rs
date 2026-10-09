@@ -158,3 +158,32 @@ async fn a_valid_config_gets_past_validation() {
         "expected the missing certificate to be what stops it, got {result:?}"
     );
 }
+
+#[tokio::test]
+async fn metrics_tls_requires_listen_and_nonempty_paths() {
+    let mut config = valid_config();
+    config.metrics.tls = Some(trojan_core::metrics::MetricsTlsConfig {
+        cert: "/node/server.crt".into(),
+        key: "/node/server.key".into(),
+        client_ca: "/node/clients-ca.crt".into(),
+    });
+    assert!(
+        rejection_of(config.clone())
+            .await
+            .contains("metrics.listen")
+    );
+
+    config.metrics.listen = Some("127.0.0.1:19001".into());
+    for field in ["cert", "key", "client_ca"] {
+        let mut incomplete = config.clone();
+        let tls = incomplete.metrics.tls.as_mut().unwrap();
+        match field {
+            "cert" => tls.cert = " ".into(),
+            "key" => tls.key = " ".into(),
+            "client_ca" => tls.client_ca = " ".into(),
+            _ => unreachable!(),
+        }
+        let error = rejection_of(incomplete).await;
+        assert!(error.contains(&format!("metrics.tls.{field}")), "{error}");
+    }
+}

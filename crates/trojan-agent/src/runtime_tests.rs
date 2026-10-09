@@ -73,6 +73,14 @@ pub(super) async fn register(
     panel: &TcpListener,
     config: &serde_json::Value,
 ) -> WebSocketStream<TcpStream> {
+    register_node(panel, NodeType::Entry, config).await
+}
+
+pub(super) async fn register_node(
+    panel: &TcpListener,
+    node_type: NodeType,
+    config: &serde_json::Value,
+) -> WebSocketStream<TcpStream> {
     let (tcp, _) = timeout(WAIT, panel.accept()).await.unwrap().unwrap();
     let mut ws = timeout(
         WAIT,
@@ -89,7 +97,7 @@ pub(super) async fn register(
         &mut ws,
         PanelMessage::Registered {
             node_id: "entry".into(),
-            node_type: NodeType::Entry,
+            node_type,
             config_version: 1,
             report_interval_secs: 1,
             config: serde_json::to_vec(config).unwrap(),

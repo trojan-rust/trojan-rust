@@ -58,40 +58,45 @@ pub async fn run_with_stats(
     stats: Arc<NodeStats>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<(), RelayError> {
-    crate::metrics::start_exporter(&config.metrics);
+    let metrics = crate::metrics::start_exporter(&config.metrics).await?;
+    let service = async {
+        let relay_cfg = &config.relay;
 
-    let relay_cfg = &config.relay;
+        // Build DNS resolver from config
+        let resolver = trojan_dns::DnsResolver::new(&relay_cfg.dns)
+            .map_err(|e| RelayError::Config(format!("dns resolver: {e}")))?;
+        info!(dns = ?relay_cfg.dns.strategy, "dns resolver initialized");
 
-    // Build DNS resolver from config
-    let resolver = trojan_dns::DnsResolver::new(&relay_cfg.dns)
-        .map_err(|e| RelayError::Config(format!("dns resolver: {e}")))?;
-    info!(dns = ?relay_cfg.dns.strategy, "dns resolver initialized");
+        let connectors = OutboundConnectors {
+            tls: TlsTransportConnector::new_insecure_with_resolver(
+                relay_cfg.outbound.sni.clone(),
+                resolver.clone(),
+            ),
+            plain: PlainTransportConnector::with_resolver(resolver.clone()),
+            ws: WsTransportConnector::with_resolver(resolver),
+            default_transport: relay_cfg.transport.clone(),
+            default_sni: relay_cfg.outbound.sni.clone(),
+        };
 
-    let connectors = OutboundConnectors {
-        tls: TlsTransportConnector::new_insecure_with_resolver(
-            relay_cfg.outbound.sni.clone(),
-            resolver.clone(),
-        ),
-        plain: PlainTransportConnector::with_resolver(resolver.clone()),
-        ws: WsTransportConnector::with_resolver(resolver),
-        default_transport: relay_cfg.transport.clone(),
-        default_sni: relay_cfg.outbound.sni.clone(),
+        match relay_cfg.transport {
+            TransportType::Tls => {
+                let transport_tls = relay_cfg.tls.as_ref().map(|c| c.to_transport_config());
+                let acceptor = TlsTransportAcceptor::new(transport_tls.as_ref())?;
+                run_inner(relay_cfg, acceptor, connectors, stats, shutdown).await
+            }
+            TransportType::Plain => {
+                let acceptor = PlainTransportAcceptor;
+                run_inner(relay_cfg, acceptor, connectors, stats, shutdown).await
+            }
+            TransportType::Ws => {
+                let acceptor = WsTransportAcceptor;
+                run_inner(relay_cfg, acceptor, connectors, stats, shutdown).await
+            }
+        }
     };
-
-    match relay_cfg.transport {
-        TransportType::Tls => {
-            let transport_tls = relay_cfg.tls.as_ref().map(|c| c.to_transport_config());
-            let acceptor = TlsTransportAcceptor::new(transport_tls.as_ref())?;
-            run_inner(relay_cfg, acceptor, connectors, stats, shutdown).await
-        }
-        TransportType::Plain => {
-            let acceptor = PlainTransportAcceptor;
-            run_inner(relay_cfg, acceptor, connectors, stats, shutdown).await
-        }
-        TransportType::Ws => {
-            let acceptor = WsTransportAcceptor;
-            run_inner(relay_cfg, acceptor, connectors, stats, shutdown).await
-        }
+    match metrics {
+        Some(metrics) => metrics.run_until(service).await?,
+        None => service.await,
     }
 }
 

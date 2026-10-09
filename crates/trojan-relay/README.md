@@ -4,6 +4,8 @@ Multi-hop relay chain for trojan-rs, enabling flexible traffic routing through i
 
 With `metrics.listen` enabled, entries expose route selections, tunnel setup outcomes and duration, and alternate route attempts. Labels use configured rule names and fixed outcomes; see [trojan-metrics](../trojan-metrics/README.md) for metric names. Connection counts and lifetimes include cancelled sessions.
 
+Entry and relay nodes accept the same optional `[metrics.tls]` block as server nodes. Set `cert`, `key`, and `client_ca` together to require mutual TLS for every route on the metrics listener. Omitting the block preserves HTTP. See [configuration, Prometheus, and restart instructions](../trojan-metrics/README.md#mutual-tls). Metrics TLS is independent of relay transport certificates and SNI.
+
 ## Overview
 
 This crate implements the relay chain system:

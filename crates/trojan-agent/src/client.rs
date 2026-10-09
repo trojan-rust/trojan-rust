@@ -15,6 +15,8 @@ use crate::config::AgentConfig;
 use crate::error::AgentError;
 use crate::protocol::{AgentMessage, NODE_TRAFFIC_HEADER, PROTOCOL_VERSION, PanelMessage};
 
+pub(crate) const SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// Registration result returned on successful panel handshake.
 #[derive(Debug)]
 pub struct RegistrationResult {
@@ -140,12 +142,20 @@ pub async fn connect_and_register(
     let pong_tx = agent_tx.clone();
     tokio::spawn(async move {
         let send = async {
-            while let Some(message) = agent_rx.recv().await {
+            loop {
+                let message = tokio::select! {
+                    biased;
+                    _ = shutdown.cancelled() => agent_rx.try_recv().ok(),
+                    message = agent_rx.recv() => message,
+                };
+                let Some(message) = message else { break };
                 let data = bincode::serialize(&message)?;
                 ws_sink.send(Message::Binary(data.into())).await?;
             }
+            ws_sink.close().await?;
             Ok::<(), AgentError>(())
         };
+        tokio::pin!(send);
         let recv = async {
             while let Some(message) = ws_source.next().await {
                 match message? {
@@ -172,8 +182,14 @@ pub async fn connect_and_register(
         // Either half ending drops both halves, including any blocked send or channel write.
         let result = tokio::select! {
             biased;
-            _ = shutdown.cancelled() => Ok(()),
-            result = send => result,
+            _ = shutdown.cancelled() => {
+                // Flush final service errors; a stalled panel must not keep the socket open indefinitely.
+                tokio::time::timeout(SHUTDOWN_SEND_TIMEOUT, &mut send)
+                    .await
+                    .map_err(|_| AgentError::ConnectionClosed)
+                    .and_then(std::convert::identity)
+            },
+            result = &mut send => result,
             result = recv => result,
         };
         if let Err(e) = result {

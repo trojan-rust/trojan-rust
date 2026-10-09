@@ -14,6 +14,20 @@ use crate::types::{AuthConfig, WebSocketMode};
 
 /// Check everything a running server depends on.
 pub fn validate_config(config: &Config) -> Result<(), ConfigError> {
+    if let Some(tls) = &config.metrics.tls {
+        if config
+            .metrics
+            .listen
+            .as_deref()
+            .is_none_or(|listen| listen.trim().is_empty())
+        {
+            return Err(ConfigError::Validation(
+                "metrics.listen is required when metrics.tls is configured".into(),
+            ));
+        }
+        tls.validate()
+            .map_err(|error| ConfigError::Validation(error.into()))?;
+    }
     if config.server.listen.trim().is_empty() {
         return Err(ConfigError::Validation("server.listen is empty".into()));
     }

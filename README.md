@@ -16,6 +16,8 @@ For persistent node traffic accounting and monthly quotas, see [trojan-dash](cra
 
 For node throughput and traffic history, see [node observability](crates/trojan-dash/README.md#node-observability). For Prometheus counters and route diagnostics, see [trojan-metrics](crates/trojan-metrics/README.md).
 
+Server, relay, and entry nodes support optional [mutual TLS for metrics](crates/trojan-metrics/README.md#mutual-tls), including Agent-managed nodes. Existing HTTP configurations remain compatible. Upgrade the node binary before enabling `metrics.tls`.
+
 ## License
 
 GPL-3.0-only

@@ -43,6 +43,7 @@ clap.workspace = true
 tokio-util = { workspace = true, features = ["compat", "rt"] }
 
 [dev-dependencies]
+serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "net", "time"] }
 trojan-protocol.workspace = true
 

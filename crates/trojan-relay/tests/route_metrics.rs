@@ -289,7 +289,10 @@ async fn cancelled_setup(metrics: SocketAddr) {
 async fn exported_metrics_follow_setup_failover_exhaustion_and_abort() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let metrics = available_addr().await;
-    let exporter = trojan_metrics::init_metrics_server(&metrics.to_string(), None).unwrap();
+    let exporter = trojan_metrics::init_metrics_server(&metrics.to_string(), None, None)
+        .await
+        .unwrap();
+    let exporter = tokio::spawn(exporter.run_until(std::future::pending::<()>()));
     tokio::time::timeout(Duration::from_secs(5), destination_failover(metrics))
         .await
         .expect("destination failover did not complete");

@@ -253,6 +253,9 @@ pub struct MetricsConfig {
     /// Address to serve `/metrics`, `/health` and `/ready` on. Absent = off.
     #[serde(default)]
     pub listen: Option<SocketAddr>,
+    /// Require client certificates on every metrics listener route.
+    #[serde(default)]
+    pub tls: Option<trojan_core::metrics::MetricsTlsConfig>,
 }
 
 /// Timeout and buffer configuration shared by entry and relay nodes.
@@ -337,6 +340,37 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metrics_tls_has_the_same_toml_and_json_shape() {
+        let toml = r#"
+listen = "0.0.0.0:19001"
+[tls]
+cert = "/node/server.crt"
+key = "/node/server.key"
+client_ca = "/node/clients-ca.crt"
+"#;
+        let config: MetricsConfig = toml::from_str(toml).unwrap();
+        let json = serde_json::to_value(&config).unwrap();
+        let roundtrip: MetricsConfig = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(roundtrip.listen, Some("0.0.0.0:19001".parse().unwrap()));
+        assert_eq!(roundtrip.tls, config.tls);
+
+        for field in ["cert", "key", "client_ca"] {
+            let mut incomplete = json.clone();
+            incomplete["tls"].as_object_mut().unwrap().remove(field);
+            let error = serde_json::from_value::<MetricsConfig>(incomplete).unwrap_err();
+            assert!(error.to_string().contains(field));
+
+            let incomplete = toml
+                .lines()
+                .filter(|line| !line.starts_with(&format!("{field} =")))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let error = toml::from_str::<MetricsConfig>(&incomplete).unwrap_err();
+            assert!(error.to_string().contains(field));
+        }
+    }
 
     #[test]
     fn parse_entry_config() {

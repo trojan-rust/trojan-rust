@@ -25,7 +25,7 @@ use rustls::{
     ClientConfig, RootCertStore,
     pki_types::{CertificateDer, ServerName},
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio_rustls::TlsConnector;
 use trojan_auth::{MemoryAuth, sha224_hex};
 use trojan_config::{
@@ -60,6 +60,47 @@ fn generate_test_certs() -> (String, String) {
     (cert.pem(), key_pair.serialize_pem())
 }
 
+fn metrics_identity(
+    config: &Config,
+    directory: &std::path::Path,
+) -> (trojan_core::metrics::MetricsTlsConfig, TlsConnector) {
+    use rcgen::{
+        BasicConstraints, CertificateParams, CertifiedIssuer, ExtendedKeyUsagePurpose, IsCa,
+        KeyPair, KeyUsagePurpose,
+    };
+    let mut params = CertificateParams::default();
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    params.key_usages = vec![KeyUsagePurpose::KeyCertSign];
+    let ca = CertifiedIssuer::self_signed(params, KeyPair::generate().unwrap()).unwrap();
+    let client_key = KeyPair::generate().unwrap();
+    let mut params = CertificateParams::default();
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+    let client = params.signed_by(&client_key, &ca).unwrap();
+    let ca_path = directory.join("metrics-clients-ca.crt");
+    fs::write(&ca_path, ca.pem()).unwrap();
+    let mut roots = RootCertStore::empty();
+    for cert in trojan_core::tls::load_certs(&config.tls.cert).unwrap() {
+        roots.add(cert).unwrap();
+    }
+    let connector = TlsConnector::from(Arc::new(
+        ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_client_auth_cert(
+                vec![client.der().clone()],
+                rustls::pki_types::PrivatePkcs8KeyDer::from(client_key.serialize_der()).into(),
+            )
+            .unwrap(),
+    ));
+    (
+        trojan_core::metrics::MetricsTlsConfig {
+            cert: config.tls.cert.clone(),
+            key: config.tls.key.clone(),
+            client_ca: ca_path.to_string_lossy().into_owned(),
+        },
+        connector,
+    )
+}
+
 /// TCP server that echoes whatever it receives.
 struct MockEchoServer {
     addr: SocketAddr,
@@ -91,9 +132,10 @@ impl MockEchoServer {
 
 struct TestServer {
     addr: SocketAddr,
+    config: Config,
     tls_connector: TlsConnector,
     shutdown: CancellationToken,
-    _handle: tokio::task::JoinHandle<()>,
+    handle: tokio::task::JoinHandle<Result<(), trojan_server::ServerError>>,
     _temp_dir: tempfile::TempDir,
 }
 
@@ -170,6 +212,7 @@ impl TestServer {
             websocket: WebSocketConfig::default(),
             metrics: MetricsConfig {
                 listen: metrics_listen.map(|a| a.to_string()),
+                tls: None,
                 geoip: None,
                 per_target,
             },
@@ -185,18 +228,22 @@ impl TestServer {
         let auth = MemoryAuth::from_passwords(&config.auth.passwords);
         let shutdown = CancellationToken::new();
         let token = shutdown.clone();
-        let handle = tokio::spawn(async move {
-            let _ = run_with_shutdown(config, auth, token).await;
-        });
+        let handle = tokio::spawn(run_with_shutdown(config.clone(), auth, token));
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         Self {
             addr,
+            config,
             tls_connector,
             shutdown,
-            _handle: handle,
+            handle,
             _temp_dir: temp_dir,
         }
+    }
+
+    async fn stop(&mut self) {
+        self.shutdown.cancel();
+        (&mut self.handle).await.unwrap().unwrap();
     }
 
     /// Relay a payload through to `target`, so the byte counters move.
@@ -244,23 +291,41 @@ impl Drop for TestServer {
 
 /// Minimal HTTP/1.1 GET, returning (status line, body).
 async fn http_get(addr: SocketAddr, path: &str) -> (String, String) {
-    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    http_get_stream(stream, path).await
+}
+
+async fn http_get_stream(
+    mut stream: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    path: &str,
+) -> (String, String) {
     let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).await.unwrap();
     stream.flush().await.unwrap();
 
-    let mut raw = Vec::new();
-    tokio::time::timeout(Duration::from_secs(10), stream.read_to_end(&mut raw))
-        .await
-        .unwrap_or_else(|_| panic!("timed out reading {path}"))
-        .unwrap();
-
-    let text = String::from_utf8_lossy(&raw).into_owned();
-    let (head, body) = text
-        .split_once("\r\n\r\n")
-        .unwrap_or_else(|| panic!("malformed response for {path}: {text:?}"));
-    let status = head.lines().next().unwrap_or_default().to_string();
-    (status, body.to_string())
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut reader = BufReader::new(stream);
+        let mut head = String::new();
+        while !head.ends_with("\r\n\r\n") {
+            assert!(reader.read_line(&mut head).await.unwrap() > 0);
+        }
+        let length = head
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap();
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).await.unwrap();
+        (
+            head.lines().next().unwrap().to_string(),
+            String::from_utf8(body).unwrap(),
+        )
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out reading {path}"))
 }
 
 async fn free_addr() -> SocketAddr {
@@ -282,7 +347,7 @@ async fn metrics_endpoint_reports_traffic_and_honours_per_target() {
     let metrics_addr = free_addr().await;
 
     // ── Phase 1: per_target off ──
-    let server = TestServer::start(Some(metrics_addr), false).await;
+    let mut server = TestServer::start(Some(metrics_addr), false).await;
     server.relay(echo.addr).await;
 
     let (status, _) = http_get(metrics_addr, "/health").await;
@@ -317,7 +382,7 @@ async fn metrics_endpoint_reports_traffic_and_honours_per_target() {
     // ── Phase 2: per_target on ──
     // No exporter of its own — the recorder is already installed globally, so
     // this server's counters land in the same registry.
-    let per_target_server = TestServer::start(None, true).await;
+    let mut per_target_server = TestServer::start(None, true).await;
     per_target_server.relay(echo.addr).await;
 
     let (_, body) = http_get(metrics_addr, "/metrics").await;
@@ -330,4 +395,96 @@ async fn metrics_endpoint_reports_traffic_and_honours_per_target() {
         body.contains("direction=\"sent\""),
         "expected a direction label on the per-target counter, got:\n{body}"
     );
+
+    let mut config = server.config.clone();
+    config.server.listen = "127.0.0.1:0".into();
+    let error = run_with_shutdown(
+        config.clone(),
+        MemoryAuth::from_passwords(&config.auth.passwords),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, trojan_server::ServerError::Metrics(_)));
+
+    let available_metrics = free_addr().await;
+    config.metrics.listen = Some(available_metrics.to_string());
+    config.server.listen = server.addr.to_string();
+    let error = run_with_shutdown(
+        config.clone(),
+        MemoryAuth::from_passwords(&config.auth.passwords),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, trojan_server::ServerError::Io(_)));
+    let _rebound_after_failure = tokio::net::TcpListener::bind(available_metrics)
+        .await
+        .unwrap();
+
+    config.server.listen = "127.0.0.1:0".into();
+    config.metrics.listen = Some("127.0.0.1:0".into());
+    config.metrics.tls = Some(trojan_core::metrics::MetricsTlsConfig {
+        cert: "/nonexistent/server.crt".into(),
+        key: "/nonexistent/server.key".into(),
+        client_ca: "/nonexistent/clients-ca.crt".into(),
+    });
+    let error = run_with_shutdown(
+        config.clone(),
+        MemoryAuth::from_passwords(&config.auth.passwords),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, trojan_server::ServerError::Metrics(_)));
+
+    let mut old_connection = tokio::net::TcpStream::connect(metrics_addr).await.unwrap();
+    old_connection
+        .write_all(b"GET /ready HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+    let mut response = Vec::new();
+    while !response.ends_with(b"READY") {
+        let mut buffer = [0; 512];
+        let count = old_connection.read(&mut buffer).await.unwrap();
+        assert!(count > 0);
+        response.extend_from_slice(&buffer[..count]);
+    }
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    per_target_server.stop().await;
+    server.stop().await;
+    let rebound = tokio::net::TcpListener::bind(metrics_addr).await.unwrap();
+    assert_eq!(old_connection.read(&mut [0; 1]).await.unwrap(), 0);
+    drop(rebound);
+
+    let (tls, connector) = metrics_identity(&server.config, server._temp_dir.path());
+    server.config.metrics.tls = Some(tls);
+    server.shutdown = CancellationToken::new();
+    server.handle = tokio::spawn(run_with_shutdown(
+        server.config.clone(),
+        MemoryAuth::from_passwords(&server.config.auth.passwords),
+        server.shutdown.clone(),
+    ));
+    let stream = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match tokio::net::TcpStream::connect(metrics_addr).await {
+                Ok(stream) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+                    tokio::task::yield_now().await
+                }
+                Err(error) => panic!("cannot connect to metrics: {error}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let stream = connector
+        .connect(ServerName::try_from("localhost").unwrap(), stream)
+        .await
+        .unwrap();
+    let (status, body) = http_get_stream(stream, "/metrics").await;
+    assert!(status.contains("200"));
+    assert!(body.contains("trojan_bytes_received_total"));
+    server.relay(echo.addr).await;
+    server.stop().await;
 }
