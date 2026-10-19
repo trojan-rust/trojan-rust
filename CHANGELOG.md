@@ -3,12 +3,30 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+
 ## [0.18.0](https://github.com/trojan-rust/trojan-rust/compare/v0.17.0...v0.18.0) - 2026-10-19
+
+### Breaking Changes
+
+- Rust callers that construct `AgentConfig` with a struct literal must supply `node_state_grace_secs`. Existing TOML configurations use the 48-hour default.
 
 ### Bug Fixes
 
-- persist node states with offline grace
+- Keep managed entry routing available after panel snapshots expire, with 48 hours of grace measured from snapshot generation by default. Reconnection and restart do not extend the deadline.
+- Persist accepted snapshots atomically to `cache_dir/node-states.json` and load snapshots before cached services start. Managed entries can resume routing after an agent or host restart while the panel is unavailable.
+- Retain the last known quota usage across billing-period rollover during grace. Unlimited nodes remain eligible; disabled, offline, depleted, and unsupported finite-quota nodes remain unavailable.
 
+### Observability
+
+- Export `trojan_agent_node_state_age_seconds` every second, including while disconnected. The value is `-1` before any snapshot is loaded or received.
+
+### Upgrade Notes
+
+- Set `node_state_grace_secs = 0` in the local Agent TOML to enforce strict snapshot expiry and billing-period boundaries.
+- Preserve `cache_dir` on persistent storage. After the first upgrade, let the Agent receive and persist a panel snapshot before relying on offline restart recovery. Earlier versions do not create `node-states.json`.
+- Finite quotas can be exceeded while disconnected because routing uses the last known remaining quota. Snapshot cache corruption and write failures stop the Agent explicitly.
+
+See the [Agent configuration and offline routing behavior](https://github.com/trojan-rust/trojan-rust/blob/v0.18.0/crates/trojan-agent/README.md).
 
 ## [0.17.0](https://github.com/trojan-rust/trojan-rust/compare/v0.16.0...v0.17.0) - 2026-10-09
 
