@@ -65,6 +65,25 @@ level = "info"
 format = "pretty"
 ```
 
+### Dual-stack SOCKS5 listener
+
+To accept IPv4 and IPv6 on one TCP listening socket, configure:
+
+```toml
+[client]
+listen = "[::]:1080"
+
+[client.tcp]
+ipv6_only = false
+```
+
+Set `ipv6_only = true` for IPv6-only listening. Omitting the option retains
+the previous OS-default behavior; `127.0.0.1:1080` remains IPv4-only.
+
+**Security:** SOCKS5 is unauthenticated. Binding to `[::]` exposes the proxy
+on all IPv4 and IPv6 interfaces; restrict access with firewall rules. Keep
+`127.0.0.1` for a local-only proxy.
+
 ### CLI Overrides
 
 ```bash

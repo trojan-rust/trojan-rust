@@ -104,6 +104,9 @@ pub struct CliOverrides {
     /// Enable SO_REUSEPORT for multi-process load balancing
     #[arg(long)]
     pub tcp_reuse_port: Option<bool>,
+    /// Restrict IPv6 listeners to IPv6 only (false permits dual-stack).
+    #[arg(long)]
+    pub tcp_ipv6_only: Option<bool>,
     /// Enable TCP Fast Open (requires kernel support)
     #[arg(long)]
     pub tcp_fast_open: Option<bool>,
@@ -242,10 +245,56 @@ pub fn apply_overrides(config: &mut Config, overrides: &CliOverrides) {
     if let Some(v) = overrides.tcp_reuse_port {
         config.server.tcp.reuse_port = v;
     }
+    if let Some(v) = overrides.tcp_ipv6_only {
+        config.server.tcp.ipv6_only = Some(v);
+    }
     if let Some(v) = overrides.tcp_fast_open {
         config.server.tcp.fast_open = v;
     }
     if let Some(v) = overrides.tcp_fast_open_qlen {
         config.server.tcp.fast_open_qlen = v;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tcp_ipv6_only_cli_accepts_both_explicit_values() {
+        let omitted = CliOverrides::try_parse_from(["trojan-server"]).unwrap();
+        assert_eq!(omitted.tcp_ipv6_only, None);
+
+        for (input, expected) in [("true", Some(true)), ("false", Some(false))] {
+            let args =
+                CliOverrides::try_parse_from(["trojan-server", "--tcp-ipv6-only", input]).unwrap();
+            assert_eq!(args.tcp_ipv6_only, expected);
+        }
+        CliOverrides::try_parse_from(["trojan-server", "--tcp-ipv6-only", "invalid"]).unwrap_err();
+    }
+
+    #[test]
+    fn explicit_false_cli_overrides_true_config() {
+        let mut config: Config = serde_json::from_str(
+            r#"{
+                "server": {
+                    "listen": "[::]:444",
+                    "fallback": "127.0.0.1:80",
+                    "tcp": {"ipv6_only": true}
+                },
+                "tls": {"cert": "test.pem", "key": "test.key"},
+                "auth": {"passwords": ["test"]}
+            }"#,
+        )
+        .unwrap();
+        let false_args =
+            CliOverrides::try_parse_from(["trojan-server", "--tcp-ipv6-only", "false"]).unwrap();
+        apply_overrides(&mut config, &false_args);
+        assert_eq!(config.server.tcp.ipv6_only, Some(false));
+
+        let true_args =
+            CliOverrides::try_parse_from(["trojan-server", "--tcp-ipv6-only", "true"]).unwrap();
+        apply_overrides(&mut config, &true_args);
+        assert_eq!(config.server.tcp.ipv6_only, Some(true));
     }
 }

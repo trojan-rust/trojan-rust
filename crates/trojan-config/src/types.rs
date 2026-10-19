@@ -147,6 +147,10 @@ pub struct TcpConfig {
     /// Prefer IPv4 addresses when resolving DNS for outbound connections.
     #[serde(default = "default_tcp_prefer_ipv4")]
     pub prefer_ipv4: bool,
+    /// IPv6 listener mode: None uses the OS default, true is IPv6-only,
+    /// false permits IPv4-mapped connections (dual-stack on [::]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ipv6_only: Option<bool>,
 }
 
 impl Default for TcpConfig {
@@ -158,6 +162,7 @@ impl Default for TcpConfig {
             fast_open: default_tcp_fast_open(),
             fast_open_qlen: default_tcp_fast_open_qlen(),
             prefer_ipv4: default_tcp_prefer_ipv4(),
+            ipv6_only: None,
         }
     }
 }
@@ -467,6 +472,29 @@ pub struct RouteRuleConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ipv6_only_defaults_to_platform_setting_and_supports_config_formats() {
+        let absent: TcpConfig = toml::from_str("no_delay = true").unwrap();
+        assert_eq!(absent.ipv6_only, None);
+        assert!(
+            serde_json::to_value(TcpConfig::default())
+                .unwrap()
+                .get("ipv6_only")
+                .is_none()
+        );
+
+        for (value, expected) in [("true", Some(true)), ("false", Some(false))] {
+            let toml_config: TcpConfig = toml::from_str(&format!("ipv6_only = {value}")).unwrap();
+            let json_config: TcpConfig =
+                serde_json::from_str(&format!(r#"{{"ipv6_only": {value}}}"#)).unwrap();
+            let yaml_config: TcpConfig =
+                serde_yaml::from_str(&format!("ipv6_only: {value}")).unwrap();
+            assert_eq!(toml_config.ipv6_only, expected);
+            assert_eq!(json_config.ipv6_only, expected);
+            assert_eq!(yaml_config.ipv6_only, expected);
+        }
+    }
 
     #[test]
     fn metrics_config_default() {

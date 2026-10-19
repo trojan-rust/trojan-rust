@@ -6,9 +6,12 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use futures_util::{StreamExt, stream::FuturesUnordered};
-use socket2::{Domain, Protocol, Socket, TcpKeepalive, Type};
+use socket2::TcpKeepalive;
+#[cfg(all(test, windows))]
+use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::{TcpListener, TcpStream};
 use trojan_config::TcpConfig;
+use trojan_core::net::prepare_tcp_listener_socket;
 
 use crate::error::ServerError;
 
@@ -20,16 +23,8 @@ pub fn create_listener(
     backlog: u32,
     tcp_cfg: &TcpConfig,
 ) -> Result<TcpListener, ServerError> {
-    // Suppress unused warning on Windows where reuse_port/fast_open are not available
-    #[cfg(not(unix))]
-    let _ = tcp_cfg;
+    let socket = prepare_tcp_listener_socket(addr, tcp_cfg.ipv6_only)?;
 
-    let domain = if addr.is_ipv4() {
-        Domain::IPV4
-    } else {
-        Domain::IPV6
-    };
-    let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
     // Windows SO_REUSEADDR permits a second live listener on the same address.
     #[cfg(not(windows))]
     socket.set_reuse_address(true)?;
@@ -72,6 +67,13 @@ pub fn create_listener(
 
     socket.bind(&addr.into())?;
     socket.listen(i32::try_from(backlog).unwrap_or(i32::MAX))?;
+    if addr.is_ipv6() {
+        tracing::info!(
+            address = %addr,
+            ipv6_only = socket.only_v6()?,
+            "IPv6 listener mode configured"
+        );
+    }
     let listener = TcpListener::from_std(std::net::TcpListener::from(socket))?;
     Ok(listener)
 }
@@ -219,6 +221,65 @@ async fn connect_socket(
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[tokio::test]
+    async fn dual_stack_listener_accepts_both_families() {
+        let config = TcpConfig {
+            ipv6_only: Some(false),
+            ..Default::default()
+        };
+        let listener = create_listener("[::]:0".parse().unwrap(), 128, &config).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let ipv4 = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let (_, peer4) = listener.accept().await.unwrap();
+        let IpAddr::V6(mapped) = peer4.ip() else {
+            panic!("IPv4 peer on an IPv6 dual-stack socket should be IPv4-mapped");
+        };
+        assert_eq!(mapped.to_ipv4_mapped(), Some(std::net::Ipv4Addr::LOCALHOST));
+        drop(ipv4);
+
+        let ipv6 = TcpStream::connect(("::1", port)).await.unwrap();
+        let (_, peer6) = listener.accept().await.unwrap();
+        assert_eq!(peer6.ip(), IpAddr::V6(std::net::Ipv6Addr::LOCALHOST));
+        drop(ipv6);
+    }
+
+    #[tokio::test]
+    async fn ipv6_only_listener_rejects_ipv4() {
+        let config = TcpConfig {
+            ipv6_only: Some(true),
+            ..Default::default()
+        };
+        let listener = create_listener("[::]:0".parse().unwrap(), 128, &config).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect_err("IPv6-only listener must reject IPv4");
+        let ipv6 = TcpStream::connect(("::1", port)).await.unwrap();
+        let (_, peer) = listener.accept().await.unwrap();
+        assert_eq!(peer.ip(), IpAddr::V6(std::net::Ipv6Addr::LOCALHOST));
+        drop(ipv6);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_dual_stack_listener_exclusively_owns_ipv4_port() {
+        let config = TcpConfig {
+            ipv6_only: Some(false),
+            ..Default::default()
+        };
+        let listener = create_listener("[::]:0".parse().unwrap(), 128, &config).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let second = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+        second.set_reuse_address(true).unwrap();
+        let addr = SocketAddr::from(([0, 0, 0, 0], port));
+        second
+            .bind(&addr.into())
+            .expect_err("a second IPv4 listener must not overlap an IPv6 dual-stack listener");
+    }
 
     #[tokio::test]
     async fn stalled_preferred_family_does_not_block_ipv4_and_loser_is_cancelled() {

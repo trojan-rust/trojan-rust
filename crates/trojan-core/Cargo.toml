@@ -22,12 +22,16 @@ tls = ["dep:rustls", "dep:rustls-pemfile"]
 [dependencies]
 bytes.workspace = true
 serde.workspace = true
+socket2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "time", "macros", "sync"] }
 tokio-tungstenite = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 rustls-pemfile = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Networking_WinSock"] }
 
 [dev-dependencies]
 rcgen.workspace = true

@@ -49,6 +49,35 @@ validate_config(&config)?;
 - **`TlsConfig`** — Certificate, key, ALPN, TLS version range, mTLS, cipher suites
 - **`CliOverrides`** — Clap-derived struct for command-line overrides
 
+## IPv6 Server Listener Mode
+
+The optional `server.tcp.ipv6_only` setting determines whether IPv6
+listener sockets accept IPv4-mapped connections:
+
+- Omitted: keep the operating system's existing default.
+- `true`: IPv6-only.
+- `false`: enable dual-stack. Bind the IPv6 wildcard address
+  `[::]` to accept both IPv4 and IPv6 on the same TCP port.
+
+```toml
+[server]
+listen = "[::]:444"
+
+[server.tcp]
+ipv6_only = false
+```
+
+The corresponding CLI override is `--tcp-ipv6-only false` (or
+`--tcp-ipv6-only true`), using the same explicit boolean-value
+convention as the existing `--tcp-reuse-port` option. CLI overrides
+take precedence over the configuration file. The option applies only to
+IPv6 sockets and cannot turn an IPv4-bound address into an IPv6 listener.
+Binding one specific IPv6 address does not necessarily enable IPv4 access.
+
+On Windows, an effective IPv6 dual-stack listener requests exclusive
+address binding to prevent a second IPv4 listener from overlapping its
+port; unsupported socket options or binding failures abort startup.
+
 ## Metrics TLS
 
 `MetricsConfig` accepts an optional `tls` object with required `cert`, `key`, and `client_ca` path strings. TOML `[metrics.tls]` and JSON `metrics.tls` have the same meaning. TLS requires `metrics.listen`; omitting TLS preserves HTTP. Configuration validation checks required fields, and service startup reads and validates the local files. Existing `geoip` and `per_target` fields are unchanged. See the [minimal configuration and Prometheus example](../trojan-metrics/README.md#mutual-tls).

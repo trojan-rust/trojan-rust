@@ -31,6 +31,18 @@ use crate::rate_limit::RateLimiter;
 use crate::state::ServerState;
 use crate::util::apply_tcp_options;
 
+/// Treat IPv4-mapped peers as IPv4 for rate limits, routing and accounting.
+/// Preserve the raw address until PROXY sender trust has been evaluated.
+#[inline]
+fn canonical_client_peer(peer: SocketAddr) -> SocketAddr {
+    if let SocketAddr::V6(v6) = peer
+        && let Some(v4) = v6.ip().to_ipv4_mapped()
+    {
+        return SocketAddr::new(v4.into(), v6.port());
+    }
+    peer
+}
+
 /// Global connection ID counter.
 static CONN_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -185,7 +197,7 @@ where
 
         if !introduced_by_proxy
             && let Some(ref limiter) = self.ctx.rate_limiter
-            && !limiter.check_and_increment(peer.ip())
+            && !limiter.check_and_increment(canonical_client_peer(peer).ip())
         {
             debug!(peer = %peer, reason = "rate_limit", "connection rejected");
             record_connection_rejected("rate_limit");
@@ -276,14 +288,15 @@ where
     async fn serve(self) -> Result<(), ServerError> {
         let introduced =
             crate::proxy::introduce(self.tcp, self.peer, &self.ctx.state.proxy_protocol).await?;
+        let client_peer = canonical_client_peer(introduced.peer);
 
         // The deferred half of the accept-time check, now that the client
         // behind the proxy has a name.
         if self.introduced_by_proxy
             && let Some(ref limiter) = self.ctx.rate_limiter
-            && !limiter.check_and_increment(introduced.peer.ip())
+            && !limiter.check_and_increment(client_peer.ip())
         {
-            debug!(client = %introduced.peer, reason = "rate_limit", "connection rejected");
+            debug!(client = %client_peer, reason = "rate_limit", "connection rejected");
             record_connection_rejected("rate_limit");
             return Ok(());
         }
@@ -293,7 +306,7 @@ where
         };
 
         let conn = Connection {
-            peer: introduced.peer,
+            peer: client_peer,
             id: self.id,
             chain: introduced.chain,
             auth_deadline: Instant::now()
@@ -341,5 +354,30 @@ where
             warn!(timeout_secs = timeout.as_secs(), "TLS handshake timed out");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_client_peer_normalizes_mapped_ipv4_only() {
+        let mapped: SocketAddr = "[::ffff:192.168.3.18]:50443".parse().unwrap();
+        let ipv4: SocketAddr = "192.168.3.18:50443".parse().unwrap();
+        let ipv6: SocketAddr = "[2001:db8::1]:50443".parse().unwrap();
+
+        assert_eq!(canonical_client_peer(mapped), ipv4);
+        assert_eq!(canonical_client_peer(ipv4), ipv4);
+        assert_eq!(canonical_client_peer(ipv6), ipv6);
+    }
+
+    #[test]
+    fn mapped_and_native_ipv4_share_one_rate_limit_bucket() {
+        let mapped: SocketAddr = "[::ffff:192.168.3.18]:50123".parse().unwrap();
+        let ipv4: SocketAddr = "192.168.3.18:50124".parse().unwrap();
+        let limiter = RateLimiter::new(1, 60);
+        assert!(limiter.check_and_increment(canonical_client_peer(mapped).ip()));
+        assert!(!limiter.check_and_increment(canonical_client_peer(ipv4).ip()));
     }
 }

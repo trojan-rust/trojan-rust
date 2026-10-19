@@ -783,3 +783,98 @@ mod rules_e2e {
         fallback.stop().await;
     }
 }
+
+/// Exercise the real Client::run listener, not a manually constructed test listener.
+/// One IPv6 socket must serve both SOCKS5 TCP and UDP ASSOCIATE address families.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn e2e_client_single_socket_ipv4_ipv6_tcp_udp() {
+    init_tracing();
+
+    let echo = TcpEchoServer::start().await;
+    let udp_echo = UdpEchoServer::start().await;
+    let fallback = TcpStaticServer::start(b"HTTP/1.1 200 OK\r\n\r\n").await;
+    let server = TestServer::start(fallback.addr).await;
+
+    let reserved = TcpListener::bind("[::1]:0").await.unwrap();
+    let port = reserved.local_addr().unwrap().port();
+    drop(reserved);
+
+    let config = ClientConfig {
+        client: ClientSettings {
+            listen: format!("[::]:{port}"),
+            remote: server.addr.to_string(),
+            password: server.password.clone(),
+            tls: ClientTlsConfig {
+                sni: Some("localhost".to_string()),
+                skip_verify: true,
+                ..Default::default()
+            },
+            tcp: TcpConfig {
+                ipv6_only: Some(false),
+                ..Default::default()
+            },
+            dns: Default::default(),
+        },
+        logging: LoggingConfig {
+            level: Some("warn".to_string()),
+            ..Default::default()
+        },
+    };
+
+    let shutdown = CancellationToken::new();
+    let shutdown_task = shutdown.clone();
+    let client_task = tokio::spawn(async move {
+        trojan_client::run(config, shutdown_task).await.unwrap();
+    });
+    let ipv4 = SocketAddr::from(([127, 0, 0, 1], port));
+    let ipv6 = SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port));
+    wait_for_tcp(ipv4).await;
+    wait_for_tcp(ipv6).await;
+
+    for (socks_addr, local_udp) in [(ipv4, "127.0.0.1:0"), (ipv6, "[::1]:0")] {
+        // SOCKS5 TCP CONNECT: both address families traverse real Trojan TLS.
+        let mut conn = socks5_connect(socks_addr, echo.addr)
+            .await
+            .expect("dual-stack SOCKS5 TCP CONNECT");
+        conn.write_all(b"dual-stack-tcp").await.unwrap();
+        let mut received = [0u8; 14];
+        conn.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received, b"dual-stack-tcp");
+        drop(conn);
+
+        // IPv4-mapped peers must advertise an IPv4 BND address for UDP, not IPv6.
+        let (control, relay) = socks5_udp_associate(socks_addr)
+            .await
+            .expect("dual-stack SOCKS5 UDP ASSOCIATE");
+        assert_eq!(
+            relay.is_ipv4(),
+            socks_addr.is_ipv4(),
+            "UDP relay address family must match the SOCKS5 client's IP family"
+        );
+        let udp = UdpSocket::bind(local_udp).await.unwrap();
+        let dest = AddressRef {
+            host: HostRef::Ipv4([127, 0, 0, 1]),
+            port: udp_echo.addr.port(),
+        };
+        udp.send_to(&write_socks5_udp(&dest, b"dual-stack-udp"), relay)
+            .await
+            .unwrap();
+        let mut buffer = [0u8; 2048];
+        let (n, _) = tokio::time::timeout(Duration::from_secs(5), udp.recv_from(&mut buffer))
+            .await
+            .expect("dual-stack UDP round-trip timeout")
+            .unwrap();
+        let packet = parse_socks5_udp(&buffer[..n]).expect("UDP reply frame");
+        assert_eq!(packet.address, dest);
+        assert_eq!(packet.payload, b"dual-stack-udp");
+        drop(control);
+        drop(udp);
+    }
+
+    shutdown.cancel();
+    client_task.await.unwrap();
+    server.stop().await;
+    udp_echo.stop().await;
+    echo.stop().await;
+    fallback.stop().await;
+}

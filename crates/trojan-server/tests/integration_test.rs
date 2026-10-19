@@ -2696,6 +2696,84 @@ mod config_surface_tests {
         assert_eq!(&echoed[..], payload);
     }
 
+    /// One running Trojan server accepts IPv4 and IPv6 and completes
+    /// TLS, password authentication and TCP relay over both families.
+    #[tokio::test]
+    async fn dual_stack_both_families_complete_authenticated_tcp_relay() {
+        let echo = MockEchoServer::start();
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+        let server = ConfiguredServer::start(fallback.addr, |config, _| {
+            let original: SocketAddr = config.server.listen.parse().unwrap();
+            config.server.listen = format!("[::]:{}", original.port());
+            config.server.tcp.ipv6_only = Some(false);
+        })
+        .await;
+
+        let port = server.addr.port();
+        let hosts = [
+            SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port)),
+            SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port)),
+        ];
+
+        for addr in hosts {
+            let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let name = ServerName::try_from("localhost").unwrap();
+            let mut tls = server.connector().connect(name, tcp).await.unwrap();
+            assert_relay_works(&mut tls, &sha224_hex(PASSWORD), echo.addr).await;
+        }
+    }
+
+    /// A mapped IPv4 client must match IPv4 SRC-IP-CIDR, while a genuine
+    /// IPv6 client must not match the same IPv4-only rule.
+    #[tokio::test]
+    async fn dual_stack_ipv4_source_cidr_applies_only_to_ipv4() {
+        let echo = MockEchoServer::start();
+        let fallback = MockHttpServer::start("HTTP/1.1 200 OK\r\n\r\nFallback");
+        let server = ConfiguredServer::start(fallback.addr, |config, _| {
+            let original: SocketAddr = config.server.listen.parse().unwrap();
+            config.server.listen = format!("[::]:{}", original.port());
+            config.server.tcp.ipv6_only = Some(false);
+            config.server.rules = vec![
+                trojan_config::RouteRuleConfig {
+                    rule_set: None,
+                    rule_type: Some("SRC-IP-CIDR".into()),
+                    value: Some("127.0.0.0/8".into()),
+                    outbound: "REJECT".into(),
+                },
+                trojan_config::RouteRuleConfig {
+                    rule_set: None,
+                    rule_type: Some("FINAL".into()),
+                    value: None,
+                    outbound: "DIRECT".into(),
+                },
+            ];
+        })
+        .await;
+        let port = server.addr.port();
+
+        // An IPv4 peer on this dual-stack IPv6 socket appears as ::ffff:127.0.0.1.
+        let tcp4 = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let name = ServerName::try_from("localhost").unwrap();
+        let mut tls4 = server.connector().connect(name, tcp4).await.unwrap();
+        let mut request = connect_header(&sha224_hex(PASSWORD), echo.addr);
+        request.extend_from_slice(b"must be rejected");
+        tls4.write_all(&request).await.unwrap();
+        let mut probe = [0u8; 1];
+        match tokio::time::timeout(Duration::from_secs(5), tls4.read(&mut probe)).await {
+            Ok(Ok(0) | Err(_)) => {}
+            result => panic!("mapped IPv4 client did not match IPv4 source CIDR: {result:?}"),
+        }
+        drop(tls4);
+
+        // A native IPv6 client is unaffected by an IPv4-only source rule.
+        let tcp6 = tokio::net::TcpStream::connect(("::1", port)).await.unwrap();
+        let name = ServerName::try_from("localhost").unwrap();
+        let mut tls6 = server.connector().connect(name, tcp6).await.unwrap();
+        assert_relay_works(&mut tls6, &sha224_hex(PASSWORD), echo.addr).await;
+    }
+
     // ── mTLS ──
 
     struct ClientPki {
