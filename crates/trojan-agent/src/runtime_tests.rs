@@ -40,6 +40,7 @@ pub(super) fn agent_config(panel: SocketAddr, cache: &std::path::Path) -> AgentC
         token: "token".into(),
         cache_dir: Some(cache.into()),
         report_interval_secs: Some(1),
+        node_state_grace_secs: 172_800,
         log_level: None,
         reconnect: crate::config::ReconnectConfig {
             initial_delay_ms: 20,

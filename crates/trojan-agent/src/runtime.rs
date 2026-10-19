@@ -13,7 +13,7 @@ use crate::config::AgentConfig;
 use crate::error::AgentError;
 use crate::node_traffic::NodeTraffic;
 use crate::protocol::{AgentMessage, PanelMessage, ServiceState};
-use crate::{reporter, runner};
+use crate::{node_states, reporter, runner};
 
 #[cfg(test)]
 #[path = "runtime_tests.rs"]
@@ -34,6 +34,10 @@ mod capability_tests;
 #[cfg(test)]
 #[path = "runtime_metrics_tests.rs"]
 mod metrics_tests;
+
+#[cfg(test)]
+#[path = "runtime_node_states_tests.rs"]
+mod node_states_tests;
 
 struct Service {
     config: CachedConfig,
@@ -154,7 +158,7 @@ async fn apply_node_traffic(
         }
         // Exclude all legacy traffic, including bytes carried while the old service drained.
         traffic.enable(sinks.stats.clone()).await?;
-        sinks.node_states = Default::default();
+        sinks.node_states.clear();
         sinks.node_traffic = true;
     }
     Ok(())
@@ -164,7 +168,12 @@ pub(crate) async fn run(
     config: AgentConfig,
     shutdown: CancellationToken,
 ) -> Result<(), AgentError> {
-    let mut sinks = runner::ServiceSinks::default();
+    let mut sinks = runner::ServiceSinks {
+        node_states: std::sync::Arc::new(trojan_lb::NodeStateStore::with_grace(
+            Duration::from_secs(config.node_state_grace_secs),
+        )),
+        ..Default::default()
+    };
     let cache_dir = cache::resolve_cache_dir(config.cache_dir.as_deref());
     let cached = cache::read_cache(&cache_dir).await;
     let interval = config.report_interval_secs.unwrap_or_else(|| {
@@ -182,6 +191,9 @@ pub(crate) async fn run(
     {
         traffic.bind_node(node_id).await?;
         sinks.node_id = Some(node_id.clone());
+        if supported {
+            node_states::load(&cache_dir, &sinks.node_states).await?;
+        }
     }
     service = cached
         .filter(|_| sinks.node_id.is_some())
@@ -202,9 +214,19 @@ pub(crate) async fn run(
         tokio::spawn(async move { traffic.run_sampler(stats, shutdown).await })
     };
     tokio::pin!(sampler);
-    let (result, mut sampler_result) = tokio::select! {
-        result = reconnect(&config, &shutdown, &mut sinks, &mut service, &traffic) => (result, None),
-        result = &mut sampler => (Ok(()), Some(result)),
+    let node_states = sinks.node_states.clone();
+    let (result, mut sampler_result) = {
+        let connecting = reconnect(&config, &shutdown, &mut sinks, &mut service, &traffic);
+        tokio::pin!(connecting);
+        let mut state_tick = tokio::time::interval(Duration::from_secs(1));
+        state_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                result = &mut connecting => break (result, None),
+                result = &mut sampler => break (Ok(()), Some(result)),
+                _ = state_tick.tick() => node_states::record_age(&node_states),
+            }
+        }
     };
     let drain_timeout = if sampler_result.is_some()
         || matches!(
@@ -274,6 +296,7 @@ async fn reconnect(
                     Some(Err(e @ AgentError::Service(_))) => return Err(e),
                     Some(Err(e @ AgentError::Accounting(_))) => return Err(e),
                     Some(Err(e @ AgentError::AccountingStorage(_))) => return Err(e),
+                    Some(Err(e @ AgentError::Cache(_))) => return Err(e),
                     Some(Err(e)) => warn!(error = %e, "panel session ended"),
                     Some(Ok(())) => return Ok(()),
                 }
@@ -413,7 +436,9 @@ async fn connected(
                     tx.send(AgentMessage::ConfigAck { version, ok: true, message: None }).await.map_err(|_| AgentError::ConnectionClosed)?;
                     tx.send(AgentMessage::ServiceStatus { status: ServiceState::Running, started_at, config_version: version }).await.map_err(|_| AgentError::ConnectionClosed)?;
                 }
-                Some(PanelMessage::NodeStates { snapshot }) if reg.node_traffic => sinks.node_states.update(snapshot),
+                Some(PanelMessage::NodeStates { snapshot }) if reg.node_traffic => {
+                    node_states::update(&cache_dir, &sinks.node_states, snapshot).await?;
+                }
                 Some(PanelMessage::NodeTrafficAck { stream_id, sequence }) if reg.node_traffic => traffic.acknowledge(stream_id, sequence).await?,
                 Some(PanelMessage::NodeStates { .. } | PanelMessage::NodeTrafficAck { .. }) => return Err(AgentError::Accounting("panel sent node traffic data without negotiating support".into())),
                 Some(PanelMessage::Error { code: crate::protocol::ErrorCode::InvalidTrafficReport, message }) => {

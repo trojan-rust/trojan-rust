@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use trojan_protocol::{NodeState, NodeStateSnapshot};
 
@@ -10,30 +10,54 @@ use trojan_protocol::{NodeState, NodeStateSnapshot};
 #[derive(Debug, Default)]
 pub struct NodeStateStore {
     current: RwLock<Arc<NodeStateView>>,
+    grace: Duration,
 }
 
 /// An immutable set of node states used throughout one routing decision.
 #[derive(Debug, Default)]
 pub struct NodeStateView {
-    generated_at: u64,
+    generated_at: Option<u64>,
     valid_until: u64,
+    grace_until: u64,
     nodes: HashMap<String, NodeState>,
 }
 
 impl NodeStateStore {
-    /// Replace the current snapshot unless a newer snapshot already arrived.
-    pub fn update(&self, snapshot: NodeStateSnapshot) {
+    /// Permit expired snapshots until their generation time plus `grace`.
+    /// Zero preserves strict expiry and billing-period checks.
+    pub fn with_grace(grace: Duration) -> Self {
+        Self {
+            grace,
+            ..Self::default()
+        }
+    }
+
+    /// Clear the snapshot while preserving the local grace policy.
+    pub fn clear(&self) {
+        *self.current.write().expect("node state lock poisoned") = Arc::default();
+    }
+
+    /// Replace the snapshot and return whether the snapshot was accepted.
+    /// Reject snapshots older than the current snapshot.
+    pub fn update(&self, snapshot: NodeStateSnapshot) -> bool {
         let mut current = self.current.write().expect("node state lock poisoned");
-        if snapshot.generated_at >= current.generated_at {
+        if current
+            .generated_at
+            .is_none_or(|time| snapshot.generated_at >= time)
+        {
             *current = Arc::new(NodeStateView {
-                generated_at: snapshot.generated_at,
+                generated_at: Some(snapshot.generated_at),
                 valid_until: snapshot.valid_until,
+                grace_until: snapshot.generated_at.saturating_add(self.grace.as_secs()),
                 nodes: snapshot
                     .nodes
                     .into_iter()
                     .map(|node| (node.node_id.clone(), node))
                     .collect(),
             });
+            true
+        } else {
+            false
         }
     }
 
@@ -52,11 +76,17 @@ impl NodeStateStore {
 }
 
 impl NodeStateView {
+    /// Return the generation time in Unix seconds, or `None` before the first snapshot.
+    pub fn generated_at(&self) -> Option<u64> {
+        self.generated_at
+    }
+
     /// Return a fraction in `(0, 1]`; unlimited nodes have a fraction of `1`.
     ///
     /// Missing, stale, disabled, offline, and depleted nodes are unavailable.
     /// A finite quota requires supported node accounting.
-    /// A new billing period requires a fresh panel snapshot.
+    /// During grace, expired billing periods retain the last known usage.
+    /// Grace never restores disabled, offline, or depleted nodes.
     pub fn remaining_fraction(&self, node_id: &str) -> Option<f64> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -66,11 +96,17 @@ impl NodeStateView {
     }
 
     fn remaining_fraction_at(&self, node_id: &str, now: u64) -> Option<f64> {
-        if now < self.generated_at || now >= self.valid_until {
+        let generated_at = self.generated_at?;
+        let within_grace = now < self.grace_until;
+        if now < generated_at || (now >= self.valid_until && !within_grace) {
             return None;
         }
         let node = self.nodes.get(node_id)?;
-        if !node.enabled || !node.online || now < node.period_start || now >= node.reset_at {
+        if !node.enabled
+            || !node.online
+            || now < node.period_start
+            || (now >= node.reset_at && !within_grace)
+        {
             return None;
         }
         if node.traffic_limit == 0 {
@@ -106,8 +142,93 @@ mod tests {
     }
 
     #[test]
+    fn grace_uses_generation_time_and_expires_at_the_deadline() {
+        let store = NodeStateStore::with_grace(Duration::from_secs(200));
+        store.update(snapshot());
+        let view = store.snapshot();
+        for (now, expected) in [
+            (9, None),
+            (10, Some(0.2)),
+            (90, Some(0.2)),
+            (100, Some(0.2)),
+            (209, Some(0.2)),
+            (210, None),
+        ] {
+            assert_eq!(
+                view.remaining_fraction_at("exit", now),
+                expected,
+                "at {now}"
+            );
+        }
+        assert_eq!(view.remaining_fraction_at("missing", 100), None);
+    }
+
+    #[test]
+    fn short_grace_does_not_shorten_panel_validity() {
+        let store = NodeStateStore::with_grace(Duration::from_secs(20));
+        store.update(snapshot());
+        let view = store.snapshot();
+        assert_eq!(view.remaining_fraction_at("exit", 50), Some(0.2));
+        assert_eq!(view.remaining_fraction_at("exit", 90), None);
+        assert_eq!(view.remaining_fraction_at("exit", 100), None);
+    }
+
+    #[test]
+    fn grace_preserves_availability_accounting_and_last_period_usage() {
+        let store = NodeStateStore::with_grace(Duration::from_secs(200));
+        for (enabled, online, supported, used, limit, start, expected) in [
+            (true, true, true, 80, 100, 0, Some(0.2)),
+            (true, true, false, u64::MAX, 0, 0, Some(1.0)),
+            (false, true, true, 0, 100, 0, None),
+            (true, false, true, 0, 100, 0, None),
+            (true, true, false, 0, 100, 0, None),
+            (true, true, true, 100, 100, 0, None),
+            (true, true, true, 120, 100, 0, None),
+            (true, true, true, 0, 100, 101, None),
+        ] {
+            let mut snapshot = snapshot();
+            let node = &mut snapshot.nodes[0];
+            node.enabled = enabled;
+            node.online = online;
+            node.traffic_supported = supported;
+            node.used_bytes = used;
+            node.traffic_limit = limit;
+            node.period_start = start;
+            store.update(snapshot);
+            assert_eq!(
+                store.snapshot().remaining_fraction_at("exit", 100),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn fresh_snapshots_replace_grace_states_without_extending_old_views() {
+        let store = NodeStateStore::with_grace(Duration::from_secs(200));
+        assert!(store.update(snapshot()));
+        let old = store.snapshot();
+        let mut fresh = snapshot();
+        fresh.generated_at = 150;
+        fresh.valid_until = 240;
+        fresh.nodes[0].enabled = false;
+        assert!(store.update(fresh));
+        assert!(!store.update(snapshot()));
+        assert_eq!(store.snapshot().remaining_fraction_at("exit", 150), None);
+        assert_eq!(old.remaining_fraction_at("exit", 150), Some(0.2));
+        assert_eq!(old.remaining_fraction_at("exit", 210), None);
+        store.clear();
+        assert_eq!(store.snapshot().generated_at(), None);
+        assert_eq!(store.snapshot().remaining_fraction_at("exit", 150), None);
+        store.update(snapshot());
+        assert_eq!(
+            store.snapshot().remaining_fraction_at("exit", 150),
+            Some(0.2)
+        );
+    }
+
+    #[test]
     fn state_expiry_and_rollover_require_fresh_snapshots() {
-        let store = NodeStateStore::default();
+        let store = NodeStateStore::with_grace(Duration::ZERO);
         store.update(snapshot());
         let old = store.snapshot();
         assert_eq!(old.remaining_fraction_at("exit", 10), Some(0.2));

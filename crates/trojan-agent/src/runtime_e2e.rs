@@ -110,6 +110,7 @@ async fn real_usage_closes_new_routes_and_live_budget_update_reopens_them() {
         token: node["token"].as_str().unwrap().to_owned(),
         cache_dir: Some(dir.path().join("agent")),
         report_interval_secs: Some(1),
+        node_state_grace_secs: 172_800,
         log_level: None,
         reconnect: Default::default(),
     };

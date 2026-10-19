@@ -17,7 +17,7 @@ pub struct AgentConfig {
     pub token: String,
 
     /// Local cache directory for panel-down resilience.
-    /// Stores configuration and the durable node traffic journal.
+    /// Stores configuration, node states, and the durable node traffic journal.
     #[serde(default)]
     pub cache_dir: Option<PathBuf>,
 
@@ -25,6 +25,11 @@ pub struct AgentConfig {
     /// Heartbeats run at least every 30 seconds regardless of this value.
     #[serde(default)]
     pub report_interval_secs: Option<u64>,
+
+    /// Maximum snapshot age for offline routing, measured from generation.
+    /// Defaults to 48 hours. Zero preserves strict expiry and billing-period checks.
+    #[serde(default = "default_node_state_grace_secs")]
+    pub node_state_grace_secs: u64,
 
     /// Log level override (trace, debug, info, warn, error).
     #[serde(default)]
@@ -66,6 +71,10 @@ impl Default for ReconnectConfig {
     }
 }
 
+fn default_node_state_grace_secs() -> u64 {
+    48 * 60 * 60
+}
+
 fn default_initial_delay_ms() -> u64 {
     1000
 }
@@ -97,6 +106,7 @@ token = "test-token"
         assert_eq!(config.token, "test-token");
         assert!(config.cache_dir.is_none());
         assert!(config.report_interval_secs.is_none());
+        assert_eq!(config.node_state_grace_secs, 172_800);
         assert_eq!(config.reconnect.initial_delay_ms, 1000);
         assert_eq!(config.reconnect.max_delay_ms, 60_000);
     }
@@ -108,6 +118,7 @@ panel_url = "wss://panel.example.com/ws/agent"
 token = "test-token"
 cache_dir = "/var/cache/trojan"
 report_interval_secs = 15
+node_state_grace_secs = 0
 log_level = "debug"
 
 [reconnect]
@@ -122,6 +133,7 @@ jitter = 0.2
             "/var/cache/trojan"
         );
         assert_eq!(config.report_interval_secs, Some(15));
+        assert_eq!(config.node_state_grace_secs, 0);
         assert_eq!(config.log_level.as_deref(), Some("debug"));
         assert_eq!(config.reconnect.initial_delay_ms, 500);
         assert_eq!(config.reconnect.max_delay_ms, 30_000);

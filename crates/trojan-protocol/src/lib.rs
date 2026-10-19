@@ -98,7 +98,9 @@ pub struct NodeTrafficReport {
     pub bytes_out: u64,
 }
 
-/// Complete node scheduling state. Consumers must reject expired snapshots.
+/// Complete node scheduling state.
+/// Consumers may extend `valid_until` with a local grace policy measured from `generated_at`.
+/// Consumers must reject snapshots after both the validity window and local grace expire.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeStateSnapshot {
     pub generated_at: u64,

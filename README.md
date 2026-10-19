@@ -16,6 +16,8 @@ For persistent node traffic accounting and monthly quotas, see [trojan-dash](cra
 
 For node throughput and traffic history, see [node observability](crates/trojan-dash/README.md#node-observability). For Prometheus counters and route diagnostics, see [trojan-metrics](crates/trojan-metrics/README.md).
 
+Agent-managed entries [cache node states](crates/trojan-agent/README.md) for offline routing across restarts, with 48 hours of grace by default. Set `node_state_grace_secs = 0` for strict snapshot expiry.
+
 Server, relay, and entry nodes support optional [mutual TLS for metrics](crates/trojan-metrics/README.md#mutual-tls), including Agent-managed nodes. Existing HTTP configurations remain compatible. Upgrade the node binary before enabling `metrics.tls`.
 
 ## License

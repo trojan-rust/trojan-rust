@@ -85,6 +85,7 @@ fn agent_config(addr: SocketAddr, token: &str) -> AgentConfig {
         token: token.to_string(),
         cache_dir: None,
         report_interval_secs: None,
+        node_state_grace_secs: 172_800,
         log_level: None,
         reconnect: Default::default(),
     }
