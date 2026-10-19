@@ -3,6 +3,12 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+## [0.18.0](https://github.com/trojan-rust/trojan-rust/compare/v0.17.0...v0.18.0) - 2026-10-19
+
+### Bug Fixes
+
+- persist node states with offline grace
+
 
 ## [0.17.0](https://github.com/trojan-rust/trojan-rust/compare/v0.16.0...v0.17.0) - 2026-10-09
 
